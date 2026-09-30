@@ -419,3 +419,8 @@ and never touches the machine it runs on. See [CONTRIBUTING.md](CONTRIBUTING.md)
 
 The design and most of the scripts come from a Fedora/KDE predecessor by the same author.
 MIT licence.
+
+## License
+
+MIT, see [LICENSE](LICENSE). "Proton" and "Proton VPN" are trademarks of Proton AG; this plugin
+is an independent project and is not affiliated with or endorsed by Proton.
