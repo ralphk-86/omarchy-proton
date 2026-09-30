@@ -37,7 +37,8 @@ fi
 internet_ok() {
   local i answer
   for i in 1 2 3; do
-    answer=$(curl -4 -s --max-time 6 "$LOOKUP_URL" 2>/dev/null) || answer=""
+    # Capped at 256 bytes (an IP address); common.sh is not installed yet at this point.
+    answer=$(curl -4 -s --max-time 6 --max-filesize 256 "$LOOKUP_URL" 2>/dev/null) || answer=""
     [[ -n "$answer" ]] && return 0
     sleep 2
   done

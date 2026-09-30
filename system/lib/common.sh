@@ -93,8 +93,19 @@ vpnkit_find_vpn_iface() {
 # The body of a URL with whitespace removed; empty when it cannot be reached.
 # The answer is only ever held in a variable: nothing downloaded is piped
 # anywhere or written to a file that something later runs.
-vpnkit_fetch() {  # vpnkit_fetch <url> [timeout-seconds]
-  _body=$(curl -4 -s --max-time "${2:-5}" "$1" 2>/dev/null) || _body=""
+# Every HTTP body this kit reads is an IP address, so what is read is capped:
+# a hostile or broken lookup server must not be able to make a helper (some
+# run as root) buffer an unbounded response. --max-filesize makes curl refuse
+# a larger declared size and, since curl 8.4 (Omarchy ships newer), abort a
+# stream that declares none once it passes the limit; the transfer then fails
+# and the caller gets nothing. Time is capped as well. No pipe: curl's output
+# goes into a variable only.
+VPNKIT_MAX_BODY=256
+vpnkit_curl() {  # vpnkit_curl <timeout-seconds> <curl args...>: body on stdout, fails if over VPNKIT_MAX_BODY bytes
+  curl -4 -s --max-time "$1" --max-filesize "$VPNKIT_MAX_BODY" "${@:2}" 2>/dev/null
+}
+vpnkit_fetch() {  # vpnkit_fetch <url> [timeout-seconds]: body without whitespace, empty on failure
+  _body=$(vpnkit_curl "${2:-5}" "$1") || _body=""
   printf '%s' "$_body" | tr -d '[:space:]'
 }
 

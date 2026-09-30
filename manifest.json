@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.ralphk-86.omarchy-proton",
   "name": "Omarchy Proton",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": "ralphk-86",
   "license": "MIT",
   "description": "Proton VPN over WireGuard in the bar. Your regular traffic uses either your own IP (\"Normal connection\") or a Proton server's IP, whichever you pick in the panel, with a kill switch while a server is selected. qBittorrent always goes through its own separate tunnel. Drop .conf files into a folder and press Refresh. Unofficial.",

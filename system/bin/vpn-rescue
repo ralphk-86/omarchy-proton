@@ -32,7 +32,8 @@ EXT_IP=""
 online() {
   local i
   for i in 1 2 3; do
-    EXT_IP=$(curl -4 -s --max-time 5 "$LOOKUP_URL" 2>/dev/null) || EXT_IP=""
+    # Capped at 256 bytes (an IP address): this script must not depend on common.sh.
+    EXT_IP=$(curl -4 -s --max-time 5 --max-filesize 256 "$LOOKUP_URL" 2>/dev/null) || EXT_IP=""
     [[ -n "$EXT_IP" ]] && return 0
     sleep 1
   done

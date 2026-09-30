@@ -77,7 +77,9 @@ if [[ "$tunnel_up" == true ]]; then
     (( age < IPCACHE_TTL )) && { exit_ip=$(cat "$IPCACHE"); fresh=true; }
   fi
   if [[ "$fresh" == false ]]; then
-    exit_ip=$(ip netns exec "$NS" curl -4 -s --max-time 5 "$IP_LOOKUP_URL" 2>/dev/null)
+    # Bounded like vpnkit_fetch (see common.sh); a function cannot be run
+    # through `ip netns exec`, so the flags are spelled out here.
+    exit_ip=$(ip netns exec "$NS" curl -4 -s --max-time 5 --max-filesize "$VPNKIT_MAX_BODY" "$IP_LOOKUP_URL" 2>/dev/null) || exit_ip=""
     exit_ip="${exit_ip//[[:space:]]/}"
     # Only ever cache something that looks like an address.
     [[ "$exit_ip" =~ ^[0-9.]+$ ]] || exit_ip=""

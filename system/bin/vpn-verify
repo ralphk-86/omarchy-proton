@@ -30,9 +30,10 @@ SUDO=""
 nsx() { $SUDO ip netns exec "$NS" "$@"; }
 
 # Body of a URL (whitespace removed), fetched on the host or inside the
-# namespace. Empty means "could not be reached". Held in a variable only.
-host_get() { local b; b=$(curl -s --max-time "$1" "${@:2}" 2>/dev/null) || b=""; printf '%s' "${b//[[:space:]]/}"; }
-ns_get()   { local b; b=$(nsx curl -s --max-time "$1" "${@:2}" 2>/dev/null) || b=""; printf '%s' "${b//[[:space:]]/}"; }
+# namespace. Empty means "could not be reached". Held in a variable only, and
+# capped at VPNKIT_MAX_BODY bytes (common.sh): these are IP addresses.
+host_get() { local b; b=$(vpnkit_curl "$1" "${@:2}") || b=""; printf '%s' "${b//[[:space:]]/}"; }
+ns_get()   { local b; b=$(nsx curl -4 -s --max-time "$1" --max-filesize "$VPNKIT_MAX_BODY" "${@:2}" 2>/dev/null) || b=""; printf '%s' "${b//[[:space:]]/}"; }
 
 if [[ -t 1 ]]; then RED=$'\e[31m'; GRN=$'\e[32m'; YEL=$'\e[33m'; RST=$'\e[0m'; else RED=""; GRN=""; YEL=""; RST=""; fi
 pass=0; fail=0; skip=0

@@ -110,8 +110,15 @@ cat > /tmp/whoami.py <<'PY'
 import http.server, socketserver
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        self.send_response(200)
+        if self.path == "/endless":      # a hostile lookup server: chunked, never stops
+            self.send_header("Transfer-Encoding", "chunked"); self.end_headers()
+            try:
+                while True: self.wfile.write(b"400\r\n" + b"8" * 1024 + b"\r\n")
+            except (BrokenPipeError, ConnectionResetError): pass
+            return
         body = self.client_address[0].encode()
-        self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers()
+        self.send_header("Content-Length", str(len(body))); self.end_headers()
         self.wfile.write(body)
     def log_message(self, *a): pass
 class S(socketserver.ThreadingMixIn, http.server.HTTPServer):
@@ -247,6 +254,11 @@ as_user /usr/bin/qbittorrent 600 </dev/null >/dev/null 2>&1 &
 sleep 1
 is "a qbittorrent outside the namespace is detected" "$(status .qbt_unprotected)" "true"
 pkill -x qbittorrent; sleep 1
+# A lookup server that never stops answering must not make a helper buffer it.
+big=$(as_user timeout 20 bash -c '. /usr/local/lib/vpnkit/common.sh; vpnkit_fetch http://192.0.2.80:8080/endless 5 | wc -c')
+is "an endless lookup response is dropped, not buffered" "$big" "0"
+big=$(timeout 20 ip netns exec qbtvpn bash -c '. /usr/local/lib/vpnkit/common.sh; out=$(vpnkit_curl 5 http://192.0.2.80:8080/endless) || out=""; printf %s "$out" | wc -c')
+is "the same inside the torrent namespace" "$big" "0"
 # Other torrent apps are not routed into the namespace; they must be reported.
 is "no other torrent app reported when none runs" "$(status '.other_torrent_apps | length')" "0"
 is "status names the torrent interface" "$(status .torrent_if)" "pqbt0"

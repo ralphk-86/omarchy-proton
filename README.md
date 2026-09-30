@@ -373,9 +373,10 @@ If you removed the plugin folder first, the system part can still be removed:
 ## Security and privacy
 
 - **Network requests of its own:** one. The bar looks up your external IP at `ifconfig.me`
-  (every 30 seconds while the widget polls, cached, configurable with `IP_LOOKUP_URL`). There
-  is no telemetry and nothing else is contacted, apart from `pacman` installing packages
-  during setup. *Troubleshoot with AI* starts your own AI agent only when you click it.
+  (every 30 seconds while the widget polls, cached, configurable with `IP_LOOKUP_URL`). What
+  comes back is read with a time limit and a 256-byte size cap, so a broken or hostile lookup
+  server cannot flood a helper. There is no telemetry and nothing else is contacted, apart
+  from `pacman` installing packages during setup. *Troubleshoot with AI* starts your own AI agent only when you click it.
 - **Keys:** your configs contain private keys. They are removed from the drop folder once
   imported and kept only in root-owned files with mode 0600.
 - **Root:** setup and uninstall run as root once, when you enter your password. Five

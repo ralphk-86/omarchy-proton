@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1 (2026-09-30)
+
+- Every HTTP body the kit reads (the external-IP lookups, some of them in root helpers) is
+  now capped at 256 bytes with curl's `--max-filesize`, which also aborts a stream of unknown
+  size. A hostile or broken lookup server can no longer make `qbt-netns-status`, `vpn-status`,
+  `vpn-verify`, `vpn-rescue` or the installer buffer an unbounded response. Raised by the
+  marketplace review (omacom/omarchy-plugin-marketplace#9451). VM suite: 153 of 153.
+
 ## 0.3.0 (2026-09-30)
 
 - **Regular traffic / Torrents** switch in the panel over one server list: pick where your
