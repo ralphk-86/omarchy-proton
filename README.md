@@ -418,7 +418,6 @@ The VM suite simulates the internet and a VPN provider inside the VM, so it need
 and never touches the machine it runs on. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The design and most of the scripts come from a Fedora/KDE predecessor by the same author.
-MIT licence.
 
 ## License
 
