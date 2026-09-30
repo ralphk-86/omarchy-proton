@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  vpn-diagnose - hand a VPN problem to your AI coding agent.
+#
+#  Clicked from a "Leaks found" / "VPN dropped" notification or the panel's
+#  "Troubleshoot with AI" row, or run by hand. Works the way Omarchy's own
+#  "Process crashed - click to diagnose with AI" does (omarchy-agent-crash):
+#  gather the facts, point the agent at a skill file that says how to
+#  investigate, and start the agent you chose with `omarchy default agent`.
+#
+#  The method lives in the diagnose-vpn skill, installed next to the helpers,
+#  so it is edited in one place and works with whichever agent is default.
+#  The skill tells the agent to diagnose read-only, never to print private
+#  keys, and never to turn the kill switch off.
+#
+#  Usage: vpn-diagnose [what went wrong ...]
+#    With no words, it describes the state vpn-status reports right now.
+# ============================================================================
+set -uo pipefail
+
+SKILL=/usr/local/lib/vpnkit/skills/diagnose-vpn/SKILL.md
+REPORT="${XDG_RUNTIME_DIR:-/tmp}/vpnkit-last-check.txt"
+
+reason="$*"
+[[ -n "$reason" ]] || reason="Something is wrong with the VPN (opened by hand)."
+
+if ! command -v omarchy-agent >/dev/null 2>&1; then
+  echo "No omarchy-agent on this system, so there is no AI agent to hand this to."
+  echo "Run vpn-verify to see the checks, and vpn-rescue to get the normal connection back."
+  exit 1
+fi
+
+# Omarchy picks no agent for you. Offer the picker, as Omarchy's own agent
+# keybinding does, instead of failing with nothing on screen.
+if [[ -z "$(omarchy-default-agent 2>/dev/null)" ]]; then
+  command -v notify-send >/dev/null 2>&1 && \
+    notify-send -a "VPN" "Choose an AI agent first" \
+      "Pick one in the menu, then use Troubleshoot with AI again." 2>/dev/null
+  exec omarchy-menu summon setup.default.agent
+fi
+
+status=$(/usr/local/bin/vpn-status --json 2>/dev/null) || status=""
+[[ -n "$status" ]] || status="(vpn-status gave no output)"
+
+report_line="No leak check has been run in this session."
+if [[ -s "$REPORT" ]]; then
+  report_line="The last leak check (vpn-verify) is saved at: $REPORT
+Its failing lines:
+$(grep -E '\[FAIL\]|Result:' "$REPORT" | sed 's/^/  /')"
+fi
+
+prompt=$(cat <<PROMPT
+The Omarchy Proton VPN plugin on this Omarchy machine reported a problem and I
+want to know what is wrong and how to fix it safely.
+
+What happened:
+  $reason
+
+vpn-status --json right now:
+  $status
+
+$report_line
+
+Use the diagnose-vpn skill: it explains how the plugin works, how to investigate
+without weakening the protection, and what a fix may and may not do. If your
+harness has no skill mechanism, read the skill file directly and follow it:
+
+  $SKILL
+PROMPT
+)
+
+exec omarchy-agent --prompt "$prompt"

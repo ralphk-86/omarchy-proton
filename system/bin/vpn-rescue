@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  vpnkit-rescue.sh - get the normal internet connection back, now.
+#  Installed as /usr/local/bin/vpn-rescue; also runs straight from the repo.
+#
+#  It needs no network to work and changes nothing permanent:
+#    1. disconnects every desktop VPN profile
+#    2. removes the kill switch
+#    3. checks the internet; if it is still down, reconnects the network
+#       devices, and as a last step restarts NetworkManager and the resolver
+#
+#  The torrent tunnel is left alone: it lives in its own namespace and cannot
+#  affect the desktop's connection.
+#
+#  A reboot does the same as steps 1 and 2: the kill switch is not stored on
+#  disk and no VPN profile connects on its own.
+#
+#  To remove vpnkit completely instead, run the plugin's uninstall.sh.
+# ============================================================================
+set -uo pipefail
+
+[ "$(uname -s)" = "Linux" ] || { echo "This script is for the Omarchy box."; exit 1; }
+
+say() { printf '==> %s\n' "$*"; }
+
+LOOKUP_URL="https://ifconfig.me/ip"
+if [[ -r /etc/vpnkit/vpnkit.conf ]]; then
+  configured=$(sed -nE 's/^IP_LOOKUP_URL="?([^"]*)"?.*/\1/p' /etc/vpnkit/vpnkit.conf | tail -1)
+  [[ -n "$configured" ]] && LOOKUP_URL="$configured"
+fi
+EXT_IP=""
+online() {
+  local i
+  for i in 1 2 3; do
+    EXT_IP=$(curl -4 -s --max-time 5 "$LOOKUP_URL" 2>/dev/null) || EXT_IP=""
+    [[ -n "$EXT_IP" ]] && return 0
+    sleep 1
+  done
+  return 1
+}
+
+report() {
+  echo
+  echo "Internet is working. External IP: $EXT_IP"
+  echo "Default route: $(ip -4 route show default | head -1)"
+}
+
+say "Disconnecting desktop VPN profiles"
+nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | awk -F: '$2=="wireguard"{print $1}' \
+  | while read -r name; do
+      echo "    $name"
+      nmcli connection down "$name" >/dev/null 2>&1
+    done
+
+say "Removing the kill switch"
+if sudo -n /usr/local/bin/vpnkit-killswitch off >/dev/null 2>&1; then
+  echo "    removed"
+elif online; then
+  echo "    not armed"
+else
+  # vpnkit is missing or its sudo rule is gone: remove the table directly.
+  echo "    asking for your password to remove it directly"
+  sudo sh -c 'nft delete table inet vpnkit_kill 2>/dev/null; rm -f /run/vpnkit/wanted; true'
+fi
+
+if online; then report; exit 0; fi
+
+say "Still offline - reconnecting the network devices"
+nmcli networking on >/dev/null 2>&1
+nmcli -t -f DEVICE,TYPE device 2>/dev/null | awk -F: '$2=="ethernet" || $2=="wifi"{print $1}' \
+  | while read -r dev; do nmcli device connect "$dev" >/dev/null 2>&1; done
+sleep 3
+if online; then report; exit 0; fi
+
+say "Still offline - restarting NetworkManager and the resolver (asks for your password)"
+sudo systemctl restart NetworkManager systemd-resolved
+sleep 6
+if online; then report; exit 0; fi
+
+echo
+echo "Still no internet. vpnkit is no longer in the way:"
+echo "  VPN profiles active : $(nmcli -t -f NAME,TYPE connection show --active | awk -F: '$2=="wireguard"' | wc -l)"
+echo "  default route       : $(ip -4 route show default | head -1)"
+echo "Check the cable and the router, then reboot."
+exit 1

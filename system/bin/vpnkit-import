@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  vpnkit-import - turn one WireGuard config into a desktop VPN profile.
+#  Root only; called by vpnkit-sync for every file in the drop folder.
+#
+#  What it does with <file>:
+#    1. stores a copy as /etc/wireguard/<prefix>-<tag>.conf (0600 root)
+#    2. writes a NetworkManager keyfile for it and loads it
+#
+#  The keyfile is written directly instead of going through
+#  `nmcli connection import`, because an imported profile is created with
+#  autoconnect on and NetworkManager activates it on the spot. Writing the
+#  file ourselves means the profile exists but stays DOWN until you pick it.
+#
+#  Hardening baked into every profile:
+#    * autoconnect off - the normal connection is the default
+#    * IPv4 only, IPv6 disabled on the link (IPv6 is off system-wide)
+#    * DNS exclusively through the tunnel while it is up (negative priority
+#      plus the "~." routing domain), so the ISP resolver sees nothing
+#    * policy routing with a fixed fwmark, the same one the torrent tunnel
+#      carries, so that tunnel is never nested inside this one
+#    * BYPASS_CIDRS stay on the normal connection (SSH allowlists)
+#
+#  Usage: vpnkit-import <file.conf> [--print]
+#         --print writes the keyfile to stdout and changes nothing
+# ============================================================================
+set -euo pipefail
+. /usr/local/lib/vpnkit/common.sh
+
+SRC="${1:-}"
+PRINT=0
+[[ "${2:-}" == "--print" ]] && PRINT=1
+[[ -n "$SRC" && -r "$SRC" ]] || { echo "usage: vpnkit-import <file.conf> [--print]" >&2; exit 2; }
+if (( ! PRINT )) && [[ $EUID -ne 0 ]]; then
+  echo "vpnkit-import: must run as root (use vpn-import)" >&2; exit 2
+fi
+
+get() { vpnkit_wg_get "$SRC" "$1" "$2"; }
+
+ADDRESS=$(get interface Address)
+DNS=$(get interface DNS)
+PRIVKEY=$(get interface PrivateKey)
+PEERKEY=$(get peer PublicKey)
+ENDPOINT=$(get peer Endpoint)
+PSK=$(get peer PresharedKey)
+: "${DNS:=$FALLBACK_DNS}"
+
+if [[ -z "$ADDRESS" || -z "$PRIVKEY" || -z "$PEERKEY" || -z "$ENDPOINT" ]]; then
+  echo "skip: $SRC does not look like a WireGuard config" >&2; exit 1
+fi
+
+tag=$(vpnkit_server_tag "$SRC")
+[[ -z "$tag" ]] && tag=$(basename "$SRC" .conf | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9-')
+[[ -z "$tag" ]] && tag="server"
+name="${PROFILE_PREFIX}-${tag}"
+name="${name:0:15}"          # interface names are limited to 15 characters
+name="${name%-}"
+keyfile="/etc/NetworkManager/system-connections/${name}.nmconnection"
+# Same name, different server (two files both called wg0.conf, or a long name
+# cut to 15 characters): keep both. Same server again: update it in place.
+if [[ -r "$keyfile" ]] && ! grep -qF "[wireguard-peer.$PEERKEY]" "$keyfile"; then
+  name="${name:0:11}"; name="${name%-}-$(printf '%s' "$PEERKEY" | sha256sum | cut -c1-3)"
+  keyfile="/etc/NetworkManager/system-connections/${name}.nmconnection"
+fi
+dest="/etc/wireguard/${name}.conf"
+
+# IPv4 addresses and resolvers only while IPv6 is disabled.
+v4_list() {  # v4_list "<comma list>" -> "a;b;"
+  local out="" item
+  IFS=',' read -ra _items <<< "$1"
+  for item in "${_items[@]}"; do
+    item=$(echo "$item" | tr -d ' ')
+    [[ -z "$item" ]] && continue
+    [[ "$item" == *:* && "${DISABLE_IPV6:-1}" == "1" ]] && continue
+    out+="$item;"
+  done
+  printf '%s' "$out"
+}
+
+ADDR4=$(v4_list "$ADDRESS"); ADDR4="${ADDR4%%;*}"
+DNS4=$(v4_list "$DNS")
+[[ -n "$ADDR4" ]] || { echo "skip: $SRC has no IPv4 address" >&2; exit 1; }
+
+uuid=$(uuidgen --sha1 --namespace @dns --name "vpnkit-$name")
+
+render() {
+  cat <<EOF
+[connection]
+id=$name
+uuid=$uuid
+type=wireguard
+interface-name=$name
+autoconnect=false
+dns-over-tls=0
+
+[wireguard]
+fwmark=${VPN_FWMARK:-51820}
+ip4-auto-default-route=1
+ip6-auto-default-route=0
+private-key=$PRIVKEY
+
+[wireguard-peer.$PEERKEY]
+endpoint=$ENDPOINT
+persistent-keepalive=25
+allowed-ips=0.0.0.0/0;
+EOF
+  [[ -n "$PSK" ]] && { echo "preshared-key=$PSK"; echo "preshared-key-flags=0"; }
+  cat <<EOF
+
+[ipv4]
+address1=$ADDR4
+dns=$DNS4
+dns-priority=-50
+dns-search=~.;
+method=manual
+EOF
+  local n=1 cidr
+  for cidr in ${BYPASS_CIDRS:-}; do
+    # Table 254 is "main": these destinations use the ordinary default route.
+    echo "routing-rule$n=priority $((100 + n)) to $cidr table 254"
+    n=$((n + 1))
+  done
+  cat <<EOF
+
+[ipv6]
+addr-gen-mode=default
+method=disabled
+
+[proxy]
+EOF
+}
+
+if (( PRINT )); then
+  render | sed -E 's/^(private-key|preshared-key)=.*/\1=[hidden]/'
+  exit 0
+fi
+
+install -d -m 700 /etc/wireguard
+if [[ ! -e "$dest" ]] || ! cmp -s "$SRC" "$dest"; then
+  install -m 600 -o root -g root "$SRC" "$dest"
+fi
+
+umask 077
+tmp=$(mktemp "${keyfile}.XXXXXX")
+render > "$tmp"
+chown root:root "$tmp"; chmod 600 "$tmp"
+mv -f "$tmp" "$keyfile"
+
+if ! nmcli connection load "$keyfile" >/dev/null 2>&1; then
+  nmcli connection reload >/dev/null 2>&1 || true
+fi
+if nmcli -t -f NAME connection show | grep -qxF "$name"; then
+  echo "imported: $name"
+else
+  echo "failed: NetworkManager did not accept $keyfile" >&2
+  exit 1
+fi

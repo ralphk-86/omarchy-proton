@@ -1,0 +1,26 @@
+# vpnkit: narrowly scoped passwordless commands for the desktop user. @USER@ is replaced by the
+# installing user; the result is checked with `visudo -c` before it is installed.
+
+# The bar widget polls the status helper every few seconds. It takes no
+# arguments and only reads state, so keep those calls out of the journal.
+Defaults!/usr/local/bin/qbt-netns-status !log_allowed, !pam_session
+
+# The launcher starts a GUI program as the desktop user, so it needs to know
+# which compositor socket and theme to use. Nothing here is read as root.
+Defaults!/usr/local/bin/qbt-launch env_keep += "WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE QT_QPA_PLATFORMTHEME QT_STYLE_OVERRIDE XCURSOR_THEME XCURSOR_SIZE GTK_THEME HYPRLAND_INSTANCE_SIGNATURE"
+
+@USER@ ALL=(root) NOPASSWD: /usr/local/bin/qbt-netns-status ""
+@USER@ ALL=(root) NOPASSWD: /usr/local/bin/qbt-launch
+
+# The desktop VPN's kill switch. Turning it off is the same act as choosing
+# "Normal connection", so it needs no more authority than that click does. The
+# script validates its own arguments.
+@USER@ ALL=(root) NOPASSWD: /usr/local/bin/vpnkit-killswitch
+
+# Import configs from the drop folder / delete a server. Takes no paths: the
+# folder is fixed in /etc/vpnkit/vpnkit.conf and names are validated.
+@USER@ ALL=(root) NOPASSWD: /usr/local/bin/vpnkit-sync
+
+# The read-only leak check, exactly as typed here: no arguments, so the
+# variant that takes tunnels down on purpose still asks for a password.
+@USER@ ALL=(root) NOPASSWD: /usr/local/bin/vpn-verify ""

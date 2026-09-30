@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  NetworkManager dispatcher hook for vpnkit. Installed as
+#  /etc/NetworkManager/dispatcher.d/50-vpnkit and run by NetworkManager as root
+#  with: $1 = interface, $2 = action, and CONNECTION_ID / CONNECTION_UUID set.
+#
+#  Two jobs, both so that a selected desktop VPN can never quietly turn into a
+#  direct connection:
+#
+#   1. Whenever a desktop VPN profile comes up - from the bar widget, nmcli or
+#      anything else - arm the kill switch. However the VPN was started, it is
+#      protected.
+#   2. Whenever another link comes (back) up while a VPN is still wanted but no
+#      longer active - typically after suspend/resume - reconnect it. Until it
+#      is back, the kill switch keeps regular traffic blocked.
+# ============================================================================
+ACTION="${2:-}"
+[ "$ACTION" = "up" ] || exit 0
+. /usr/local/lib/vpnkit/common.sh 2>/dev/null || exit 0
+
+NMCLI=/usr/bin/nmcli
+WANTED_FILE=/run/vpnkit/wanted
+
+ctype=$($NMCLI -g connection.type connection show "${CONNECTION_UUID:-}" 2>/dev/null)
+
+if [ "$ctype" = "wireguard" ]; then
+  case "${CONNECTION_ID:-}" in
+    "$PROFILE_PREFIX"-*) /usr/local/bin/vpnkit-killswitch on "$CONNECTION_ID" >/dev/null 2>&1 ;;
+  esac
+  exit 0
+fi
+
+# Some other link came up. Is a VPN wanted but missing?
+[ -r "$WANTED_FILE" ] || exit 0
+wanted=$(head -1 "$WANTED_FILE")
+case "$wanted" in "$PROFILE_PREFIX"-*) ;; *) exit 0 ;; esac
+active=$($NMCLI -t -f NAME,TYPE connection show --active 2>/dev/null | awk -F: '$2=="wireguard"{print $1; exit}')
+if [ -z "$active" ]; then
+  nohup $NMCLI --wait 20 connection up "$wanted" >/dev/null 2>&1 &
+fi
+exit 0

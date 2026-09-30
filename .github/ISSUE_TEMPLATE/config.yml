@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem or a leak
+    url: https://github.com/ralphk-86/omarchy-proton/security/advisories/new
+    about: Privately, please, not in a public issue.

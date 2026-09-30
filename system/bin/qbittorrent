@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  /usr/local/bin/qbittorrent - protective wrapper
+#
+#  /usr/local/bin precedes /usr/bin in PATH, so typing `qbittorrent` anywhere
+#  lands here instead of on the real binary. This closes the last gap in the
+#  leak protection: a qBittorrent started by hand would otherwise run in the
+#  root namespace, on your real connection, and leak.
+#
+#  Behaviour:
+#    * already inside the VPN namespace -> exec the real binary directly
+#    * outside it                       -> re-launch inside the namespace
+#    * namespace missing or tunnel down -> REFUSE, with an explanation
+#
+#  This survives package upgrades because it does not touch the packaged binary.
+#  To deliberately bypass it (you almost never should), call the real path:
+#    /usr/bin/qbittorrent
+# ============================================================================
+set -uo pipefail
+
+. /usr/local/lib/vpnkit/common.sh   # NS, WG_IF, QBT_CONF, FALLBACK_DNS, TARGET_USER, ...
+REAL="/usr/bin/qbittorrent"
+
+# Are we already inside the VPN namespace? Compare namespace inodes - this is
+# kernel ground truth, not a guess.
+in_namespace() {
+  local mine theirs
+  mine=$(stat -Lc '%i' /proc/self/ns/net 2>/dev/null) || return 1
+  theirs=$(stat -Lc '%i' /var/run/netns/"$NS" 2>/dev/null) || return 1
+  [[ -n "$mine" && "$mine" == "$theirs" ]]
+}
+
+if in_namespace; then
+  exec "$REAL" "$@"
+fi
+
+# Outside the namespace. Refuse unless we can get inside it.
+if [[ ! -e /var/run/netns/$NS ]]; then
+  cat >&2 <<EOF
+qBittorrent was NOT started: the VPN namespace '$NS' is not running.
+
+Starting it outside the namespace would put torrent traffic on your real
+connection, so this wrapper refuses.
+
+  Start the tunnel:  sudo systemctl start qbt-netns.service
+  Then:              qbittorrent
+  Check status:      vpn-status
+EOF
+  exit 1
+fi
+
+echo "qbittorrent: entering VPN namespace '$NS'..." >&2
+exec sudo -n /usr/local/bin/qbt-launch "$@"

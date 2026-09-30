@@ -1,0 +1,363 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  vpn-verify - prove the isolation, do not assume it.
+#
+#  Every check below is an OBSERVATION, not a configuration read. The point is
+#  to catch the case where the config looks right but the kernel disagrees.
+#
+#  Exit code 0 only if every critical check passes. Run it after install, after
+#  changing the torrent config, and any time you are about to trust this with
+#  real traffic.
+#
+#  Usage: vpn-verify [--fail-closed]
+#    --fail-closed  also take the torrent tunnel down for a few seconds and
+#                   prove that nothing gets out of the namespace while it is
+#                   down. If a desktop VPN is up, take that down too and prove
+#                   the kill switch holds. Transfers and browsing stall briefly.
+# ============================================================================
+set -uo pipefail
+
+[ "$(uname -s)" = "Linux" ] || { echo "Linux only"; exit 1; }
+# shellcheck disable=SC1091
+. /usr/local/lib/vpnkit/common.sh 2>/dev/null || { echo "vpnkit not installed"; exit 1; }
+
+FAIL_CLOSED=0
+[[ "${1:-}" == "--fail-closed" ]] && FAIL_CLOSED=1
+
+# Looking inside a namespace needs root.
+SUDO=""
+[[ $EUID -ne 0 ]] && SUDO="sudo"
+nsx() { $SUDO ip netns exec "$NS" "$@"; }
+
+# Body of a URL (whitespace removed), fetched on the host or inside the
+# namespace. Empty means "could not be reached". Held in a variable only.
+host_get() { local b; b=$(curl -s --max-time "$1" "${@:2}" 2>/dev/null) || b=""; printf '%s' "${b//[[:space:]]/}"; }
+ns_get()   { local b; b=$(nsx curl -s --max-time "$1" "${@:2}" 2>/dev/null) || b=""; printf '%s' "${b//[[:space:]]/}"; }
+
+if [[ -t 1 ]]; then RED=$'\e[31m'; GRN=$'\e[32m'; YEL=$'\e[33m'; RST=$'\e[0m'; else RED=""; GRN=""; YEL=""; RST=""; fi
+pass=0; fail=0; skip=0
+ok()   { printf '  %s[PASS]%s %s\n' "$GRN" "$RST" "$*"; pass=$((pass+1)); }
+no()   { printf '  %s[FAIL]%s %s\n' "$RED" "$RST" "$*"; fail=$((fail+1)); }
+meh()  { printf '  %s[SKIP]%s %s\n' "$YEL" "$RST" "$*"; skip=$((skip+1)); }
+
+echo "vpnkit $VPNKIT_VERSION leak verification (namespace: $NS, interface: $WG_IF)"
+echo
+
+# --- 1. namespace exists ----------------------------------------------------
+echo "1. Namespace"
+NSOK=0
+if ip netns list 2>/dev/null | grep -qw "$NS"; then
+  ok "namespace '$NS' exists"; NSOK=1
+elif $SUDO test -r "$QBT_CONF"; then
+  no "namespace '$NS' does not exist - run: sudo systemctl start qbt-netns.service"
+else
+  meh "no torrent tunnel configured (put one config in $CONFIG_DIR/torrent and refresh)"
+fi
+
+if (( NSOK )); then
+
+# --- 2. only loopback and the tunnel are inside ------------------------------
+echo
+echo "2. Interfaces inside the namespace"
+IFACES=$(nsx ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1 | sort | tr '\n' ' ')
+echo "     present: $IFACES"
+UNEXPECTED=$(printf '%s\n' $IFACES | grep -vxE "lo|$WG_IF" || true)
+if [[ -z "$UNEXPECTED" ]]; then
+  ok "only lo and $WG_IF are present - no other path out exists"
+else
+  no "unexpected interface(s) inside the namespace: $UNEXPECTED"
+fi
+
+# --- 3. the default route goes through the tunnel ---------------------------
+echo
+echo "3. Routing"
+DEFRT=$(nsx ip route show default 2>/dev/null)
+if [[ -z "$DEFRT" ]]; then
+  no "no default route - the tunnel is down (this fails CLOSED, which is safe, but nothing will work)"
+elif grep -q "$WG_IF" <<<"$DEFRT"; then
+  ok "default route is via $WG_IF: ${DEFRT}"
+else
+  no "default route does NOT use $WG_IF: $DEFRT"
+fi
+
+# --- 4. handshake is recent -------------------------------------------------
+echo
+echo "4. WireGuard handshake"
+# Make sure there is traffic to handshake over before judging it.
+ns_get 8 -4 "$IP_LOOKUP_URL" >/dev/null
+HS=$(nsx wg show "$WG_IF" latest-handshakes 2>/dev/null | awk '{print $2}' | head -1)
+if [[ -n "${HS:-}" && "$HS" -gt 0 ]]; then
+  AGE=$(( $(date +%s) - HS ))
+  if (( AGE < HANDSHAKE_MAX_AGE )); then ok "last handshake ${AGE}s ago"
+  else no "last handshake ${AGE}s ago - stale (threshold ${HANDSHAKE_MAX_AGE}s)"; fi
+else
+  no "no handshake recorded - the peer is not responding"
+fi
+
+# --- 5. the exit IP is NOT your real IP -------------------------------------
+echo
+echo "5. Exit IP (the check that actually matters)"
+REAL=$(host_get 6 -4 "$IP_LOOKUP_URL")
+NSIP=$(ns_get 8 -4 "$IP_LOOKUP_URL")
+echo "     host exit IP      : ${REAL:-<none>}"
+echo "     namespace exit IP : ${NSIP:-<none>}"
+if [[ -z "$NSIP" ]]; then
+  no "namespace could not reach the internet"
+elif [[ -z "$REAL" ]]; then
+  meh "could not determine the host IP to compare against"
+elif [[ "$NSIP" == "$REAL" ]]; then
+  no "NAMESPACE EXIT IP EQUALS THE HOST'S - traffic is NOT going through its own tunnel"
+else
+  ok "namespace exits from a different IP than the host"
+fi
+
+# --- 6. DNS resolves inside, and only via the tunnel ------------------------
+echo
+echo "6. DNS"
+if nsx getent hosts example.com >/dev/null 2>&1; then
+  ok "DNS resolves inside the namespace"
+else
+  no "DNS does not resolve inside the namespace"
+fi
+NSRES=$(nsx cat /etc/resolv.conf 2>/dev/null | awk '/^nameserver/{print $2}' | tr '\n' ' ')
+if [[ -n "$NSRES" && "$NSRES" != *127.0.0.53* ]]; then
+  ok "namespace resolver is $NSRES(in-tunnel), not the host's stub"
+else
+  no "namespace still reads the host's resolv.conf (${NSRES:-empty})"
+fi
+# The nsswitch check is the subtle one: if the `resolve` NSS module is present,
+# glibc talks to systemd-resolved over a UNIX socket, which a network namespace
+# does NOT isolate - so lookups would exit via the real interface.
+if nsx test -f /etc/nsswitch.conf && ! nsx grep -qE '^hosts:.*(resolve|mdns)' /etc/nsswitch.conf; then
+  ok "namespace nsswitch.conf excludes resolve/mdns (no systemd-resolved bypass)"
+else
+  no "namespace nsswitch.conf still lists resolve/mdns - DNS can leak via systemd-resolved"
+fi
+
+# --- 7. in-namespace firewall ----------------------------------------------
+echo
+echo "7. In-namespace firewall"
+if nsx nft list table inet qbtguard 2>/dev/null | grep -q 'policy drop'; then
+  ok "default-deny ruleset is loaded"
+else
+  no "qbtguard default-deny ruleset is not loaded"
+fi
+
+fi   # NSOK
+
+# --- 8. IPv6 ----------------------------------------------------------------
+echo
+echo "8. IPv6"
+if [[ "${DISABLE_IPV6:-1}" == "1" ]]; then
+  if ip -6 addr show scope global 2>/dev/null | grep -q inet6; then
+    no "the host still has a global IPv6 address: $(ip -6 -br addr show scope global | awk '{print $1}' | tr '\n' ' ')"
+  else
+    ok "no global IPv6 address on the host"
+  fi
+  if [[ -n "$(host_get 4 -6 https://ifconfig.co)" ]]; then
+    no "the host can still reach the internet over IPv6"
+  else
+    ok "the host cannot reach the internet over IPv6"
+  fi
+  if (( NSOK )); then
+    if nsx ip -6 addr show scope global 2>/dev/null | grep -q inet6; then
+      no "the namespace has a global IPv6 address despite DISABLE_IPV6=1"
+    else
+      ok "no global IPv6 address inside the namespace"
+    fi
+  fi
+else
+  meh "DISABLE_IPV6=0 - the host keeps IPv6; with a VPN selected the kill switch blocks it"
+fi
+
+# --- 9. any running qBittorrent is actually inside --------------------------
+echo
+echo "9. Running qBittorrent"
+NS_INODE=$($SUDO stat -Lc '%i' "/var/run/netns/$NS" 2>/dev/null || echo none)
+FOUND=0
+for pid in $(pgrep -x qbittorrent 2>/dev/null); do
+  FOUND=1
+  PNS=$($SUDO stat -Lc '%i' "/proc/$pid/ns/net" 2>/dev/null)
+  if [[ "$PNS" == "$NS_INODE" ]]; then ok "pid $pid is inside the namespace (inode match)"
+  else no "pid $pid is running OUTSIDE the namespace - kill it now"; fi
+done
+(( FOUND )) || meh "qBittorrent is not running"
+
+# Only qBittorrent is routed into the namespace. Its interface, $WG_IF, exists
+# only in there, so another torrent app started from the desktop cannot use it:
+# it goes out over the regular connection (your own IP on Normal connection).
+OTHERS=$($SUDO bash -c '. /usr/local/lib/vpnkit/common.sh; vpnkit_outside_clients "$1"' _ "${NS_INODE/none/}")
+if [[ -n "$OTHERS" ]]; then
+  for c in $OTHERS; do no "$c is running outside the torrent tunnel - it uses your regular connection, not $WG_IF"; done
+else
+  ok "no other torrent app is running outside the tunnel"
+fi
+
+# --- 9b. qBittorrent's own settings and launchers --------------------------
+echo
+echo "9b. qBittorrent settings and launchers"
+QCONF="$TARGET_HOME/.config/qBittorrent/qBittorrent.conf"
+if [[ -r "$QCONF" ]]; then
+  QIF=$(sed -nE 's/^Session\\Interface=(.*)$/\1/p' "$QCONF" | head -1)
+  if [[ -z "$QIF" || "$QIF" == "$WG_IF" ]]; then
+    ok "qBittorrent's network interface is ${QIF:-any} (inside the namespace only $WG_IF exists)"
+  else
+    # Not a leak: that interface does not exist in the namespace, so
+    # qBittorrent cannot connect at all. Worth saying why nothing downloads.
+    printf '  [WARN] qBittorrent is bound to "%s", which does not exist inside the namespace: it will not connect. Set it to %s or "Any interface".\n' "$QIF" "$WG_IF"
+  fi
+else
+  meh "no qBittorrent settings yet"
+fi
+# A launcher that calls the real binary by its full path skips the wrapper and
+# starts qBittorrent outside the namespace: that is a leak path.
+BYPASS=$(grep -lsE '(^|[[:space:]=])/usr/bin/qbittorrent([[:space:]]|$)' \
+  "$TARGET_HOME"/.config/autostart/*.desktop "$TARGET_HOME"/.local/share/applications/*.desktop \
+  "$TARGET_HOME"/.config/hypr/*.lua "$TARGET_HOME"/.config/hypr/*.conf 2>/dev/null | tr '\n' ' ')
+if [[ -z "$BYPASS" ]]; then
+  ok "no launcher or autostart entry calls /usr/bin/qbittorrent directly"
+else
+  no "these start the real qBittorrent outside the namespace: $BYPASS(use /usr/local/bin/qbittorrent)"
+fi
+# The launcher that menus and magnet links use: the user's copy if there is
+# one, else the packaged one. A bare "qbittorrent" is fine: /usr/local/bin
+# comes first in PATH, so it reaches the wrapper.
+DESK="$TARGET_HOME/.local/share/applications/org.qbittorrent.qBittorrent.desktop"
+[[ -r "$DESK" ]] || DESK=/usr/share/applications/org.qbittorrent.qBittorrent.desktop
+if [[ -r "$DESK" ]]; then
+  EXEC=$(sed -nE 's/^Exec=([^ ]+).*/\1/p' "$DESK" | head -1)
+  case "$EXEC" in
+    qbittorrent|/usr/local/bin/qbittorrent) ok "the qBittorrent launcher and magnet links reach the wrapper ($EXEC)" ;;
+    *) no "the qBittorrent launcher runs $EXEC, which skips the wrapper: $DESK" ;;
+  esac
+fi
+
+# --- 10. the PATH wrapper is in front --------------------------------------
+echo
+echo "10. Protective wrapper"
+W=$(PATH="/usr/local/sbin:/usr/local/bin:/usr/bin" command -v qbittorrent 2>/dev/null || true)
+if [[ "$W" == "/usr/local/bin/qbittorrent" ]]; then
+  ok "'qbittorrent' resolves to the protective wrapper"
+elif [[ -n "$W" ]]; then
+  no "'qbittorrent' resolves to $W, not /usr/local/bin/qbittorrent - a hand-started client would leak"
+else
+  meh "qbittorrent is not installed"
+fi
+
+# --- 11. desktop profiles ---------------------------------------------------
+echo
+echo "11. Desktop VPN profiles"
+PROFS=$(nmcli -t -f NAME,TYPE,AUTOCONNECT connection show 2>/dev/null | awk -F: -v p="$PROFILE_PREFIX-" '$2=="wireguard" && index($1,p)==1')
+if [[ -z "$PROFS" ]]; then
+  meh "no desktop VPN profiles imported"
+else
+  if grep -q ':yes$' <<<"$PROFS"; then
+    no "a desktop profile has autoconnect on: $(grep ':yes$' <<<"$PROFS" | cut -d: -f1 | tr '\n' ' ')"
+  else
+    ok "no desktop profile connects on its own ($(cut -d: -f1 <<<"$PROFS" | tr '\n' ' '))"
+  fi
+fi
+NSMARK=$( (( NSOK )) && nsx wg show "$WG_IF" fwmark 2>/dev/null)
+if (( NSOK )) && [[ -n "${VPN_FWMARK:-}" && "$VPN_FWMARK" != "0" ]]; then
+  if [[ "$NSMARK" == "$(printf '0x%x' "$VPN_FWMARK")" ]]; then
+    ok "torrent tunnel carries fwmark $NSMARK, so a desktop VPN never wraps it"
+  else
+    no "torrent tunnel fwmark is '${NSMARK:-off}', expected $(printf '0x%x' "$VPN_FWMARK")"
+  fi
+fi
+
+ACTIVE=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | awk -F: -v p="$PROFILE_PREFIX-" '$2=="wireguard" && index($1,p)==1 {print $1; exit}')
+if [[ -n "$ACTIVE" ]]; then
+  echo
+  echo "12. Desktop VPN is up ($ACTIVE)"
+  DEV=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p')
+  if [[ "$DEV" == "$ACTIVE" ]]; then ok "ordinary traffic leaves through $DEV"
+  else no "ordinary traffic leaves through ${DEV:-?}, not $ACTIVE"; fi
+  for cidr in ${BYPASS_CIDRS:-}; do
+    BDEV=$(ip -4 route get "${cidr%/*}" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p')
+    if [[ -n "$BDEV" && "$BDEV" != "$ACTIVE" ]]; then ok "${cidr%/*} bypasses the VPN via $BDEV"
+    else no "${cidr%/*} is routed into the VPN - SSH allowlists will reject it"; fi
+  done
+  if $SUDO nft list table inet vpnkit_kill >/dev/null 2>&1; then
+    ok "kill switch is armed"
+  else
+    no "kill switch is NOT armed - reconnect with: vpn-toggle $ACTIVE"
+  fi
+  # A socket bound straight to the physical interface ignores the VPN's
+  # routing table. Only the kill switch stops it.
+  PHYS=$(ip -4 route show default table main | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+  if [[ -n "$PHYS" ]]; then
+    if [[ -n "$(host_get 5 -4 --interface "$PHYS" "$IP_LOOKUP_URL")" ]]; then
+      no "a program bound to $PHYS can reach the internet around the VPN"
+    else
+      ok "a program bound to $PHYS cannot go around the VPN"
+    fi
+  fi
+  DNSLINKS=$(resolvectl dns 2>/dev/null | awk -F': ' '$2 != "" {print $1}' | sed -n 's/.*(\(.*\))/\1/p' | tr '\n' ' ')
+  if [[ "$DNSLINKS" == "$ACTIVE " ]]; then ok "DNS servers are configured on the VPN link only"
+  else no "DNS servers are configured on: ${DNSLINKS:-none} (expected only $ACTIVE)"; fi
+fi
+
+# --- fail-closed proof ------------------------------------------------------
+if (( FAIL_CLOSED && NSOK )); then
+  echo
+  echo "13. Fail-closed (tunnel taken down on purpose)"
+  restore() {
+    nsx ip link set "$WG_IF" up 2>/dev/null
+    nsx ip route replace default dev "$WG_IF" 2>/dev/null
+  }
+  trap restore EXIT
+  nsx ip link set "$WG_IF" down
+  if [[ -n "$(ns_get 5 -4 https://1.1.1.1)" ]]; then
+    no "the namespace reached the internet with the tunnel DOWN"
+  else
+    ok "no connectivity with the tunnel down"
+  fi
+  if nsx getent hosts example.org >/dev/null 2>&1; then
+    no "DNS still resolved with the tunnel DOWN"
+  else
+    ok "no DNS with the tunnel down"
+  fi
+  restore
+  trap - EXIT
+  if [[ -n "$(ns_get 10 -4 "$IP_LOOKUP_URL")" ]]; then
+    ok "tunnel restored and working again"
+  else
+    no "tunnel did not come back - run: sudo systemctl restart qbt-netns.service"
+  fi
+fi
+
+# --- desktop fail-closed proof ---------------------------------------------
+if (( FAIL_CLOSED )) && [[ -n "$ACTIVE" ]]; then
+  echo
+  echo "14. Desktop kill switch (VPN profile taken down on purpose)"
+  nmcli connection down "$ACTIVE" >/dev/null 2>&1
+  sleep 1
+  if [[ -n "$(host_get 5 -4 "$IP_LOOKUP_URL")" ]]; then
+    no "regular traffic reached the internet with the VPN down - the kill switch is not holding"
+  else
+    ok "no regular traffic gets out with the VPN down"
+  fi
+  $SUDO resolvectl flush-caches 2>/dev/null   # an answer from the cache proves nothing
+  if getent hosts example.org >/dev/null 2>&1; then
+    no "DNS still resolved with the VPN down"
+  else
+    ok "no DNS with the VPN down"
+  fi
+  nmcli connection up "$ACTIVE" >/dev/null 2>&1
+  sleep 2
+  if [[ -n "$(host_get 10 -4 "$IP_LOOKUP_URL")" ]]; then
+    ok "VPN reconnected and working again"
+  else
+    no "VPN did not come back - run: vpn-toggle $ACTIVE (or vpn-toggle off)"
+  fi
+fi
+
+echo
+printf 'Result: %s%d passed%s, %s%d failed%s, %d skipped\n' "$GRN" "$pass" "$RST" \
+  "$( ((fail)) && printf '%s' "$RED" || printf '%s' "$GRN" )" "$fail" "$RST" "$skip"
+if (( fail )); then
+  echo "${RED}Do not torrent until the failures above are resolved.${RST}"
+  exit 1
+fi
+echo "${GRN}Isolation verified.${RST}"

@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  vpn-status - report VPN state, including the current external IPs.
+#
+#  Two independent things are reported:
+#    1. Desktop VPN  - the connection you switch between off and your servers
+#    2. qBittorrent  - the isolated always-on namespace tunnel (separate)
+#
+#  The external IP lookup is cached (default 30s) so the bar widget polling
+#  every few seconds doesn't hammer the network or the lookup service.
+#
+#  Usage: vpn-status [--json | --short] [--refresh]
+#    --refresh   force a new external-IP lookup
+# ============================================================================
+set -uo pipefail
+
+. /usr/local/lib/vpnkit/common.sh
+CACHE="${XDG_RUNTIME_DIR:-/tmp}/vpnkit-external-ip"
+
+MODE="text"; FORCE=0
+for arg in "$@"; do
+  case "$arg" in
+    --json)    MODE="json" ;;
+    --short)   MODE="short" ;;
+    --refresh) FORCE=1 ;;
+  esac
+done
+
+# --- desktop VPN ------------------------------------------------------------
+wg_profiles() {  # wg_profiles [--active]: this kit's NetworkManager profiles
+  nmcli -t -f NAME,TYPE connection show "$@" 2>/dev/null \
+    | awk -F: -v p="$PROFILE_PREFIX-" '$2=="wireguard" && index($1,p)==1 {print $1}' | sort
+}
+ACTIVE=$(wg_profiles --active | head -1)
+PROFILES=$(wg_profiles)
+IFACE=$(vpnkit_find_vpn_iface || true)
+# The interface regular traffic leaves by: the VPN's, else the default route's.
+REGULAR_IF="$IFACE"
+[[ -n "$REGULAR_IF" ]] || REGULAR_IF=$(ip -4 route show default 2>/dev/null \
+  | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')
+
+# --- torrent namespace and kill switch --------------------------------------
+# Looking inside a namespace and at the firewall needs root, so this goes
+# through the read-only helper permitted by /etc/sudoers.d/99-vpnkit. When it
+# is not available the answer is "unknown", never a guess.
+NS_JSON=$(sudo -n /usr/local/bin/qbt-netns-status 2>/dev/null)
+KNOWN=true
+jq -e 'type == "object"' >/dev/null 2>&1 <<<"$NS_JSON" || { NS_JSON='{}'; KNOWN=false; }
+
+# BLOCKED: a server was picked (kill switch armed) but no tunnel is up, so
+# regular traffic is being rejected rather than sent from the home IP.
+BLOCKED=false
+[[ -z "$ACTIVE$IFACE" && "$(jq -r '.killswitch == true' <<<"$NS_JSON")" == "true" ]] && BLOCKED=true
+
+# --- external IP (cached) ---------------------------------------------------
+# The cached address belongs to one connection state. When that state changes
+# (VPN up, down, another server, blocked) the old address is wrong, so drop it.
+STATE="${ACTIVE:-off}:$BLOCKED"
+[[ "$(cat "$CACHE.state" 2>/dev/null)" == "$STATE" ]] || rm -f "$CACHE"
+printf '%s' "$STATE" > "$CACHE.state"
+
+cache_age() { echo $(( $(date +%s) - $(stat -c %Y "$CACHE" 2>/dev/null || echo 0) )); }
+
+EXT_IP="unknown"
+if [[ "$BLOCKED" == true ]]; then
+  EXT_IP="blocked"
+elif (( FORCE == 0 )) && [[ -r "$CACHE" ]] && (( $(cache_age) < IP_CACHE_TTL )); then
+  read -r EXT_IP < "$CACHE"
+else
+  # A failed lookup means "unknown": never serve an address from before.
+  looked_up=$(vpnkit_fetch "$IP_LOOKUP_URL" 4)
+  rm -f "$CACHE"
+  if [[ "$looked_up" =~ ^[0-9.]+$ ]]; then
+    EXT_IP="$looked_up"
+    printf '%s\n' "$EXT_IP" > "$CACHE"
+  fi
+fi
+
+# --- configs waiting in the drop folder -------------------------------------
+INBOX=$(find "$CONFIG_DIR" "$CONFIG_DIR/torrent" -maxdepth 1 -type f -name '*.conf' 2>/dev/null | wc -l)
+
+# --- the AI agent the panel can hand a problem to (Omarchy's default) -------
+AGENT=$(omarchy-default-agent 2>/dev/null | head -1) || AGENT=""
+
+STATUS=$(jq -cn \
+  --arg conn "$ACTIVE" --arg iface "$IFACE" --arg ip "$EXT_IP" --arg profiles "$PROFILES" \
+  --arg version "$VPNKIT_VERSION" --arg folder "$CONFIG_DIR" --arg prefix "$PROFILE_PREFIX" --arg agent "$AGENT" --arg torrent_if "$WG_IF" --arg torrent_ns "$NS" --arg regular_if "$REGULAR_IF" \
+  --argjson inbox "$INBOX" --argjson blocked "$BLOCKED" --argjson known "$KNOWN" --argjson ns "$NS_JSON" '
+  {
+    desktop_vpn:     ($conn != "" or $iface != ""),
+    server:          ($conn | ltrimstr($prefix + "-")),
+    conn:            $conn,
+    iface:           $iface,
+    external_ip:     $ip,
+    killswitch:      ($ns.killswitch == true),
+    wanted:          ($ns.wanted // ""),
+    blocked:         $blocked,
+    version:         $version,
+    folder:          $folder,
+    inbox:           $inbox,
+    prefix:          $prefix,
+    ai_agent:        $agent,
+    torrent_if:      $torrent_if,
+    torrent_ns:      $torrent_ns,
+    regular_if:      $regular_if,
+    qbt_known:       $known,
+    qbt_configured:  ($ns.configured // $ns.exists // false),
+    qbt_ns:          ($ns.exists == true),
+    qbt_tunnel:      ($ns.tunnel_up == true),
+    qbt_ip:          ($ns.exit_ip // ""),
+    qbt_server:      ($ns.server // ""),
+    qbt_conn:        ($ns.conn // ""),
+    qbt_running:     ($ns.qbt_running == true),
+    qbt_protected:   ($ns.qbt_protected == true),
+    qbt_unprotected: ($ns.qbt_unprotected == true),
+    other_torrent_apps: (($ns.other_clients // "") | split(",") | map(select(. != ""))),
+    profiles:        ($profiles | split("\n") | map(select(. != "")))
+  }')
+
+case "$MODE" in
+  json)
+    printf '%s\n' "$STATUS"
+    ;;
+  short)
+    jq -r 'if .blocked then "BLOCKED"
+           elif .desktop_vpn then "\(.server) · \(.external_ip)"
+           else "OFF · \(.external_ip)" end' <<<"$STATUS"
+    ;;
+  *)
+    jq -r '
+      (if .blocked then
+         "Desktop VPN        : BLOCKED - \(if .wanted != "" then .wanted else "the VPN" end) is down and the kill switch is holding\n" +
+         "                     pick a server, or run: vpn-toggle off"
+       elif .desktop_vpn and .killswitch then
+         "Desktop VPN        : CONNECTED · \(.server) (\(.iface)) · kill switch on"
+       elif .desktop_vpn then
+         "Desktop VPN        : CONNECTED · \(.server) · *** KILL SWITCH OFF *** (re-select it: vpn-toggle \(.conn))"
+       else
+         "Desktop VPN        : off (normal connection)"
+       end),
+      "External IP        : \(.external_ip)",
+      "",
+      (if .qbt_known and (.qbt_configured | not) then
+         "qBittorrent tunnel : not set up - put one config in \(.folder)/torrent and run vpn-import"
+       elif .qbt_tunnel then
+         "qBittorrent tunnel : UP · \(if .qbt_server != "" then .qbt_server + " · " else "" end)exit \(.qbt_ip) · interface \(.torrent_if) (inside \(.torrent_ns))"
+       else
+         "qBittorrent tunnel : DOWN - no network (blocked)"
+       end),
+      (if .qbt_unprotected then "qBittorrent app    : *** RUNNING OUTSIDE THE VPN - STOP IT NOW ***"
+       elif .qbt_protected then "qBittorrent app    : running, VERIFIED inside the VPN namespace"
+       elif .qbt_running then   "qBittorrent app    : running, namespace state unknown"
+       else                     "qBittorrent app    : not running" end),
+      (if (.other_torrent_apps | length) > 0 then
+         "Other torrent apps : \(.other_torrent_apps | join(", ")) - NOT in the torrent tunnel, they use your regular connection"
+       else empty end),
+      (if .inbox > 0 then "Waiting in the folder: \(.inbox) config(s) - run vpn-import" else empty end)
+    ' <<<"$STATUS"
+    ;;
+esac

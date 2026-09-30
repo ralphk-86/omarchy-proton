@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Tear down the qBittorrent VPN namespace. Deleting the namespace destroys the
+# WireGuard interface inside it, so nothing is left behind.
+set -euo pipefail
+. /usr/local/lib/vpnkit/common.sh   # NS, WG_IF, QBT_CONF, FALLBACK_DNS, TARGET_USER, ...
+ip netns del "$NS" 2>/dev/null || true
+ip link del "$WG_IF" 2>/dev/null || true
+echo "[qbt-netns] namespace $NS torn down"

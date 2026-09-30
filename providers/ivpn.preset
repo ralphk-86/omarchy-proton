@@ -1,0 +1,20 @@
+# IVPN preset.
+#
+# Config source: the IVPN client's "WireGuard details" pane, or the account
+# area at ivpn.net once you have added a public key.
+#
+# Quirks that matter here:
+#   * In-tunnel resolver is 172.16.0.1 (10.0.254.1 on older accounts - check
+#     the DNS line of a downloaded config and set FALLBACK_DNS to match).
+#   * AntiTracker uses a different resolver address; if you enable it, put that
+#     address here instead.
+#   * Address is issued from 172.16.0.0/12, not the 10.x range other providers
+#     use. Nothing in this kit assumes a particular range, but it is worth
+#     knowing when you are reading `ip -n qbtvpn addr`.
+
+PROFILE_PREFIX="ivpn"
+FALLBACK_DNS="172.16.0.1"
+
+SERVER_TAG_REGEX=''
+
+LINK_DNS_OVER_TLS="no"

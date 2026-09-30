@@ -1,0 +1,25 @@
+# Generic WireGuard preset - the fallback for any provider without a preset,
+# and for self-hosted WireGuard servers.
+#
+# Assumes nothing beyond a standard wg-quick-style config with [Interface] and
+# [Peer] sections. If your config has a `DNS =` line, it is used verbatim and
+# FALLBACK_DNS is never consulted.
+#
+# SELF-HOSTED NOTE: if you point this at your own server, the namespace still
+# fails closed exactly the same way - but "no leak" then only means "no traffic
+# outside your own box". The privacy properties are whatever your server's
+# upstream provides.
+
+PROFILE_PREFIX="vpn"
+
+# Only used when the config carries no DNS line of its own. 1.1.1.1 is a safe
+# default that at least resolves; replace it with your tunnel's resolver if the
+# provider has one, otherwise DNS exits via the tunnel to a public resolver.
+FALLBACK_DNS="1.1.1.1"
+
+
+# Proton-style server comments ("# SE#21") are recognised; every other file is
+# named after its file name.
+SERVER_TAG_REGEX='^#[[:space:]]*[A-Z]{2}(-[A-Z0-9]+)*#[0-9]+'
+
+LINK_DNS_OVER_TLS="no"

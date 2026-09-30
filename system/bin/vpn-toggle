@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  vpn-toggle - switch the DESKTOP VPN between off and a specific server.
+#
+#  This only affects your desktop connection. The qBittorrent namespace tunnel
+#  is completely separate and stays up regardless, so switching or turning the
+#  VPN off here never exposes torrent traffic.
+#
+#  Picking a server arms the kill switch (see vpnkit-killswitch): from then on
+#  regular traffic leaves through a tunnel or not at all, until `vpn-toggle off`.
+#
+#  Usage:
+#    vpn-toggle off        disconnect (your real IP, needed for SSH allowlists)
+#    vpn-toggle ca         connect Canada
+#    vpn-toggle se         connect Sweden   (if a profile exists)
+#    vpn-toggle list       show available server profiles
+#    vpn-toggle status     show current state
+#    vpn-toggle            toggle off <-> first available server
+# ============================================================================
+set -uo pipefail
+
+. /usr/local/lib/vpnkit/common.sh
+
+list_profiles() {
+  nmcli -t -f NAME,TYPE connection show 2>/dev/null \
+    | awk -F: -v p="$PROFILE_PREFIX-" '$2=="wireguard" && index($1,p)==1 {print $1}' | sort
+}
+
+active_profile() {
+  nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
+    | awk -F: -v p="$PROFILE_PREFIX-" '$2=="wireguard" && index($1,p)==1 {print $1; exit}'
+}
+
+disconnect_all() {
+  local a tries=0
+  a=$(active_profile)
+  while [[ -n "$a" && $tries -lt 5 ]]; do
+    echo "Disconnecting: $a"
+    nmcli connection down "$a" >/dev/null 2>&1
+    sleep 1
+    a=$(active_profile); tries=$((tries + 1))
+  done
+}
+
+internet_ok() { vpnkit_online; }
+
+notify() {
+  command -v notify-send >/dev/null 2>&1 && notify-send -a "VPN" "$1" "${2:-}" 2>/dev/null || true
+}
+
+connect_to() {  # connect_to <name or substring>
+  local want="$1" match
+  match=$(list_profiles | grep -ixF -- "$want" | head -1)
+  [[ -z "$match" ]] && match=$(list_profiles | grep -iF -- "$want" | head -1)
+  if [[ -z "$match" ]]; then
+    echo "No VPN profile matching '$want'."
+    echo "Available:"; list_profiles | sed 's/^/  /'
+    echo
+    echo "To add another server: put its WireGuard config into"
+    echo "  $CONFIG_DIR"
+    echo "and press Refresh in the VPN panel (or run: vpn-import)."
+    return 1
+  fi
+  if [[ "$(head -1 /etc/vpnkit/torrent-server 2>/dev/null)" == "$match" ]]; then
+    echo "$match carries the torrent tunnel. One config cannot be used twice at the same time:"
+    echo "pick another server, or choose a different server for torrents first."
+    return 1
+  fi
+  # Arm the kill switch BEFORE touching any connection. From here on regular
+  # traffic can only leave through a tunnel, including while servers are being
+  # switched. It is not optional: if it cannot be armed, nothing connects.
+  if ! sudo -n /usr/local/bin/vpnkit-killswitch on "$match" >/dev/null 2>&1; then
+    echo "The kill switch could not be armed - not connecting."
+    echo "Run the plugin's install.sh again."
+    notify "VPN not connected" "The kill switch could not be armed."
+    return 1
+  fi
+  disconnect_all
+  echo "Connecting: $match"
+  if ! nmcli connection up "$match"; then
+    echo
+    echo "$match did not come up. Regular traffic is BLOCKED by the kill switch."
+    echo "Pick another server, or run:  vpn-toggle off"
+    notify "VPN connection failed" "$match did not come up. Traffic is blocked until you pick another server or the normal connection."
+    /usr/local/bin/vpn-status --refresh >/dev/null 2>&1
+    return 1
+  fi
+  # A WireGuard link comes "up" even when the server never answers, and then
+  # every packet goes nowhere. Check that the internet actually answers.
+  if ! internet_ok; then
+    echo "$match is not answering. Regular traffic stays BLOCKED by the kill switch."
+    echo "Pick another server, or run:  vpn-toggle off"
+    notify "VPN server not answering" "$match is up but silent. Traffic is blocked until you pick another server or the normal connection."
+    /usr/local/bin/vpn-status --refresh >/dev/null 2>&1
+    return 1
+  fi
+  /usr/local/bin/vpn-status --refresh
+}
+
+case "${1:-toggle}" in
+  off|down|disconnect)
+    disconnect_all
+    # Only this command ever removes the kill switch.
+    sudo -n /usr/local/bin/vpnkit-killswitch off >/dev/null 2>&1 || true
+    sleep 1
+    /usr/local/bin/vpn-status --refresh
+    ;;
+  list|ls)
+    echo "Available desktop VPN profiles:"
+    list_profiles | sed 's/^/  /'
+    echo
+    echo "Used for torrents (not selectable for regular traffic while it is):"
+    echo "  $(head -1 /etc/vpnkit/torrent-server 2>/dev/null || echo "none")"
+    ;;
+  status)
+    exec /usr/local/bin/vpn-status
+    ;;
+  toggle|"")
+    if [[ -n "$(active_profile)" || -r /run/vpnkit/wanted ]]; then exec "$0" off
+    else
+      first=$(list_profiles | head -1)
+      [[ -z "$first" ]] && { echo "No VPN profiles configured."; exit 1; }
+      exec "$0" "$first"
+    fi
+    ;;
+  *)
+    connect_to "$1"
+    ;;
+esac

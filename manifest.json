@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.ralphk-86.omarchy-proton",
+  "name": "Omarchy Proton",
+  "version": "0.3.0",
+  "author": "ralphk-86",
+  "license": "MIT",
+  "description": "Proton VPN over WireGuard in the bar. Your regular traffic uses either your own IP (\"Normal connection\") or a Proton server's IP, whichever you pick in the panel, with a kill switch while a server is selected. qBittorrent always goes through its own separate tunnel. Drop .conf files into a folder and press Refresh. Unofficial.",
+  "repository": "https://github.com/ralphk-86/omarchy-proton",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "VpnWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Omarchy Proton",
+    "description": "Shows the external IP of your regular traffic (your own, or the selected server's) and of the torrent tunnel. Left-click opens the panel: pick a server or Normal connection, import configs, check for leaks. Right-click toggles the VPN.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 5,
+      "showIps": true
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 2,
+        "max": 300,
+        "step": 1,
+        "defaultValue": 5
+      },
+      {
+        "key": "showIps",
+        "type": "boolean",
+        "label": "Show IP addresses in the bar",
+        "description": "Off shows only the status icons.",
+        "defaultValue": true
+      }
+    ]
+  }
+}

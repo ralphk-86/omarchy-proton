@@ -1,0 +1,23 @@
+# Mullvad preset.
+#
+# Config source: mullvad.net -> Account -> WireGuard configuration -> generate
+# a key, then download per-server .conf files (or a whole-country zip).
+#
+# Quirks that matter here:
+#   * In-tunnel resolver is 10.64.0.1. Mullvad also offers ad/tracker-blocking
+#     resolvers on 10.64.0.2-10.64.0.6 - set FALLBACK_DNS to one of those if
+#     you want filtering inside the namespace.
+#   * Downloaded files are named like mullvad-se-mma-wg-001.conf, and there is
+#     no server comment inside the [Peer] block, so the tag is derived from the
+#     FILENAME instead.
+#   * Multiple configs may share one key. Unlike Proton, running the same key
+#     in two places does not tear the tunnel down - but the exit IP is then
+#     shared, so prefer a separate key for the torrent namespace anyway.
+
+PROFILE_PREFIX="mullvad"
+FALLBACK_DNS="10.64.0.1"
+
+# No in-config server comment; fall back to the filename.
+SERVER_TAG_REGEX=''
+
+LINK_DNS_OVER_TLS="no"

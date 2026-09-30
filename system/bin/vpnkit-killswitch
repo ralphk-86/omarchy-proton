@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  vpnkit-killswitch - the desktop VPN's kill switch.
+#
+#  While it is ON, the only traffic allowed out of this machine is:
+#    * through a desktop VPN interface (<prefix>-*)
+#    * WireGuard's own encrypted packets (they carry VPN_FWMARK), which is what
+#      keeps the desktop tunnel and the torrent tunnel themselves alive
+#    * the BYPASS_CIDRS (servers that must see the home IP, e.g. SSH allowlists)
+#    * the local network and DHCP, so the link itself keeps working (but never
+#      DNS: that goes through a tunnel or nowhere)
+#    * loopback, and Tailscale if it is installed
+#  Everything else is rejected. So when a VPN is selected and its tunnel is
+#  down, gone, or being switched, regular traffic is BLOCKED rather than sent
+#  from the home IP. It also stops a program that binds itself to the ethernet
+#  interface from going around the tunnel.
+#
+#  It is armed by `vpn-toggle <server>` (and by the NetworkManager dispatcher
+#  whenever a desktop profile comes up) and removed ONLY by `vpn-toggle off`.
+#  It lives in the kernel, not on disk: after a reboot the machine is back on
+#  the normal connection, which is the chosen default.
+#
+#  Usage: vpnkit-killswitch on <profile> | off | status
+#  Allowed passwordless via /etc/sudoers.d/99-vpnkit. Arguments are validated
+#  here; nothing from the caller reaches a shell or a ruleset unchecked.
+# ============================================================================
+set -euo pipefail
+. /usr/local/lib/vpnkit/common.sh
+
+TABLE="vpnkit_kill"
+STATE_DIR="/run/vpnkit"
+WANTED="$STATE_DIR/wanted"
+
+[[ $EUID -eq 0 ]] || { echo "vpnkit-killswitch: must run as root" >&2; exit 2; }
+
+csv() { local out="" x; for x in "$@"; do out+="${out:+, }$x"; done; printf '%s' "$out"; }
+
+case "${1:-}" in
+  on)
+    profile="${2:-}"
+    [[ "$profile" =~ ^[A-Za-z0-9._-]{1,15}$ ]] || { echo "vpnkit-killswitch: bad profile name" >&2; exit 2; }
+    [[ "$profile" == "$PROFILE_PREFIX"-* ]] || { echo "vpnkit-killswitch: not a desktop VPN profile" >&2; exit 2; }
+
+    # Only well-formed IPv4 CIDRs from the config ever reach the ruleset.
+    bypass=(); lan=()
+    for c in ${BYPASS_CIDRS:-}; do
+      [[ "$c" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}(/[0-9]{1,2})?$ ]] && bypass+=("$c")
+    done
+    if [[ "${KILLSWITCH_ALLOW_LAN:-1}" == "1" ]]; then
+      for c in ${LAN_CIDRS:-}; do
+        [[ "$c" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}(/[0-9]{1,2})?$ ]] && lan+=("$c")
+      done
+    fi
+
+    {
+      # "add then delete then define" replaces the table atomically: there is
+      # no moment where the old rules are gone and the new ones not yet loaded.
+      echo "table inet $TABLE"
+      echo "delete table inet $TABLE"
+      echo "table inet $TABLE {"
+      echo "  chain output {"
+      echo "    type filter hook output priority filter; policy drop;"
+      echo "    oifname \"lo\" accept"
+      echo "    oifname \"${PROFILE_PREFIX}-*\" accept"
+      echo "    meta mark ${VPN_FWMARK} accept"
+      # DNS never leaves outside a tunnel, not even to a resolver on the LAN
+      # (a home router would forward the question to the ISP).
+      echo "    meta l4proto { tcp, udp } th dport { 53, 853 } counter reject with icmpx type admin-prohibited"
+      (( ${#bypass[@]} )) && echo "    ip daddr { $(csv "${bypass[@]}") } accept"
+      (( ${#lan[@]} ))    && echo "    ip daddr { $(csv "${lan[@]}") } accept"
+      echo "    udp sport 68 udp dport 67 accept"
+      echo "    oifname \"tailscale0\" accept"
+      echo "    meta mark & 0x00ff0000 == 0x00080000 accept"
+      echo "    counter reject with icmpx type admin-prohibited"
+      echo "  }"
+      echo "}"
+    } | nft -f -
+
+    install -d -m 755 "$STATE_DIR"
+    printf '%s\n' "$profile" > "$WANTED"
+    chmod 644 "$WANTED"
+    echo "kill switch on ($profile)"
+    ;;
+  off)
+    nft delete table inet "$TABLE" 2>/dev/null || true
+    rm -f "$WANTED"
+    echo "kill switch off"
+    ;;
+  status)
+    if nft list table inet "$TABLE" >/dev/null 2>&1; then
+      echo "on ${WANTED:+$(cat "$WANTED" 2>/dev/null)}"
+    else
+      echo "off"
+    fi
+    ;;
+  *)
+    echo "usage: vpnkit-killswitch on <profile> | off | status" >&2
+    exit 2
+    ;;
+esac

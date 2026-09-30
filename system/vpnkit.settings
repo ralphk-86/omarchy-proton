@@ -1,0 +1,58 @@
+# ============================================================================
+#  /etc/vpnkit/vpnkit.conf - settings for omarchy-proton.
+#
+#  Sourced by every vpnkit script. It contains NO SECRETS - only names, paths
+#  and switches - and is world-readable by design. Private keys live only in
+#  /etc/wireguard/*.conf and /etc/NetworkManager/system-connections/, mode
+#  0600, root-owned.
+#
+#  SYNTAX: plain shell, because it is sourced. After changing it, run the
+#  plugin's install.sh again (or reboot) so everything picks it up.
+#  The installer never overwrites this file.
+# ============================================================================
+
+# Provider preset layered underneath these settings (/etc/vpnkit/providers/):
+#   proton  generic  mullvad  ivpn  airvpn  windscribe
+# It sets the profile name prefix and the in-tunnel DNS fallback. Change it
+# BEFORE importing servers: existing servers keep the prefix they were
+# imported with.
+VPNKIT_PROVIDER="proton"
+
+# The desktop user: owner of the drop folder and the user qBittorrent runs as.
+# Filled in by the installer.
+TARGET_USER=""
+
+# The drop folder. Default: ~/Documents/WireGuard of TARGET_USER.
+#CONFIG_DIR="/home/you/Documents/WireGuard"
+
+# Addresses that must keep using the normal connection while a desktop VPN is
+# up, space separated, e.g. a server whose SSH is firewalled to your home IP.
+# They are baked into each server when it is imported, so re-import (delete the
+# server in the panel, drop its config in again) after changing this.
+BYPASS_CIDRS=""
+
+# The kill switch is always on while a server is selected: regular traffic
+# leaves through a tunnel or not at all, until you choose "Normal connection".
+# It has no off setting.
+#
+# While it is on, still allow the local network (router, printers,
+# other machines at home). DNS is blocked outside a tunnel either way.
+KILLSWITCH_ALLOW_LAN=1
+#LAN_CIDRS="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 224.0.0.0/4 255.255.255.255/32"
+
+# 1: IPv6 off on every real interface (loopback keeps ::1). The tunnels carry
+# IPv4 only, so a live IPv6 stack is a way around them. With 0 the host keeps
+# IPv6 while no VPN is selected; the kill switch still blocks it when one is.
+DISABLE_IPV6=1
+
+# Where the external-IP lookup goes (any URL returning a bare IP), and how
+# long an answer is cached, in seconds.
+IP_LOOKUP_URL="https://ifconfig.me/ip"
+IP_CACHE_TTL=30
+
+# ---- torrent tunnel (rarely changed) ---------------------------------------
+#NS="qbtvpn"                 # network namespace name
+#WG_IF="pqbt0"               # WireGuard interface inside it
+#QBT_CONF="/etc/wireguard/vpnkit-torrent.conf"
+#VPN_FWMARK=51820            # shared by every tunnel; keeps them from nesting
+#HANDSHAKE_MAX_AGE=240       # seconds before the torrent tunnel counts as down

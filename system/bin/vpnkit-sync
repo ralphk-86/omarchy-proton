@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  vpnkit-sync - import WireGuard configs from the drop folder.
+#
+#  The drop folder (CONFIG_DIR, default ~/Documents/WireGuard) is an inbox:
+#
+#    <folder>/*.conf           each becomes a server
+#    <folder>/torrent/*.conf   the same, and the first one is also chosen as the
+#                              torrent server (a shortcut; any server can be
+#                              chosen for torrents later from the panel)
+#
+#  A config holds a private key, so an imported file is removed from the folder.
+#  The installed copies are root-only (/etc/wireguard and NetworkManager's
+#  system-connections). A file that cannot be imported stays where it is and is
+#  reported with the reason.
+#
+#  Every server can carry regular traffic or torrents, one or the other at a
+#  time: a WireGuard config is one key, and one key in two tunnels at once
+#  makes the provider drop both.
+#
+#  Usage:
+#    vpnkit-sync [sync]          import everything waiting, print a JSON summary
+#    vpnkit-sync torrent <name>  use this server for the torrent tunnel
+#    vpnkit-sync remove <name>   delete a server
+#
+#  Allowed passwordless via /etc/sudoers.d/99-vpnkit. It takes no paths from
+#  the caller: the folder comes from /etc/vpnkit/vpnkit.conf, and files are
+#  read with the desktop user's own permissions, never root's.
+# ============================================================================
+set -uo pipefail
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"
+. /usr/local/lib/vpnkit/common.sh
+
+[[ $EUID -eq 0 ]] || { echo "vpnkit-sync: must run as root" >&2; exit 2; }
+
+as_user() { runuser -u "$TARGET_USER" -- "$@"; }
+
+IMPORTED=(); SKIPPED=(); TORRENT=""; NOTE=""
+skip() { SKIPPED+=("$(jq -cn --arg f "$1" --arg r "$2" '{file:$f, reason:$r}')"); }
+
+summary() {
+  local imp skp
+  imp=$(printf '%s\n' "${IMPORTED[@]:-}" | jq -R . | jq -cs 'map(select(. != ""))')
+  skp=$(printf '%s\n' "${SKIPPED[@]:-}" | jq -cs '.')
+  jq -cn --argjson i "$imp" --argjson s "$skp" --arg t "$TORRENT" --arg n "$NOTE" --arg d "$CONFIG_DIR" \
+    '{imported:$i, torrent:$t, skipped:$s, note:$n, folder:$d}'
+}
+
+# Copy a file out of the user's folder using the USER's permissions, so a
+# symlink planted there can never make root read something the user cannot.
+fetch() {  # fetch <src> <dest>
+  local size
+  size=$(as_user stat -c %s -- "$1" 2>/dev/null) || return 1
+  (( size > 0 && size < 65536 )) || return 1
+  as_user cat -- "$1" > "$2" 2>/dev/null
+}
+
+discard() {  # remove an imported file from the folder, as the user
+  as_user shred -u -- "$1" 2>/dev/null || as_user rm -f -- "$1" 2>/dev/null
+}
+
+ensure_folder() {
+  as_user install -d -m 700 "$CONFIG_DIR" "$CONFIG_DIR/torrent" 2>/dev/null || return 1
+  if ! as_user test -e "$CONFIG_DIR/README.txt"; then
+    as_user tee "$CONFIG_DIR/README.txt" >/dev/null <<EOF
+WireGuard configs for the Omarchy VPN widget
+============================================
+
+Put WireGuard .conf files here, then press "Refresh servers" in the VPN panel.
+(Or use "Import from files" in the panel to pick configs from any folder.)
+
+  this folder      every .conf becomes a server
+  torrent/         the same, and a config put here is also chosen for the
+                   torrent tunnel (qBittorrent's only way to the internet)
+
+In the panel you choose which server carries your regular traffic and which
+one carries torrents. One server cannot do both at the same time: most
+providers allow one connection per config, so download at least two.
+
+Imported files are removed from this folder on purpose: they contain a
+private key. The installed copies are readable by root only. To remove a
+server, use the trash icon next to it in the VPN panel.
+
+Where to get configs:
+  Proton VPN   account.protonvpn.com > Downloads > WireGuard configuration
+               (platform: GNU/Linux; pick a P2P server for torrent/)
+  Mullvad      mullvad.net > Account > WireGuard configuration
+  IVPN         ivpn.net > Account > WireGuard
+  other        any standard WireGuard .conf works
+EOF
+  fi
+}
+
+do_sync() {
+  ensure_folder || { NOTE="cannot create $CONFIG_DIR"; summary; exit 1; }
+  local work f base tmp out
+  WORK=$(mktemp -d); chmod 700 "$WORK"; work="$WORK"
+  trap 'rm -rf "$WORK"' EXIT
+
+  # --- desktop servers -----------------------------------------------------
+  while IFS= read -r -d '' f; do
+    base=$(basename "$f")
+    tmp="$work/$base"
+    if ! fetch "$f" "$tmp"; then skip "$base" "cannot read the file, or it is not a config"; continue; fi
+    if out=$(/usr/local/bin/vpnkit-import "$tmp" 2>&1); then
+      IMPORTED+=("$(sed -n 's/^imported: //p' <<<"$out" | head -1)")
+      discard "$f"
+    else
+      out=$(head -1 <<<"$out" | sed 's/^[a-zA-Z]*: *//')
+      skip "$base" "${out//"$tmp"/$base}"
+    fi
+    rm -f "$tmp"
+  done < <(as_user find "$CONFIG_DIR" -maxdepth 1 -type f -name '*.conf' -print0 2>/dev/null | sort -z)
+
+  # --- torrent/ subfolder: imported the same way, then chosen for torrents --
+  local first=""
+  while IFS= read -r -d '' f; do
+    base="torrent/$(basename "$f")"
+    tmp="$work/$(basename "$f")"
+    if ! fetch "$f" "$tmp"; then skip "$base" "cannot read the file, or it is not a config"; continue; fi
+    if out=$(/usr/local/bin/vpnkit-import "$tmp" 2>&1); then
+      out=$(sed -n 's/^imported: //p' <<<"$out" | head -1)
+      IMPORTED+=("$out"); [[ -z "$first" ]] && first="$out"
+      discard "$f"
+    else
+      out=$(head -1 <<<"$out" | sed 's/^[a-zA-Z]*: *//')
+      skip "$base" "${out//"$tmp"/$base}"
+    fi
+    rm -f "$tmp"
+  done < <(as_user find "$CONFIG_DIR/torrent" -maxdepth 1 -type f -name '*.conf' -print0 2>/dev/null | sort -z)
+  if [[ -n "$first" ]]; then
+    if out=$(select_torrent "$first" 2>&1); then TORRENT="$first"
+    else skip "torrent/" "imported $first, but could not use it for torrents: ${out#vpnkit-sync: }"; fi
+  fi
+  summary
+}
+
+TORRENT_FILE=/etc/vpnkit/torrent-server
+
+valid_name() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,15}$ && "$1" == "$PROFILE_PREFIX"-* ]]; }
+in_regular_use() {  # the server carries, or is wanted for, regular traffic
+  nmcli -t -f NAME connection show --active 2>/dev/null | grep -qxF "$1" \
+    || [[ "$(head -1 /run/vpnkit/wanted 2>/dev/null)" == "$1" ]]
+}
+
+select_torrent() {  # select_torrent <server name>
+  local name="$1"
+  valid_name "$name" || { echo "vpnkit-sync: not a server name" >&2; return 2; }
+  [[ -r "/etc/wireguard/$name.conf" ]] || { echo "vpnkit-sync: no such server: $name" >&2; return 1; }
+  if in_regular_use "$name"; then
+    echo "vpnkit-sync: $name carries your regular traffic; pick another server for torrents, or switch regular traffic first" >&2
+    return 1
+  fi
+  # Rebuilding the namespace under a running qBittorrent would leave it in the
+  # old namespace, cut off and reported as outside. Ask for it to be closed.
+  if pgrep -x qbittorrent >/dev/null; then
+    echo "vpnkit-sync: close qBittorrent first, then switch its server" >&2
+    return 1
+  fi
+  install -d -m 700 /etc/wireguard
+  install -m 600 -o root -g root "/etc/wireguard/$name.conf" "$QBT_CONF"
+  printf '%s\n' "$name" > "$TORRENT_FILE"; chmod 644 "$TORRENT_FILE"
+  rm -f /run/qbt-netns-exit-ip 2>/dev/null
+  systemctl enable qbt-netns.service >/dev/null 2>&1
+  systemctl restart qbt-netns.service >/dev/null 2>&1 \
+    || { echo "vpnkit-sync: the tunnel did not start (journalctl -u qbt-netns.service)" >&2; return 1; }
+  echo "torrent: $name"
+}
+
+do_remove() {
+  local name="${1:-}"
+  valid_name "$name" || { echo "vpnkit-sync: not a server name" >&2; exit 2; }
+  nmcli -t -f NAME,TYPE connection show 2>/dev/null | grep -qxF "$name:wireguard" \
+    || { echo "vpnkit-sync: no such server: $name" >&2; exit 1; }
+  if in_regular_use "$name"; then
+    echo "vpnkit-sync: $name is in use; switch to another server or the normal connection first" >&2
+    exit 1
+  fi
+  if [[ "$(head -1 "$TORRENT_FILE" 2>/dev/null)" == "$name" ]]; then
+    echo "vpnkit-sync: $name carries the torrent tunnel; choose another torrent server first" >&2
+    exit 1
+  fi
+  nmcli connection delete "$name" >/dev/null 2>&1 || { echo "vpnkit-sync: could not delete $name" >&2; exit 1; }
+  rm -f "/etc/wireguard/$name.conf"
+  echo "removed: $name"
+}
+
+case "${1:-sync}" in
+  sync)   do_sync ;;
+  remove)  do_remove "${2:-}" ;;
+  torrent) select_torrent "${2:-}"; exit $? ;;
+  *) echo "usage: vpnkit-sync [sync] | torrent <name> | remove <name>" >&2; exit 2 ;;
+esac

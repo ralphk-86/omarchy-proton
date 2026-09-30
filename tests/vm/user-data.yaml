@@ -1,0 +1,110 @@
+#cloud-config
+# First boot of the base test VM: turn the Arch cloud image into an Omarchy
+# machine as far as a plugin's system part can tell.
+#
+#   * packages come from Omarchy's own stable mirror and its [omarchy] repo,
+#     so versions match what Omarchy users have
+#   * the `omarchy` package itself is installed (the CLI, the shell, Hyprland)
+#   * networking and the firewall are configured by Omarchy's own install
+#     scripts, run straight from /usr/share/omarchy/install
+#   * "tester" is a desktop user like the one the Omarchy installer creates
+#     (in wheel, sudo asks for a password); "admin" is the account the harness
+#     logs in with
+#
+# It is NOT a full desktop: the ~150 applications of the base list (browser,
+# office, editors) are left out, no bootloader or display manager is set up,
+# and no graphical session runs. Shell UI is tested on a real Omarchy.
+users:
+  - name: admin
+    groups: [wheel]
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - "@PUBKEY@"
+  - name: tester
+    shell: /bin/bash
+
+write_files:
+  # Stage 1 (first boot): packages. Ends with a reboot, because matching the
+  # stable mirror can replace the running kernel.
+  - path: /root/base-stage1.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -ex
+      exec > >(tee /dev/ttyS0) 2>&1
+
+      # --- Omarchy's package sources ---------------------------------------
+      echo 'Server = https://stable-mirror.omarchy.org/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+      # The keyring package has to be fetched before its keys can be trusted.
+      printf '\n[omarchy]\nSigLevel = Optional TrustAll\nServer = https://pkgs.omarchy.org/stable/$arch\n' >> /etc/pacman.conf
+      pacman -Syy --noconfirm omarchy-keyring
+      pacman-key --populate omarchy
+      sed -i '/^\[omarchy\]$/,/^Server/{/^SigLevel/d}' /etc/pacman.conf
+      # Match the stable mirror exactly, including packages the image has newer.
+      pacman -Syyuu --noconfirm
+
+      # --- Omarchy itself, plus what its base list has for network/firewall --
+      # The bootloader integration is left out: this image boots its own way,
+      # and limine's hooks would replace the initramfs hooks it relies on.
+      pacman -S --noconfirm --needed \
+        --assume-installed limine --assume-installed limine-mkinitcpio-hook \
+        --assume-installed limine-snapper-sync --assume-installed snapper \
+        omarchy networkmanager ufw ufw-docker docker
+      # Only for the simulated VPN provider in tests, not part of Omarchy:
+      pacman -S --noconfirm --needed dnsmasq python
+      systemctl disable dnsmasq.service || true
+
+      systemctl enable base-stage2.service
+      touch /etc/cloud/cloud-init.disabled
+      echo STAGE1-DONE > /dev/ttyS0
+  # Stage 2 (second boot, on the final kernel): Omarchy's own configuration
+  # steps, then power off.
+  - path: /root/base-stage2.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -ex
+      exec > >(tee /dev/ttyS0) 2>&1
+      bash /usr/share/omarchy/install/hardware/network.sh
+      systemctl enable systemd-resolved.service NetworkManager.service
+      systemctl mask NetworkManager-wait-online.service
+      ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+      rm -f /etc/systemd/network/*.network
+      # Test-only: Omarchy lets nothing in; the harness needs SSH. Added
+      # before the firewall is switched on, so it is only written down here
+      # and takes effect with the rest at the next boot.
+      ufw allow 22/tcp
+      bash /usr/share/omarchy/install/config/firewall.sh
+
+      # "tester" is set up like the user the Omarchy installer creates: in
+      # wheel, sudo with a password. The password is "tester".
+      # Named to sort before cloud-init's own file, so "admin" keeps its
+      # passwordless sudo: in sudoers the last matching rule wins.
+      echo '%wheel ALL=(ALL:ALL) ALL' > /etc/sudoers.d/10-wheel
+      chmod 440 /etc/sudoers.d/10-wheel
+      usermod -aG wheel tester
+      echo 'tester:tester' | chpasswd
+      loginctl enable-linger tester
+
+      systemctl disable base-stage2.service
+      echo BASE-READY > /dev/ttyS0
+      systemctl poweroff
+  - path: /etc/systemd/system/base-stage2.service
+    content: |
+      [Unit]
+      Description=Base VM setup, stage 2
+      After=network.target systemd-user-sessions.service
+      [Service]
+      Type=oneshot
+      ExecStart=/root/base-stage2.sh
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - [bash, /root/base-stage1.sh]
+
+power_state:
+  mode: reboot
+  timeout: 30
+  condition: true

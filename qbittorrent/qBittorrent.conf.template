@@ -1,0 +1,127 @@
+; ===========================================================================
+;  qBittorrent configuration template - omarchy-proton
+;
+;  Only the settings that matter for privacy, leak-resistance and sane
+;  torrenting are listed. Everything omitted here (window geometry, column
+;  layouts, theme) is yours to set in the GUI.
+;
+;  HOW TO USE
+;    1. Close qBittorrent. It rewrites this file on exit and will clobber you.
+;    2. Merge these keys into ~/.config/qBittorrent/qBittorrent.conf
+;       (install.sh --qbt-config does it for you, with a timestamped backup).
+;    3. Replace @WG_IF@ with the WireGuard interface name from vpnkit.conf
+;       (default pqbt0). install.sh substitutes it automatically.
+;    4. Start qBittorrent via the launcher, which enters the VPN namespace.
+;
+;  NOTE ON COMMENTS: qBittorrent strips comments when it rewrites the file.
+;  That is expected - this template is the documented copy, the live file is
+;  the working copy. Keep this one under version control, not that one.
+; ===========================================================================
+
+[BitTorrent]
+; Bind to the tunnel interface INSIDE the namespace. Belt-and-braces: the
+; namespace already has no other route out, but if the interface disappears
+; qBittorrent stops talking rather than looking for another path.
+Session\Interface=@WG_IF@
+Session\InterfaceName=@WG_IF@
+
+; Anonymous mode: no client fingerprint in the peer handshake, no user-agent
+; leak to trackers, and it forces off features that identify you.
+Session\AnonymousMode=true
+Session\AnonymousModeEnabled=true
+
+; REQUIRE encryption. Unencrypted peers are refused outright rather than
+; merely deprioritised, so nothing on the path sees plaintext piece requests.
+Session\Encryption=1
+
+; Local Service Discovery broadcasts to your LAN, which is both useless over a
+; VPN and a direct identity leak on a shared network. Off.
+Session\LSDEnabled=false
+
+; DHT and PeX stay ON: inside the namespace they can only reach the tunnel, and
+; they materially improve peer discovery. Turn DHT off only for private
+; trackers that forbid it.
+Session\DHTEnabled=true
+Session\PeXEnabled=true
+
+; Never let the router punch a hole. UPnP/NAT-PMP would ask your REAL gateway
+; to forward a port, which both fails inside the namespace and advertises you.
+Session\UPnPEnabled=false
+Session\UseUPnP=false
+
+; A fixed port is easier to reason about than a random one. If your provider
+; supports port forwarding (AirVPN, ProtonVPN paid, IVPN), set this to the
+; forwarded port - see docs/QBITTORRENT.md.
+Session\Port=51413
+Session\UseRandomPort=false
+
+; Do not exempt LAN peers from limits or from the interface binding.
+Session\IgnoreLimitsOnLAN=false
+
+; Verify tracker TLS certificates; mitigate SSRF via crafted tracker URLs.
+Session\ValidateHTTPSTrackerCertificate=true
+Session\SSRFMitigation=true
+
+; Separate incomplete/complete paths so half-written files never get picked up
+; by media scanners or seeded from the wrong directory.
+Session\DefaultSavePath=@SAVE_PATH@
+Session\TempPath=@SAVE_PATH@/incomplete
+Session\TempPathEnabled=true
+Session\Preallocation=true
+
+; Modest queue limits. Torrent clients that open thousands of connections are
+; both noisy and easy to fingerprint.
+Session\QueueingSystemEnabled=true
+Session\MaxActiveDownloads=5
+Session\MaxActiveUploads=5
+Session\MaxActiveTorrents=8
+
+[Preferences]
+; Mirrors of the above that qBittorrent reads from this section.
+Connection\Interface=@WG_IF@
+Connection\InterfaceName=@WG_IF@
+Connection\PortRangeMin=51413
+Connection\UPnP=false
+Connection\UseUPnP=false
+Advanced\AnonymousMode=true
+
+; Tracker exchange gossips your tracker list to peers. Off.
+Advanced\LtTrackerExchange=false
+
+Downloads\SavePath=@SAVE_PATH@
+Downloads\TempPath=@SAVE_PATH@/incomplete
+Downloads\TempPathEnabled=true
+Downloads\PreAllocation=true
+
+General\MinimizeToTray=true
+General\CloseToTray=true
+
+; The WebUI is OFF. If you ever enable it, note that it would bind inside the
+; namespace, so it would NOT be reachable from your desktop browser - and if
+; you "fix" that by running qBittorrent outside the namespace you have thrown
+; away the entire leak guarantee. Use the GUI instead.
+WebUI\Enabled=false
+WebUI\CSRFProtection=true
+WebUI\ClickjackingProtection=true
+WebUI\HostHeaderValidation=true
+WebUI\LocalHostAuth=true
+WebUI\SecureCookie=true
+
+[Network]
+; No proxy - the namespace IS the tunnel, a second layer would only add
+; failure modes. Hostname lookups must not bypass it either.
+Proxy\Type=-1
+Proxy\HostnameLookupEnabled=false
+PortForwardingEnabled=false
+
+[Application]
+; Small rotating log, so a long-running seedbox does not fill the disk.
+FileLogger\Enabled=true
+FileLogger\Backup=true
+FileLogger\DeleteOld=true
+FileLogger\MaxSizeBytes=66560
+FileLogger\Age=1
+FileLogger\AgeType=1
+
+[LegalNotice]
+Accepted=true

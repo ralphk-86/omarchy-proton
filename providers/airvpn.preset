@@ -1,0 +1,18 @@
+# AirVPN preset.
+#
+# Config source: airvpn.org -> Client Area -> Config Generator -> WireGuard.
+#
+# Quirks that matter here:
+#   * In-tunnel resolver is 10.128.0.1.
+#   * AirVPN's generator emits configs named like AirVPN_Sweden_UDP-1637.conf,
+#     so the tag comes from the filename.
+#   * AirVPN supports port forwarding, configured on their site rather than in
+#     the config file. If you enable it, set the forwarded port as
+#     Session\Port in qBittorrent - see docs/QBITTORRENT.md.
+
+PROFILE_PREFIX="airvpn"
+FALLBACK_DNS="10.128.0.1"
+
+SERVER_TAG_REGEX=''
+
+LINK_DNS_OVER_TLS="no"

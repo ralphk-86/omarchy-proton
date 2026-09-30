@@ -1,0 +1,55 @@
+# Changelog
+
+## 0.3.0 (2026-09-30)
+
+- **Regular traffic / Torrents** switch in the panel over one server list: pick where your
+  apps go and which server qBittorrent uses. The server used by the other tab is greyed and
+  labelled.
+- **Import from files:** the standard file dialog, for configs in any folder. The drop folder
+  stays the easiest way to add several.
+- **Notifications** when the VPN drops and the kill switch starts blocking, when the torrent
+  tunnel goes down, and if qBittorrent is found outside its tunnel.
+- The kill switch has no off setting any more: a selected server always means through the
+  tunnel or not at all. The panel says so under the tabs.
+- **Troubleshoot with AI**, the way Omarchy offers it for crashed programs: a failed leak
+  check, a dropped VPN, a torrent tunnel that is down or a stray qBittorrent raises a
+  notification that opens your default AI agent with the facts, and the panel shows a
+  *Troubleshoot with AI* row. The agent follows a shipped `diagnose-vpn` skill: read-only
+  first, asks before any change, never prints keys or weakens the kill switch.
+  `vpn-diagnose` runs it by hand.
+- A failed leak check now also sends a notification.
+- The torrent namespace's firewall is loaded before its tunnel interface exists, so there is
+  never a moment without it.
+- Clear about interfaces: the README has a table of which interface carries what, and the
+  Torrents tab says that only qBittorrent uses the torrent tunnel (`pqbt0`, inside the
+  namespace). Other torrent apps (Transmission, Deluge, qbittorrent-nox, ...) found running
+  outside the tunnel raise a warning in the bar and panel, and fail the leak check. Under the
+  tabs the panel shows the interface each kind of traffic uses (with a copy button).
+- README rewritten around the tabs, the two ways to import, and the always-on kill switch.
+
+## 0.2.0 (2026-09-30)
+
+- Any server can carry torrents: choose it under **Torrents** in the panel or with
+  `vpnkit-sync torrent <server>`. One config is never used for regular traffic and torrents at
+  the same time; the panel greys out the one in use on the other side. A config in `torrent/`
+  is imported as a server and chosen for torrents. An existing torrent config becomes a server
+  on update.
+- **Finish setup** runs in a visible Omarchy terminal.
+- The leak check covers qBittorrent's interface setting and any launcher that skips the
+  wrapper.
+- README: quick start, "What you choose", "How to use it", Tailscale, security and privacy;
+  issue and PR templates, RELEASING.md.
+- VM suite: 139 passed, 0 failed.
+
+## 0.1.0 (2026-09-30)
+
+First version, extracted from a private setup and a Fedora/KDE predecessor.
+
+- Bar widget: external IP of regular traffic and of the torrent tunnel; panel to switch server,
+  import configs, delete servers and run the leak check.
+- Drop folder (`~/Documents/WireGuard`): configs are imported on Refresh and removed from the
+  folder afterwards.
+- Kill switch for the desktop VPN, armed when a server is picked and removed only by "Normal
+  connection".
+- qBittorrent confined to a network namespace with its own WireGuard tunnel.
+- `vpn-status`, `vpn-toggle`, `vpn-import`, `vpn-verify`, `vpn-rescue` on the command line.

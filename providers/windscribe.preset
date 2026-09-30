@@ -1,0 +1,19 @@
+# Windscribe preset.
+#
+# Config source: windscribe.com -> My Account -> Config Generators -> WireGuard.
+#
+# Quirks that matter here:
+#   * In-tunnel resolver is 10.255.255.1.
+#   * Windscribe rotates the peer Endpoint more often than most providers. If a
+#     namespace tunnel that used to work goes quiet, re-download the config
+#     before debugging anything else.
+#   * The generator can emit configs with a very long AllowedIPs list rather
+#     than 0.0.0.0/0. Keep the default-route form for the torrent namespace, or
+#     traffic to unlisted ranges is simply dropped with no route.
+
+PROFILE_PREFIX="windscribe"
+FALLBACK_DNS="10.255.255.1"
+
+SERVER_TAG_REGEX=''
+
+LINK_DNS_OVER_TLS="no"

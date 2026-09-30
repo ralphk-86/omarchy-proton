@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  qbt-launch - start qBittorrent INSIDE the isolated VPN namespace.
+#
+#  Entering a network namespace requires root, so this is permitted
+#  passwordless via /etc/sudoers.d/99-vpnkit. It is written to be safe to
+#  grant:
+#
+#    * the executed binary is HARDCODED (/usr/bin/qbittorrent) - callers
+#      cannot substitute it
+#    * privileges are dropped to the desktop user with runuser BEFORE exec, so
+#      qBittorrent never runs as root
+#    * any arguments are passed only to the already-unprivileged process
+#    * it refuses to run at all if the tunnel is down (fail closed)
+#
+#  Called by /usr/local/bin/qbittorrent (the PATH wrapper) and the desktop
+#  launcher override.
+# ============================================================================
+set -euo pipefail
+
+. /usr/local/lib/vpnkit/common.sh   # NS, WG_IF, TARGET_USER, TARGET_UID, ...
+BIN="/usr/bin/qbittorrent"   # hardcoded on purpose: see the header
+
+if [[ ! -x "$BIN" ]]; then
+  echo "qbt-launch: $BIN not found" >&2
+  exit 1
+fi
+
+if ! ip netns list 2>/dev/null | grep -qw "$NS"; then
+  echo "qbt-launch: VPN namespace '$NS' is not running." >&2
+  echo "Start it with: sudo systemctl start qbt-netns.service" >&2
+  exit 1
+fi
+
+# FAIL CLOSED: refuse to launch unless the tunnel actually has a route.
+if ! ip netns exec "$NS" ip route show default 2>/dev/null | grep -q .; then
+  echo "qbt-launch: tunnel is DOWN - refusing to launch qBittorrent." >&2
+  exit 1
+fi
+
+# The GUI still works normally: a network namespace isolates networking only,
+# and the Wayland socket is a filesystem socket, not a network one. sudo keeps
+# WAYLAND_DISPLAY for this command (see the sudoers file); when it is missing
+# or stale, use the first compositor socket in the user's runtime dir. On
+# Hyprland that is wayland-1, not wayland-0.
+RUNDIR="/run/user/$TARGET_UID"
+WL="${WAYLAND_DISPLAY:-}"
+if [[ -z "$WL" || ! -S "$RUNDIR/$WL" ]]; then
+  WL=""
+  for s in "$RUNDIR"/wayland-[0-9]*; do
+    [[ -S "$s" ]] && { WL=$(basename "$s"); break; }
+  done
+fi
+
+ENVV=(
+  XDG_RUNTIME_DIR="$RUNDIR"
+  DBUS_SESSION_BUS_ADDRESS="unix:path=$RUNDIR/bus"
+  QT_QPA_PLATFORM="wayland;xcb"
+  HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+  USER="$TARGET_USER"
+  LOGNAME="$TARGET_USER"
+)
+[[ -n "$WL" ]] && ENVV+=(WAYLAND_DISPLAY="$WL")
+for v in DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE QT_QPA_PLATFORMTHEME QT_STYLE_OVERRIDE \
+         XCURSOR_THEME XCURSOR_SIZE GTK_THEME HYPRLAND_INSTANCE_SIGNATURE; do
+  [[ -n "${!v:-}" ]] && ENVV+=("$v=${!v}")
+done
+
+cd "$(getent passwd "$TARGET_USER" | cut -d: -f6)" 2>/dev/null || cd /
+exec ip netns exec "$NS" \
+  runuser -u "$TARGET_USER" -- \
+    env "${ENVV[@]}" "$BIN" "$@"

@@ -1,0 +1,20 @@
+[Unit]
+Description=Isolated WireGuard network namespace for qBittorrent (leak-proof)
+Documentation=https://github.com/ralphk-86/omarchy-proton
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/qbt-netns-up
+ExecStop=/usr/local/bin/qbt-netns-down
+# Omarchy does not wait for the network at boot (NetworkManager-wait-online is
+# masked), so the first attempt can come too early when the config names its
+# endpoint by hostname. Until it succeeds there is no namespace, and without
+# the namespace qBittorrent does not start: failing here is safe.
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

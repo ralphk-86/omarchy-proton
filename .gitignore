@@ -1,0 +1,9 @@
+# WireGuard configs hold private keys. Never commit one.
+*.conf
+!examples/*.example.conf
+*.nmconnection
+*.key
+.env
+.env.*
+.private-patterns
+__pycache__/

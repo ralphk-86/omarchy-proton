@@ -1,0 +1,22 @@
+# Proton VPN preset.
+#
+# Config source: account.protonvpn.com -> Downloads -> WireGuard configuration.
+# Each generated config carries its OWN keypair and counts as one session.
+#
+# Quirks that matter here:
+#   * In-tunnel resolver is 10.2.0.1 and speaks PLAIN DNS only. If you run
+#     DNS-over-TLS globally in strict mode, you must disable DoT on the VPN
+#     link or all name resolution breaks while connected. the importer does
+#     this automatically (connection.dns-over-tls no).
+#   * Peer sections carry a server comment like "# SE#21", which the importer
+#     turns into the profile name proton-se-21.
+#   * One session per key. Reusing a config in two places kills both tunnels.
+
+PROFILE_PREFIX="proton"
+FALLBACK_DNS="10.2.0.1"
+
+# Regex that extracts a server tag from the config's peer comment.
+SERVER_TAG_REGEX='^#[[:space:]]*[A-Z]{2}(-[A-Z0-9]+)*#[0-9]+'
+
+# Proton's in-tunnel resolver does not support DNS-over-TLS.
+LINK_DNS_OVER_TLS="no"

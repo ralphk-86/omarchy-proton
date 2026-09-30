@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""vpnkit-pick - choose WireGuard configs in the standard file dialog.
+
+Prints the chosen paths, one per line, and exits 0; exits 1 when cancelled.
+Runs as the desktop user (the VPN panel calls it); it only picks files.
+Importing them is `vpn-import <files>`.
+
+Uses GTK 4's FileDialog, which goes through the desktop portal, so it looks
+like every other file dialog on the system. GTK 4 and python-gobject are part
+of a stock Omarchy.
+"""
+import os
+import sys
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gio, GLib, Gtk  # noqa: E402
+
+picked = []
+
+
+def done(dialog, result, loop):
+    try:
+        files = dialog.open_multiple_finish(result)
+        for i in range(files.get_n_items()):
+            path = files.get_item(i).get_path()
+            if path:
+                picked.append(path)
+    except GLib.Error:
+        pass  # cancelled
+    loop.quit()
+
+
+def main():
+    Gtk.init()
+    conf = Gtk.FileFilter()
+    conf.set_name("WireGuard configs (*.conf)")
+    conf.add_pattern("*.conf")
+    filters = Gio.ListStore.new(Gtk.FileFilter)
+    filters.append(conf)
+
+    dialog = Gtk.FileDialog()
+    dialog.set_title("Choose WireGuard configs to import")
+    dialog.set_filters(filters)
+    dialog.set_default_filter(conf)
+    downloads = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD) \
+        or os.path.expanduser("~/Downloads")
+    if os.path.isdir(downloads):
+        dialog.set_initial_folder(Gio.File.new_for_path(downloads))
+
+    loop = GLib.MainLoop()
+    dialog.open_multiple(None, None, done, loop)
+    loop.run()
+
+    for path in picked:
+        print(path)
+    sys.exit(0 if picked else 1)
+
+
+if __name__ == "__main__":
+    main()

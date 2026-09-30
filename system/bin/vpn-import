@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  vpn-import - import WireGuard configs from the drop folder.
+#
+#  The same thing the Refresh row in the VPN panel does.
+#
+#  Usage:
+#     vpn-import                     import whatever is waiting in the folder
+#     vpn-import a.conf b.conf       move these into the folder first, then import
+#     vpn-import --torrent x.conf    use this config for the torrent tunnel
+#
+#  Every config is a separate session with its own key. Never use one config
+#  in two places: on most providers a duplicate drops BOTH tunnels. The torrent
+#  config in particular must be used nowhere else.
+# ============================================================================
+set -uo pipefail
+. /usr/local/lib/vpnkit/common.sh
+
+mkdir -p "$CONFIG_DIR/torrent" && chmod 700 "$CONFIG_DIR" "$CONFIG_DIR/torrent"
+
+dest="$CONFIG_DIR"
+for f in "$@"; do
+  if [[ "$f" == "--torrent" ]]; then dest="$CONFIG_DIR/torrent"; continue; fi
+  [[ -f "$f" ]] || { echo "skip: no such file: $f"; continue; }
+  mv -- "$f" "$dest/" && chmod 600 "$dest/$(basename "$f")"
+  dest="$CONFIG_DIR"
+done
+
+out=$(sudo -n /usr/local/bin/vpnkit-sync sync) || { echo "vpnkit-sync failed. Is vpnkit installed?"; exit 1; }
+jq -r '
+  (.imported[] | "imported: \(.)"),
+  (if .torrent != "" then "torrent tunnel: \(.torrent)" else empty end),
+  (.skipped[] | "skipped: \(.file): \(.reason)"),
+  (if .note != "" then .note else empty end),
+  (if (.imported|length) == 0 and .torrent == "" and (.skipped|length) == 0
+   then "Nothing new in \(.folder)" else empty end)' <<<"$out"

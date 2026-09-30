@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  qbt-netns-status - read-only status of the qBittorrent VPN namespace,
+#  AND verification that any running qBittorrent is actually inside it, and
+#  that no other known torrent app is running outside it.
+#
+#  This is the trust anchor for the bar widget. It does not assume anything:
+#  it compares the network-namespace inode of every running qbittorrent process
+#  against the inode of the VPN namespace. A process is only reported as
+#  protected if those inodes match - that is kernel ground truth, not a guess.
+#
+#  Allowed passwordless via /etc/sudoers.d/99-vpnkit.
+#  Takes no arguments, only reads state, cannot modify anything.
+# ============================================================================
+set -uo pipefail
+. /usr/local/lib/vpnkit/common.sh   # NS, WG_IF, QBT_CONF, HANDSHAKE_MAX_AGE, ...
+IPCACHE="/run/qbt-netns-exit-ip"
+IPCACHE_TTL=60
+
+exists=false; route=false; handshake=0; endpoint=""; server=""
+qbt_running=false; qbt_protected=false; qbt_unprotected=false; qbt_pids=""
+exit_ip=""
+killswitch=false; wanted=""; configured=false
+[[ -r "$QBT_CONF" ]] && configured=true
+
+# --- desktop kill switch (needs root to read, so it is reported from here) ----
+if nft list table inet vpnkit_kill >/dev/null 2>&1; then
+  killswitch=true
+  [[ -r /run/vpnkit/wanted ]] && wanted=$(head -1 /run/vpnkit/wanted | tr -cd 'A-Za-z0-9._-')
+fi
+
+if ip netns list 2>/dev/null | grep -qw "$NS"; then
+  exists=true
+  ip netns exec "$NS" ip route show default 2>/dev/null | grep -q . && route=true
+
+  hs=$(ip netns exec "$NS" wg show "$WG_IF" latest-handshakes 2>/dev/null | awk '{print $2}' | head -1)
+  [[ -n "${hs:-}" ]] && handshake="$hs"
+  endpoint=$(ip netns exec "$NS" wg show "$WG_IF" endpoints 2>/dev/null | awk '{print $2}' | head -1)
+fi
+conn=$(head -1 /etc/vpnkit/torrent-server 2>/dev/null | tr -cd 'A-Za-z0-9._-')
+if [[ -n "$conn" ]]; then server="${conn#"$PROFILE_PREFIX"-}"
+elif [[ -r "$QBT_CONF" ]]; then server=$(vpnkit_server_tag "$QBT_CONF"); fi
+
+now=$(date +%s)
+tunnel_up=false
+if [[ "$route" == true && "$handshake" -gt 0 ]] && (( now - handshake < HANDSHAKE_MAX_AGE )); then
+  tunnel_up=true
+fi
+
+# --- verify running qBittorrent processes against the namespace -------------
+# Kernel ground truth: /var/run/netns/<ns> is a bind mount of the namespace, so
+# stat gives the namespace inode, and /proc/<pid>/ns/net gives the process's.
+NS_INODE=""
+if [[ "$exists" == true ]]; then
+  NS_INODE=$(stat -Lc '%i' /var/run/netns/"$NS" 2>/dev/null)
+fi
+
+for pid in $(pgrep -x qbittorrent 2>/dev/null); do
+  qbt_running=true
+  qbt_pids="${qbt_pids:+$qbt_pids,}$pid"
+  PID_NS=$(stat -Lc '%i' /proc/"$pid"/ns/net 2>/dev/null)
+  if [[ -n "$NS_INODE" && "$PID_NS" == "$NS_INODE" ]]; then
+    qbt_protected=true
+  else
+    qbt_unprotected=true
+  fi
+done
+
+# --- other torrent apps: only qBittorrent is routed into the namespace --------
+other_clients=$(vpnkit_outside_clients "$NS_INODE" | paste -sd, -)
+
+# --- the namespace's actual exit IP (cached, this is the real proof) --------
+if [[ "$tunnel_up" == true ]]; then
+  fresh=false
+  if [[ -r "$IPCACHE" ]]; then
+    age=$(( now - $(stat -c %Y "$IPCACHE" 2>/dev/null || echo 0) ))
+    (( age < IPCACHE_TTL )) && { exit_ip=$(cat "$IPCACHE"); fresh=true; }
+  fi
+  if [[ "$fresh" == false ]]; then
+    exit_ip=$(ip netns exec "$NS" curl -4 -s --max-time 5 "$IP_LOOKUP_URL" 2>/dev/null)
+    exit_ip="${exit_ip//[[:space:]]/}"
+    # Only ever cache something that looks like an address.
+    [[ "$exit_ip" =~ ^[0-9.]+$ ]] || exit_ip=""
+    [[ -n "$exit_ip" ]] && printf '%s' "$exit_ip" > "$IPCACHE" 2>/dev/null
+  fi
+else
+  rm -f "$IPCACHE" 2>/dev/null
+fi
+
+printf '{"exists":%s,"route":%s,"tunnel_up":%s,"last_handshake":%s,"endpoint":"%s","server":"%s","exit_ip":"%s","qbt_running":%s,"qbt_protected":%s,"qbt_unprotected":%s,"qbt_pids":"%s","killswitch":%s,"wanted":"%s","configured":%s,"conn":"%s","other_clients":"%s"}\n' \
+  "$exists" "$route" "$tunnel_up" "$handshake" "$endpoint" "$server" "$exit_ip" \
+  "$qbt_running" "$qbt_protected" "$qbt_unprotected" "$qbt_pids" "$killswitch" "$wanted" "$configured" "$conn" "$other_clients"
