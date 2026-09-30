@@ -111,16 +111,14 @@ Planned listing metadata: category `System`; tags `vpn`, `security`, `bar`.
 5. Tag `vX.Y.Z`, push, then (if listed) open the marketplace "Plugin verification" issue with
    the new commit SHA.
 
-## Going public (one time, owner's decision)
+## Public repository
 
-The history was squashed to one clean commit on 2026-09-30 because the first commits carried
-personal data (a local bundle of the old history is in `~/.cache` on the owner's machine).
-GitHub can keep unreferenced old commits of a repository for a while, so before going public
-the safest path is to recreate the repository from the clean history rather than flip the
-existing one: delete it, `gh repo create ralphk-86/omarchy-proton --private --source . --push`,
-check it, then `gh repo edit ralphk-86/omarchy-proton --visibility public
---accept-visibility-change-consequences`. Then the marketplace submission. Every one of these
-steps needs the owner's explicit go-ahead in the session.
+Public since 2026-09-30. The repository was recreated from a single clean commit (the earlier
+history carried personal data; a bundle of it is kept outside the repository on the owner's
+machine). Never force-push history that predates that commit. Examples in comments and docs use
+the made-up servers from `tests/preview/status.json` (Switzerland 7, Sweden 21, ...), never a
+real one. Marketplace: listing and version updates go through the issue forms described in
+RELEASING.md; each submission needs the owner's explicit go-ahead.
 
 ## Gotchas learned the hard way
 
