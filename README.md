@@ -450,6 +450,12 @@ and never touches the machine it runs on. See [CONTRIBUTING.md](CONTRIBUTING.md)
 
 The design and most of the scripts come from a Fedora/KDE predecessor by the same author.
 
+## Author
+
+Ralph Koterwa ([@ralphk-86](https://github.com/ralphk-86)). Questions and bugs go to the
+[issue tracker](https://github.com/ralphk-86/omarchy-proton/issues); security reports as
+described in [SECURITY.md](SECURITY.md).
+
 ## License
 
 MIT, see [LICENSE](LICENSE). "Proton" and "Proton VPN" are trademarks of Proton AG; this plugin

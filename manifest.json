@@ -3,7 +3,7 @@
   "id": "io.github.ralphk-86.omarchy-proton",
   "name": "Proton VPN + Kill Switch + Torrent Tunnel",
   "version": "0.3.2",
-  "author": "ralphk-86",
+  "author": "Ralph Koterwa",
   "license": "MIT",
   "description": "Unofficial Omarchy bar widget for Proton VPN over WireGuard. Your regular traffic uses either your own IP (\"Normal connection\") or a Proton server's IP, whichever you pick in the panel, with a kill switch while a server is selected. qBittorrent always goes through its own separate tunnel. Drop .conf files into a folder and press Refresh. Not affiliated with Proton AG.",
   "repository": "https://github.com/ralphk-86/omarchy-proton",

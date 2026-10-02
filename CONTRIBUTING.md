@@ -28,8 +28,12 @@ tests/check.sh
 ```
 
 It fails on personal data. Create `.private-patterns` (gitignored) with one extended regex per
-line for the things of yours that must never be published: your name, domains, home IP,
-server addresses. The check greps the tree and the whole git history for them.
+line for the things of yours that must never be published: domains, e-mail addresses, home
+IP, server names, home paths, and your name unless you publish it as the author. Matching
+ignores case. If your surname is also your domain, match the domain and the e-mail forms
+rather than the bare word, for example `surname\.`, `[a-z0-9._%+-]surname` and
+`surname[a-z0-9._%+-]*@`, so the plain "First Surname" is allowed. The check greps the tree
+and the whole git history for them.
 
 **2. The marketplace's security scan.** The Omarchy plugin marketplace scans every submission
 statically and fails closed. Get its scanner and run it here first:
