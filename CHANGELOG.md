@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.2 (unreleased)
+
+- **One line to install.** The top of the README now has a single copy-ready line that adds
+  the widget and then runs the system setup in the same terminal:
+  `omarchy plugin add https://github.com/ralphk-86/omarchy-proton.git --enable && ~/.config/omarchy/plugins/io.github.ralphk-86.omarchy-proton/install.sh`.
+  The two-step way (add the widget, then **Finish setup** in its panel) still works and is
+  described next to it. The marketplace lists the plugin as *Manual setup* and shows no
+  install button, so the README is where people copy it from.
+- No change to the widget's behaviour or to the system part. Existing installs still see
+  **Update the system part** after updating, because the panel compares version numbers;
+  running it is harmless.
+
 ## 0.3.1 (2026-09-30)
 
 - Every HTTP body the kit reads (the external-IP lookups, some of them in root helpers) is

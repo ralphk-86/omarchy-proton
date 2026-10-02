@@ -6,6 +6,22 @@ a second always-on tunnel that qBittorrent cannot leave.
 > Unofficial. This is a community plugin, not affiliated with or endorsed by Proton AG. It
 > uses the standard WireGuard configs you download from your own Proton VPN account.
 
+**Install:** open a terminal (<kbd>Super</kbd> + <kbd>Return</kbd>), paste this line, and
+press Enter.
+
+```sh
+omarchy plugin add https://github.com/ralphk-86/omarchy-proton.git --enable && ~/.config/omarchy/plugins/io.github.ralphk-86.omarchy-proton/install.sh
+```
+
+The first half adds the widget to your bar; Omarchy asks you to confirm and where to put it.
+The second half sets up the system part: it installs any missing packages from the official
+repositories and asks for your password once. It does not connect anything. Then
+[add your servers](#add-servers).
+
+Rather read the code before anything runs as root? Run only the first half. The widget then
+shows a wrench, and **Finish setup** in its panel does the second half when you are ready.
+Details: [Install](#install).
+
 <p>
   <img src="preview.png" alt="The panel on the Regular traffic tab" width="49%">
   <img src="screenshots/torrents.png" alt="The panel on the Torrents tab" width="49%">
@@ -24,16 +40,16 @@ a second always-on tunnel that qBittorrent cannot leave.
 
 ## Quick start
 
-1. `omarchy plugin add https://github.com/ralphk-86/omarchy-proton.git --enable`
-2. Click the wrench in the bar, choose **Finish setup**, type your password in the terminal
-   that opens. Missing packages are installed for you.
-3. Download at least two WireGuard configs from account.protonvpn.com (Downloads > WireGuard
+1. Paste the install line from the top of this page into a terminal and type your password
+   when asked. Missing packages are installed for you. (If you added only the widget: click
+   the wrench in the bar and choose **Finish setup**.)
+2. Download at least two WireGuard configs from account.protonvpn.com (Downloads > WireGuard
    configuration, platform GNU/Linux): one for your regular traffic, one for torrents.
-4. Import them. Either put them all in `~/Documents/WireGuard` and choose **Refresh servers**
+3. Import them. Either put them all in `~/Documents/WireGuard` and choose **Refresh servers**
    (easiest for several), or choose **Import from files** and pick them wherever they are.
-5. On the **Regular traffic** tab pick a server; the kill switch turns on with it. On the
+4. On the **Regular traffic** tab pick a server; the kill switch turns on with it. On the
    **Torrents** tab pick the server for qBittorrent. **Normal connection** turns the VPN off.
-6. Choose **Check for leaks** once. It should say that every check passed.
+5. Choose **Check for leaks** once. It should say that every check passed.
 
 Details for each step follow below.
 
@@ -144,20 +160,33 @@ copies your IP, `esc` closes.
 
 ## Install
 
+Installing takes two steps. Omarchy's plugin installer never runs anything as root, so the
+system part (the kill switch, the torrent namespace and a handful of commands in
+`/usr/local/bin`) is a separate, visible step, the same pattern Omarchy's own plugins use.
+
+**Both at once**, in a terminal, as your normal user (not with `sudo`):
+
+```sh
+omarchy plugin add https://github.com/ralphk-86/omarchy-proton.git --enable && ~/.config/omarchy/plugins/io.github.ralphk-86.omarchy-proton/install.sh
+```
+
+**Or one at a time.** First the widget:
+
 ```sh
 omarchy plugin add https://github.com/ralphk-86/omarchy-proton.git --enable
 ```
 
-The widget appears on the right of the bar showing a wrench. Open it and choose **Finish
-setup**. An Omarchy terminal opens, installs any missing packages, asks for your password
-once, and installs the system part: the kill switch, the torrent namespace and a handful of
-commands in `/usr/local/bin`. Omarchy's plugin installer never runs anything as root, which is
-why this is a separate, visible step (the same pattern Omarchy's own plugins use). The
-command it runs is:
+It appears on the right of the bar showing a wrench. Open it and choose **Finish setup**. An
+Omarchy terminal opens, installs any missing packages, asks for your password once, and
+installs the system part. That button runs the same command as the second half of the line
+above:
 
 ```sh
 ~/.config/omarchy/plugins/io.github.ralphk-86.omarchy-proton/install.sh
 ```
+
+The Omarchy plugin marketplace lists this plugin as *Manual setup*, because of this second
+step, so it shows no install button there; use the line above.
 
 Setup does not connect anything and does not change your normal route or DNS. It checks that
 the internet answers before and after, and undoes its network changes if it stopped.
@@ -345,8 +374,9 @@ status helper only reads.
 omarchy plugin update io.github.ralphk-86.omarchy-proton
 ```
 
-updates the widget. If the system part changed, the panel shows **Update the system part**;
-click it (one password prompt).
+updates the widget. After every new version the panel shows **Update the system part**; click
+it (one password prompt). It is safe to run again when only the widget or the documentation
+changed.
 
 If the widget still looks like the old version after an update, run `omarchy restart shell`:
 the shell does not always reload a plugin's code in place.

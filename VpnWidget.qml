@@ -18,7 +18,7 @@ Panel {
   moduleName: "io.github.ralphk-86.omarchy-proton"
 
   // Must match VERSION and manifest.json (tests/check.sh verifies it).
-  readonly property string kitVersion: "0.3.1"
+  readonly property string kitVersion: "0.3.2"
 
   readonly property string statusCmd: "/usr/local/bin/vpn-status"
   readonly property string toggleCmd: "/usr/local/bin/vpn-toggle"
