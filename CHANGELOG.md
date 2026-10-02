@@ -13,7 +13,13 @@
   the description now starts with "Unofficial". The
   plugin id (`io.github.ralphk-86.omarchy-proton`), the repository and every command stay the
   same, so updates work as before.
-- No change to the widget's behaviour or to the system part. Existing installs still see
+- **A lock in the bar.** A closed lock means your regular traffic goes through a server with
+  the kill switch on; the globe means your own connection. A VPN up without its kill switch
+  shows an open lock in the urgent colour. The panel header uses the same icon.
+- **Show IP addresses in the bar** is now a row at the bottom of the panel, with a switch.
+  Off leaves only the lock (or globe) and the torrent icon. The setting is saved in the
+  widget's entry in `shell.json`, as before.
+- No change to the system part. Existing installs still see
   **Update the system part** after updating, because the panel compares version numbers;
   running it is harmless. VM suite: 153 of 153.
 

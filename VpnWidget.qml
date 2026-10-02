@@ -58,6 +58,10 @@ Panel {
   readonly property string gFilePlus: String.fromCodePoint(0xF0752)
   readonly property string gRobot: String.fromCodePoint(0xF06A9)
   readonly property string gLan: String.fromCodePoint(0xF0317)
+  readonly property string gLock: String.fromCodePoint(0xF033E)
+  readonly property string gUnlock: String.fromCodePoint(0xF033F)
+  readonly property string gEye: String.fromCodePoint(0xF0208)
+  readonly property string gEyeOff: String.fromCodePoint(0xF0209)
 
   // --- state from vpn-status -------------------------------------------------
   property bool loaded: false
@@ -135,12 +139,20 @@ Panel {
     return isFinite(n) ? Math.max(2, Math.min(300, n)) : 5
   }
 
+  // The state of regular traffic as one glyph, in the bar and the panel header:
+  // a closed lock = through a server with the kill switch armed; an open lock =
+  // a VPN is up without its kill switch (shown urgent); the globe = your own
+  // connection, no VPN; the alert = blocked by the kill switch. The globe is
+  // never left out, so with the IPs hidden the widget stays a visible target.
+  readonly property string regularGlyph: !installed ? gWrench
+    : (blocked ? gAlert : (desktopVpn ? (killswitch ? gLock : gUnlock) : gDirect))
+
   readonly property string regularText: blocked ? "blocked" : (externalIp !== "" ? externalIp : "...")
   readonly property string torrentText: qbtTunnel ? (qbtIp !== "" ? qbtIp : "...") : (qbtKnown ? "down" : "?")
   readonly property string barText: {
     if (!installed) return gWrench
     if (danger) return gAlert + " TORRENT LEAK"
-    var regular = blocked ? gAlert : (desktopVpn ? gVpn : gDirect)
+    var regular = regularGlyph
     var showTorrent = qbtConfigured || qbtRunning
     if (vertical || !showIps) return showTorrent ? regular + " " + gTorrent : regular
     return regular + " " + regularText + (showTorrent ? "  " + gTorrent + " " + torrentText : "")
@@ -186,7 +198,9 @@ Panel {
   // "Troubleshoot with AI" appears only when something is wrong.
   readonly property bool showAi: installed && (verifyFailures.length > 0 || blocked || torrentDown || danger)
   readonly property int aiIndex: showAi ? verifyIndex + 1 : -1
-  readonly property int rowCount: installed ? (showAi ? aiIndex + 1 : verifyIndex + 1) : 1
+  // The bar display setting is the last row.
+  readonly property int ipsIndex: installed ? (showAi ? aiIndex + 1 : verifyIndex + 1) : -1
+  readonly property int rowCount: installed ? ipsIndex + 1 : 1
 
   // "proton-se-21" -> "Sweden 21", "vpn-us-ny-45" -> "USA NY 45"
   function prettyName(name) {
@@ -463,6 +477,20 @@ Panel {
     Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(text) + " | wl-copy"])
   }
 
+  // Show or hide the IP addresses in the bar. Written to this widget's own
+  // shell.json entry through the shell's plugin API, the same way Omarchy's
+  // own panels keep their settings; the CLI is the fallback.
+  function setShowIps(on) {
+    var entry = { id: moduleName }
+    for (var key in settings) if (key !== "id") entry[key] = settings[key]
+    entry.showIps = on === true
+    settings = entry
+    if (bar && bar.shell && typeof bar.shell.updateEntryInline === "function")
+      bar.shell.updateEntryInline(moduleName, entry)
+    else
+      Quickshell.execDetached(["omarchy", "bar", "set", moduleName, "showIps", on ? "true" : "false", "--json"])
+  }
+
   function setCursor(index) {
     cursorActive = true
     cursorIndex = Math.max(0, Math.min(rowCount - 1, index))
@@ -482,6 +510,7 @@ Panel {
     else if (cursorIndex === launchIndex) launchQbt()
     else if (cursorIndex === verifyIndex) verify()
     else if (cursorIndex === aiIndex) troubleshoot()
+    else if (cursorIndex === ipsIndex) setShowIps(!showIps)
     else if (cursorIndex >= firstServerIndex && cursorIndex < refreshIndex) pickServer(profiles[cursorIndex - firstServerIndex])
   }
 
@@ -703,7 +732,7 @@ Panel {
             iconComponent: Component {
               Text {
                 textFormat: Text.PlainText
-                text: !vpn.installed ? vpn.gWrench : (vpn.blocked ? vpn.gAlert : (vpn.desktopVpn ? vpn.gVpn : vpn.gDirect))
+                text: vpn.regularGlyph
                 color: vpn.blocked || vpn.unguarded ? vpn.urgent : vpn.foreground
                 font.family: vpn.fontFamily
                 font.pixelSize: Style.font.display
@@ -992,6 +1021,16 @@ Panel {
                 : "Choose an AI agent first (Omarchy menu: Setup, Defaults, Agent)"
               onChosen: vpn.troubleshoot()
             }
+
+            ChoiceRow {
+              width: parent.width
+              rowIndex: vpn.ipsIndex
+              glyph: vpn.showIps ? vpn.gEye : vpn.gEyeOff
+              title: "Show IP addresses in the bar"
+              subtitle: vpn.showIps ? "The bar shows the lock and both addresses" : "The bar shows only the lock or globe and the torrent icon"
+              toggle: vpn.showIps ? 1 : 0
+              onChosen: vpn.setShowIps(!vpn.showIps)
+            }
           }
         }
       }
@@ -1067,6 +1106,9 @@ Panel {
     property string actionGlyph: ""
     property string actionTooltip: ""
     property bool actionUrgent: false
+    // -1: no switch; 0 / 1: an on/off switch at the right edge (display only,
+    // the row takes the click).
+    property int toggle: -1
 
     signal chosen()
     signal actionChosen()
@@ -1081,7 +1123,7 @@ Panel {
     Row {
       id: choiceInner
       anchors.left: parent.left
-      anchors.right: actionButton.visible ? actionButton.left : parent.right
+      anchors.right: actionButton.visible ? actionButton.left : (toggleSwitch.visible ? toggleSwitch.left : parent.right)
       anchors.verticalCenter: parent.verticalCenter
       anchors.leftMargin: Style.space(6)
       anchors.rightMargin: Style.space(6)
@@ -1136,6 +1178,17 @@ Panel {
           elide: Text.ElideRight
         }
       }
+    }
+
+    ToggleSwitch {
+      id: toggleSwitch
+      visible: choice.toggle >= 0
+      checked: choice.toggle === 1
+      interactive: false
+      foreground: vpn.foreground
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(6)
+      anchors.verticalCenter: parent.verticalCenter
     }
 
     MouseArea {

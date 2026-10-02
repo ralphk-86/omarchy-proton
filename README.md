@@ -91,12 +91,21 @@ other providers (Mullvad, IVPN, AirVPN, Windscribe, self-hosted) work too; set
 
 ## How to use it
 
-**The bar** shows two addresses: the external IP of your regular traffic (a globe when that is
-your own, a VPN mark when it is a server's) and, after the download arrow, the exit IP of the
-torrent tunnel. It turns the urgent colour when traffic is blocked by the kill switch, when the
-torrent tunnel is down, or when a VPN is up without its kill switch, and flashes
-`TORRENT LEAK` if a qBittorrent process is ever found outside its tunnel.
-Left-click opens the panel, right-click toggles the VPN, middle-click refreshes.
+**The bar** shows, at a glance, how your regular traffic leaves:
+
+| Icon | Meaning |
+|---|---|
+| closed lock | through a server, kill switch on |
+| globe | your own connection, no VPN |
+| alert, urgent colour | blocked by the kill switch (the server is down) |
+| open lock, urgent colour | a VPN is up without its kill switch; pick the server again |
+| wrench | setup or an update of the system part is needed |
+
+Next to it is the external IP of your regular traffic and, after the download arrow, the exit
+IP of the torrent tunnel. **Show IP addresses in the bar**, the last row of the panel, hides
+the addresses and leaves only the icons. The bar also turns the urgent colour when the torrent
+tunnel is down, and flashes `TORRENT LEAK` if a qBittorrent process is ever found outside its
+tunnel. Left-click opens the panel, right-click toggles the VPN, middle-click refreshes.
 
 **The panel**, top to bottom:
 
@@ -112,6 +121,7 @@ Left-click opens the panel, right-click toggles the VPN, middle-click refreshes.
 | Open qBittorrent | starts it inside the tunnel (it refuses when the tunnel is down) |
 | Check for leaks | runs about thirty checks on the live system and shows the result; any failing check is listed in red underneath |
 | Troubleshoot with AI | appears only when something is wrong (a failed check, a dropped VPN, the torrent tunnel down); see below |
+| Show IP addresses in the bar | on: the lock or globe plus both addresses; off: only the icons. Saved in the widget's settings |
 
 **Notifications** appear when the VPN drops and the kill switch starts blocking, when the
 torrent tunnel goes down, if a qBittorrent process is ever found outside its tunnel, and when
@@ -335,7 +345,9 @@ the VPN; if it does, please open an issue.
 
 ## Settings
 
-Widget settings (Omarchy's plugin settings): refresh interval, show IPs in the bar.
+Widget settings (Omarchy's plugin settings): refresh interval, and whether the bar shows the IP
+addresses (also switchable from the panel's last row, or with
+`omarchy bar set io.github.ralphk-86.omarchy-proton showIps false --json`).
 
 Everything else is in `/etc/vpnkit/vpnkit.conf`, which the installer never overwrites:
 

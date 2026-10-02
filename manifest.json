@@ -37,7 +37,7 @@
         "key": "showIps",
         "type": "boolean",
         "label": "Show IP addresses in the bar",
-        "description": "Off shows only the status icons.",
+        "description": "Off shows only the icons: a lock while a server is in use, a globe on your own connection, and the torrent icon. Also switchable from the last row of the panel.",
         "defaultValue": true
       }
     ]
