@@ -36,7 +36,8 @@
 - README: what the leak check looks at, the reports folder, and a note on WebRTC.
 - The system part changed (`vpn-verify`, `vpn-check`, `vpn-status`, `vpn-diagnose`, the
   shared library, the uninstaller): after updating, click **Update the system part**. Until
-  then the panel's check works the old way.
+  then the panel's check works the old way. VM suite: 181 of 181 (the leak check inside it: 32 passed,
+  0 failed, 2 skipped).
 
 ## 0.3.1 (2026-09-30)
 
