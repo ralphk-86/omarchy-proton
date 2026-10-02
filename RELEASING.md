@@ -4,7 +4,9 @@
    `CHANGELOG.md` entry. `tests/check.sh` checks that they agree.
 2. Run the three test layers (see CONTRIBUTING.md). Note the VM suite's result line in the
    changelog entry.
-3. If the panel looks different, regenerate `preview.png` in screenshot mode (CONTRIBUTING.md).
+3. If the panel looks different, regenerate the screenshots in screenshot mode
+   (`screenshots/regular.png`, `screenshots/torrents.png`) and the landscape `preview.png`
+   with `tests/preview/make-preview.sh` (CONTRIBUTING.md).
 4. Commit, tag `vX.Y.Z`, push the tag.
 5. If the plugin is listed in the Omarchy plugin marketplace, open a "Plugin verification"
    issue there with the new commit SHA, so the listing moves to the new version. The listing's

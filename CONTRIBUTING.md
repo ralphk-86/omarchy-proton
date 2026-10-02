@@ -93,3 +93,13 @@ omarchy bar set $ID demoStatusFile ""    # back to real data
 
 `tests/preview/status-torrents.json` is the same state with the Torrents tab open
 (`demo_tab`), and `status-normal.json` shows the normal connection, for the bar-states image.
+
+The README shows both tabs in full (`screenshots/regular.png`, `screenshots/torrents.png`,
+cropped to 1144x1340 at the top right of a 2560x1440 screen). The root `preview.png` is a
+1600x900 landscape image for the marketplace, whose cards crop it to between 2:1 and 3:1
+around the centre. `tests/preview/make-preview.sh` builds it: `capture` takes one
+screenshot-mode capture without any key presses (an empty workspace is needed, default 8),
+`compose` cuts the bar, the panel header and the leak-check row out of it and sets them next to
+the title and feature lines, then writes the two card simulations to check the crop. It needs
+ImageMagick 7 and the JetBrainsMono Nerd Font; the crop coordinates assume a 2560x1440 screen
+at scale 1.25 and can be set in the environment.
