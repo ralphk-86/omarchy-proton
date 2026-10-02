@@ -90,3 +90,6 @@ omarchy bar set $ID demoStatusFile "$PWD/tests/preview/status.json"
 omarchy-shell shell summon $ID '{}'      # open the panel, take the screenshot
 omarchy bar set $ID demoStatusFile ""    # back to real data
 ```
+
+`tests/preview/status-torrents.json` is the same state with the Torrents tab open
+(`demo_tab`), and `status-normal.json` shows the normal connection, for the bar-states image.

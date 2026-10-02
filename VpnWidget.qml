@@ -273,6 +273,7 @@ Panel {
       message = ""; lastError = ""
       if (j.demo_verify) verifySummary = String(j.demo_verify)
       if (j.demo_report) lastReport = String(j.demo_report)
+      if (j.demo_tab === "regular" || j.demo_tab === "torrents") tab = j.demo_tab
     }
     var next = j.profiles instanceof Array ? j.profiles : []
     if (JSON.stringify(next) !== JSON.stringify(profiles)) profiles = next
