@@ -15,7 +15,7 @@
   same, so updates work as before.
 - No change to the widget's behaviour or to the system part. Existing installs still see
   **Update the system part** after updating, because the panel compares version numbers;
-  running it is harmless.
+  running it is harmless. VM suite: 153 of 153.
 
 ## 0.3.1 (2026-09-30)
 
