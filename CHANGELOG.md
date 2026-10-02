@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.2 (unreleased)
+## 0.3.2 (2026-10-02)
 
 - **One line to install.** The top of the README now has a single copy-ready line that adds
   the widget and then runs the system setup in the same terminal:
