@@ -69,10 +69,17 @@ Their headers explain each one; read them rather than guessing.
 
 1. `vpn-status --json` shows the current state in one line.
 2. The failing lines of the last leak check are in the prompt; the full report is
-   the file it names. Each `[FAIL]` line says what was observed. Rerun a single
-   check by hand rather than the whole suite when you can. The full check is
-   `sudo vpn-verify` (read-only). `sudo vpn-verify --fail-closed` briefly takes the
-   tunnels down: ask first.
+   the file it names (the newest in the user's "VPN leak checks" folder, see
+   `vpn-check --dir`; older reports next to it show when a problem started).
+   Each `[FAIL]` line says what was observed. Rerun a single check by hand
+   rather than the whole suite when you can. The full check is `vpn-check`
+   (read-only, saves a new report) or `sudo vpn-verify`. `vpn-check
+   --fail-closed` briefly takes the tunnels down: ask first. If the user wants
+   to share a report, give them `latest-redacted.txt`, never the full one.
+   Desktop VPN failures in check 12 mean: "no handshake" = the server does not
+   answer or its key was revoked (a new config from the provider fixes the
+   latter); "DNS server ... reached through <link>" or "<link> can answer DNS
+   questions" = DNS can leave outside the tunnel, look at `resolvectl status`.
 3. Look before concluding:
    - `ip route`, `ip rule`, `resolvectl status`, `wg show` (as root: `sudo wg show`)
    - `sudo nft list table inet vpnkit_kill`

@@ -170,7 +170,7 @@ is "install.sh exits 0" "$rc" "0"
 (( rc == 0 )) || sed 's/^/      /' /tmp/install.log | tail -25
 yes "missing dependency was installed (wg)" command -v wg
 yes "missing dependency was installed (nft)" command -v nft
-for f in vpn-status vpn-toggle vpn-import vpn-verify vpn-rescue vpn-diagnose vpnkit-pick vpnkit-sync vpnkit-import vpnkit-killswitch qbt-netns-up qbt-launch qbittorrent; do
+for f in vpn-status vpn-toggle vpn-import vpn-verify vpn-check vpn-rescue vpn-diagnose vpnkit-pick vpnkit-sync vpnkit-import vpnkit-killswitch qbt-netns-up qbt-launch qbittorrent; do
   yes "installed /usr/local/bin/$f" test -x /usr/local/bin/$f
 done
 yes "sudoers file is valid" visudo -c -f /etc/sudoers.d/99-vpnkit
@@ -364,6 +364,70 @@ is "vpn-verify --fail-closed passes with a VPN up" "$rc" "0"
 echo "      $(grep Result <<<"$OUT")"
 OUT=$(as_user sudo -n /usr/local/bin/vpn-verify 2>&1); rc=$?
 is "the panel's leak check runs without a password and passes" "$rc" "0"
+# The desktop VPN's own checks: handshake, where DNS really goes.
+yes "the leak check sees the desktop tunnel's handshake" grep -q "PASS.*desktop tunnel: last handshake" <<<"$OUT"
+yes "it follows the VPN's DNS server into the tunnel" grep -q "PASS.*DNS server 10.2.0.1 is reached through proton-ca-1" <<<"$OUT"
+VPHYS=$(ip -4 route show default table main | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+yes "and sees that $VPHYS cannot take DNS questions away" grep -q "PASS.*$VPHYS cannot take DNS questions away" <<<"$OUT"
+
+# A DNS server slipped onto the physical link (what a DHCP renewal or another
+# tool could do) must fail the check.
+prevdns=$(resolvectl dns "$VPHYS" 2>/dev/null | sed 's/^[^:]*: *//')
+prevdr=$(resolvectl default-route "$VPHYS" 2>/dev/null | sed 's/^[^:]*: *//')
+resolvectl dns "$VPHYS" 192.0.2.53; resolvectl default-route "$VPHYS" yes
+OUT=$(vpn-verify 2>&1); rc=$?
+is "a DNS server on $VPHYS fails the leak check" "$rc" "1"
+yes "and is named" grep -q "FAIL.*$VPHYS can answer DNS questions outside the VPN" <<<"$OUT"
+if [[ -n "${prevdns// /}" ]]; then resolvectl dns "$VPHYS" $prevdns; resolvectl default-route "$VPHYS" "${prevdr:-no}"
+else resolvectl revert "$VPHYS"; fi
+
+# A server that never answers (its side no longer knows our key, as when a
+# config is revoked) while NetworkManager still shows the profile as up.
+ip netns exec provider /tmp/wg-static set wgA peer "$(cat "$WG/deskA.pub")" remove
+nmcli connection down proton-ca-1 >/dev/null 2>&1; nmcli connection up proton-ca-1 >/dev/null 2>&1; sleep 2
+OUT=$(vpn-verify 2>&1); rc=$?
+is "a server that never answers fails the leak check" "$rc" "1"
+yes "the handshake check names it" grep -q "FAIL.*desktop tunnel: no handshake recorded" <<<"$OUT"
+ip netns exec provider /tmp/wg-static set wgA peer "$(cat "$WG/deskA.pub")" allowed-ips 10.2.0.2/32
+as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
+is "server A answers again" "$(myip)" "10.2.0.2"
+
+# With IPv6 kept on (install --keep-ipv6), the check must test it, not just note it.
+sed -i 's/^DISABLE_IPV6=.*/DISABLE_IPV6=0/' /etc/vpnkit/vpnkit.conf
+OUT=$(vpn-verify 2>&1)
+yes "with IPv6 kept on, the leak check proves it cannot get out" grep -q "PASS.*IPv6 cannot get out while the VPN is up" <<<"$OUT"
+sed -i 's/^DISABLE_IPV6=.*/DISABLE_IPV6=1/' /etc/vpnkit/vpnkit.conf
+
+# Saved reports: vpn-check (the panel's "Check for leaks") keeps each one as
+# the desktop user in a folder they can browse.
+REPORTS="$UHOME/Documents/VPN leak checks"
+OUT=$(as_user /usr/local/bin/vpn-check 2>&1); rc=$?
+is "vpn-check passes with a VPN up" "$rc" "0"
+NEWEST=$(ls -1 "$REPORTS"/leak-check-*.txt 2>/dev/null | sort | tail -1)
+yes "vpn-check saved a report" test -s "$NEWEST"
+is "the report belongs to the desktop user" "$(stat -c %U "$NEWEST")" "$U"
+is "the reports folder is private" "$(stat -c %a "$REPORTS")" "700"
+yes "the report names the selected server" grep -q "^Regular traffic: proton-ca-1 (kill switch on)" "$NEWEST"
+yes "the report ends with the summary" grep -q "^Result: .* 0 failed" "$NEWEST"
+yes "latest.txt is the newest report" cmp -s "$NEWEST" "$REPORTS/latest.txt"
+yes "vpn-check says where it saved it" grep -qF "Report saved: $NEWEST" <<<"$OUT"
+is "vpn-status names the reports folder" "$(status .report_dir)" "$REPORTS"
+RED=$(printf 'exit 8.8.8.8 via 10.2.0.2\nkey %s\n' "$(cat "$WG/deskA.key")" | as_user /usr/local/bin/vpn-check --redact -)
+no "the redacted copy hides a public address" grep -q "8\.8\.8\.8" <<<"$RED"
+yes "and keeps private addresses readable" grep -q "10\.2\.0\.2" <<<"$RED"
+no "and hides a private key" grep -qF "$(cat "$WG/deskA.key")" <<<"$RED"
+no "latest-redacted.txt holds nothing key-like" grep -qE '[A-Za-z0-9+/]{43}=' "$REPORTS/latest-redacted.txt"
+for i in $(seq -w 1 25); do as_user touch "$REPORTS/leak-check-2000-01-01_00-00-$i.txt"; done
+as_user /usr/local/bin/vpn-check >/dev/null 2>&1
+is "only the newest 20 reports are kept" "$(ls -1 "$REPORTS"/leak-check-*.txt | wc -l)" "20"
+no "the oldest went first" test -e "$REPORTS/leak-check-2000-01-01_00-00-01.txt"
+STUB=$(mktemp -d)
+printf '#!/usr/bin/env bash\necho claude\n' > "$STUB/omarchy-default-agent"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > %s/args\n' "$STUB" > "$STUB/omarchy-agent"
+chmod 755 "$STUB"/omarchy-*; chmod 777 "$STUB"
+as_user env PATH="$STUB:$PATH" /usr/local/bin/vpn-diagnose "suite problem" >/dev/null 2>&1
+yes "vpn-diagnose hands the agent the saved report" grep -q "VPN leak checks/latest.txt" "$STUB/args"
+rm -rf "$STUB"
 # An autostart entry that calls the real binary would start qBittorrent outside
 # the namespace. The leak check has to catch it.
 install -d -o $U -g $U "$UHOME/.config/autostart"
@@ -403,12 +467,14 @@ no "service gone" test -e /etc/systemd/system/qbt-netns.service
 is "IPv6 back on" "$(sysctl -n net.ipv6.conf.all.disable_ipv6)" "0"
 yes "servers are kept by a plain uninstall" nmcli connection show proton-ca-1
 yes "settings are kept by a plain uninstall" test -f /etc/vpnkit/vpnkit.conf
+yes "the leak-check reports are kept by a plain uninstall" test -s "$REPORTS/latest.txt"
 in_terminal "$PLUGIN/install.sh" > /tmp/install3.log 2>&1
 in_terminal "$PLUGIN/uninstall.sh" --purge > /tmp/uninstall2.log 2>&1; rc=$?
 is "uninstall.sh --purge exits 0" "$rc" "0"
 no "--purge removes the servers" nmcli connection show proton-ca-1
 no "--purge removes the torrent config" test -e /etc/wireguard/vpnkit-torrent.conf
 no "--purge removes the settings" test -e /etc/vpnkit
+no "--purge removes the leak-check reports" test -e "$REPORTS"
 is "home address at the end" "$(myip)" "$HOME_IP"
 gateway off
 yes "real internet still works" curl -4 -s --max-time 8 -o /tmp/out https://archlinux.org

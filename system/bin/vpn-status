@@ -84,7 +84,7 @@ AGENT=$(omarchy-default-agent 2>/dev/null | head -1) || AGENT=""
 
 STATUS=$(jq -cn \
   --arg conn "$ACTIVE" --arg iface "$IFACE" --arg ip "$EXT_IP" --arg profiles "$PROFILES" \
-  --arg version "$VPNKIT_VERSION" --arg folder "$CONFIG_DIR" --arg prefix "$PROFILE_PREFIX" --arg agent "$AGENT" --arg torrent_if "$WG_IF" --arg torrent_ns "$NS" --arg regular_if "$REGULAR_IF" \
+  --arg version "$VPNKIT_VERSION" --arg folder "$CONFIG_DIR" --arg prefix "$PROFILE_PREFIX" --arg agent "$AGENT" --arg torrent_if "$WG_IF" --arg torrent_ns "$NS" --arg regular_if "$REGULAR_IF" --arg report_dir "$(vpnkit_report_dir)" \
   --argjson inbox "$INBOX" --argjson blocked "$BLOCKED" --argjson known "$KNOWN" --argjson ns "$NS_JSON" '
   {
     desktop_vpn:     ($conn != "" or $iface != ""),
@@ -103,6 +103,7 @@ STATUS=$(jq -cn \
     torrent_if:      $torrent_if,
     torrent_ns:      $torrent_ns,
     regular_if:      $regular_if,
+    report_dir:      $report_dir,
     qbt_known:       $known,
     qbt_configured:  ($ns.configured // $ns.exists // false),
     qbt_ns:          ($ns.exists == true),

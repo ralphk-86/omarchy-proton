@@ -19,7 +19,13 @@
 set -uo pipefail
 
 SKILL=/usr/local/lib/vpnkit/skills/diagnose-vpn/SKILL.md
-REPORT="${XDG_RUNTIME_DIR:-/tmp}/vpnkit-last-check.txt"
+# The newest saved leak-check report (vpn-check), else the one the panel kept
+# for this session before the reports folder existed.
+REPORT=""
+if [[ -r /usr/local/lib/vpnkit/common.sh ]]; then
+  REPORT="$(bash -c '. /usr/local/lib/vpnkit/common.sh && vpnkit_report_dir' 2>/dev/null)/latest.txt"
+fi
+[[ -s "$REPORT" ]] || REPORT="${XDG_RUNTIME_DIR:-/tmp}/vpnkit-last-check.txt"
 
 reason="$*"
 [[ -n "$reason" ]] || reason="Something is wrong with the VPN (opened by hand)."
@@ -42,7 +48,7 @@ fi
 status=$(/usr/local/bin/vpn-status --json 2>/dev/null) || status=""
 [[ -n "$status" ]] || status="(vpn-status gave no output)"
 
-report_line="No leak check has been run in this session."
+report_line="No leak check has been saved yet."
 if [[ -s "$REPORT" ]]; then
   report_line="The last leak check (vpn-verify) is saved at: $REPORT
 Its failing lines:

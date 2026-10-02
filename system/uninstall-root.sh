@@ -45,7 +45,7 @@ fi
 
 for f in qbt-netns-up qbt-netns-down qbt-netns-status qbt-launch qbittorrent \
          vpnkit-import vpnkit-killswitch vpnkit-sync vpnkit-pick \
-         vpn-status vpn-toggle vpn-import vpn-verify vpn-rescue vpn-diagnose; do
+         vpn-status vpn-toggle vpn-import vpn-verify vpn-check vpn-rescue vpn-diagnose; do
   rm -f "/usr/local/bin/$f"
 done
 rm -rf /etc/netns/qbtvpn /etc/vpnkit/providers

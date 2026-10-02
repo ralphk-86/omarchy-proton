@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  vpn-check - run the leak check and keep a report you can read later.
+#
+#  The panel's "Check for leaks" runs this; you can too. It runs vpn-verify
+#  (as root, through its passwordless rule), shows the output as it comes,
+#  and saves it as your user in a folder you can browse:
+#
+#    ~/Documents/VPN leak checks/        (REPORT_DIR in vpnkit.conf moves it)
+#      leak-check-2026-10-01_14-30-05.txt   one file per check, newest 20 kept
+#      latest.txt                           a copy of the newest
+#      latest-redacted.txt                  the newest with public IP
+#                                           addresses and anything key-like
+#                                           masked: the one to share
+#
+#  Nothing in a report leaves this machine unless you send it somewhere.
+#  vpn-verify never prints private keys; the redacted copy masks key-like
+#  strings anyway, in case something else ever does.
+#
+#  Usage:
+#    vpn-check                  run the check, save the report
+#    vpn-check --fail-closed    the same with vpn-verify --fail-closed (asks
+#                               for your password: it pulls the tunnels down)
+#    vpn-check --redact [FILE]  print FILE (default: the latest report, "-" for
+#                               standard input) with addresses and keys masked
+#    vpn-check --dir            print the reports folder
+#
+#  Exit code: that of vpn-verify (0 = every check passed).
+# ============================================================================
+set -uo pipefail
+
+[ "$(uname -s)" = "Linux" ] || { echo "Linux only"; exit 1; }
+[[ $EUID -eq 0 ]] && { echo "Run as your normal user: the reports belong to you."; exit 1; }
+# shellcheck disable=SC1091
+. /usr/local/lib/vpnkit/common.sh 2>/dev/null || { echo "vpnkit not installed"; exit 1; }
+
+DIR=$(vpnkit_report_dir)
+KEEP=20
+VERIFY=/usr/local/bin/vpn-verify
+
+# Mask public IPv4 and IPv6 addresses, key-like strings and home paths.
+# Private, loopback, link-local, carrier-grade NAT and documentation ranges
+# stay readable: they say which interface or tunnel something used without
+# saying who you are. The same public address gets the same placeholder
+# everywhere in one report, so "the namespace exits from a different IP than
+# the host" still reads correctly.
+redact() {
+  awk '
+    function keep4(ip,   o) {
+      split(ip, o, ".")
+      if (o[1] > 255 || o[2] > 255 || o[3] > 255 || o[4] > 255) return 1   # not an address
+      if (o[1] == 10 || o[1] == 127 || o[1] == 0 || o[1] >= 224) return 1
+      if (o[1] == 172 && o[2] >= 16 && o[2] <= 31) return 1
+      if (o[1] == 192 && o[2] == 168) return 1
+      if (o[1] == 169 && o[2] == 254) return 1
+      if (o[1] == 100 && o[2] >= 64 && o[2] <= 127) return 1
+      if (o[1] == 192 && o[2] == 0 && o[3] == 2) return 1
+      if (o[1] == 198 && o[2] == 51 && o[3] == 100) return 1
+      if (o[1] == 203 && o[2] == 0 && o[3] == 113) return 1
+      return 0
+    }
+    function keep6(ip,   l) {
+      l = tolower(ip)
+      if (l == "::1" || l == "::") return 1
+      if (l ~ /^fe[89ab]/ || l ~ /^f[cd]/ || l ~ /^2001:db8:/ || l ~ /^ff/) return 1
+      return 0
+    }
+    function mask(kind, ip) {
+      if (!((kind, ip) in seen)) { n[kind]++; seen[kind, ip] = "<" (kind == "mac" ? "" : "public-") kind "-" n[kind] ">" }
+      return seen[kind, ip]
+    }
+    {
+      line = $0; out = ""
+      # IPv4
+      while (match(line, /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/)) {
+        ip = substr(line, RSTART, RLENGTH)
+        out = out substr(line, 1, RSTART - 1) (keep4(ip) ? ip : mask("ipv4", ip))
+        line = substr(line, RSTART + RLENGTH)
+      }
+      line = out line; out = ""
+      # IPv6: hex groups with "::" or at least four colons (a time like
+      # 14:30:05 has two and is left alone).
+      while (match(line, /[0-9A-Fa-f]*:[0-9A-Fa-f:]*:[0-9A-Fa-f:]*/)) {
+        ip = substr(line, RSTART, RLENGTH)
+        c = gsub(/:/, ":", ip)
+        if (ip ~ /^[0-9A-Fa-f][0-9A-Fa-f](:[0-9A-Fa-f][0-9A-Fa-f])(:[0-9A-Fa-f][0-9A-Fa-f])(:[0-9A-Fa-f][0-9A-Fa-f])(:[0-9A-Fa-f][0-9A-Fa-f])(:[0-9A-Fa-f][0-9A-Fa-f])$/) rep = mask("mac", ip)
+        else if (index(ip, "::") || c >= 4) rep = keep6(ip) ? ip : mask("ipv6", ip)
+        else rep = ip
+        out = out substr(line, 1, RSTART - 1) rep
+        line = substr(line, RSTART + RLENGTH)
+      }
+      line = out line; out = ""
+      # Anything that looks like a key or token: 32 or more base64 characters
+      # mixing digits, upper and lower case (a WireGuard key is 44). Paths,
+      # which start with "/", are not keys.
+      while (match(line, /[A-Za-z0-9+\/]+=*/)) {
+        tok = substr(line, RSTART, RLENGTH)
+        key = RLENGTH >= 32 && tok !~ /^\// && tok ~ /[0-9]/ && tok ~ /[A-Z]/ && tok ~ /[a-z]/
+        out = out substr(line, 1, RSTART - 1) (key ? "<key-like string removed>" : tok)
+        line = substr(line, RSTART + RLENGTH)
+      }
+      line = out line
+      # Home directories: /home/<name> -> ~
+      gsub(/\/home\/[^\/ ]+/, "~", line)
+      print line
+    }'
+}
+
+case "${1:-}" in
+  --dir) printf '%s\n' "$DIR"; exit 0 ;;
+  --redact)
+    src="${2:-$DIR/latest.txt}"
+    if [[ "$src" == "-" ]]; then redact; exit 0; fi
+    [[ -r "$src" ]] || { echo "No report at $src. Run vpn-check first."; exit 1; }
+    redact < "$src"; exit 0 ;;
+  ""|--fail-closed) ;;
+  -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+  *) echo "unknown option: $1 (see vpn-check --help)"; exit 1 ;;
+esac
+
+install -d -m 700 "$DIR" || { echo "Cannot create $DIR"; exit 1; }
+stamp=$(date +%Y-%m-%d_%H-%M-%S)
+file="$DIR/leak-check-$stamp.txt"
+tmp=$(mktemp "$DIR/.running.XXXXXX") || exit 1
+trap 'rm -f "$tmp"' EXIT
+
+# The header: what was selected when the check ran.
+st=$(/usr/local/bin/vpn-status --json 2>/dev/null) || st=""
+regular=$(jq -r 'if .blocked then "BLOCKED by the kill switch (\(.wanted) is selected but down)"
+                 elif .desktop_vpn then "\(.conn) (kill switch \(if .killswitch then "on" else "OFF" end))"
+                 else "Normal connection (no VPN)" end' <<<"$st" 2>/dev/null) || regular=""
+torrents=$(jq -r 'if (.qbt_configured | not) then "no torrent tunnel set up"
+                  else "\(.qbt_conn // "?") (tunnel \(if .qbt_tunnel then "up" else "DOWN" end))" end' <<<"$st" 2>/dev/null) || torrents=""
+mode="standard"; [[ "${1:-}" == "--fail-closed" ]] && mode="--fail-closed (tunnels taken down on purpose)"
+
+{
+  echo "VPN leak check report"
+  echo "Date:            $(date '+%Y-%m-%d %H:%M:%S %Z')"
+  echo "Plugin:          omarchy-proton, system part $VPNKIT_VERSION"
+  echo "Regular traffic: ${regular:-unknown}"
+  echo "Torrents:        ${torrents:-unknown}"
+  echo "Check:           $mode"
+  echo
+} > "$tmp"
+
+# vpn-verify prints colours only to a terminal; strip them anyway.
+if [[ "${1:-}" == "--fail-closed" ]]; then
+  sudo "$VERIFY" --fail-closed 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | tee -a "$tmp"
+else
+  sudo -n "$VERIFY" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | tee -a "$tmp"
+fi
+rc=${PIPESTATUS[0]}
+grep -q '^Result:' "$tmp" || printf '\nResult: the check could not run (exit code %s). Run setup again from the panel.\n' "$rc" >> "$tmp"
+
+chmod 600 "$tmp"
+mv -f "$tmp" "$file"
+cp -f "$file" "$DIR/latest.txt"
+redact < "$file" > "$DIR/latest-redacted.txt"
+chmod 600 "$DIR/latest.txt" "$DIR/latest-redacted.txt"
+
+# Keep the newest $KEEP reports. The names sort by time.
+n=0
+while IFS= read -r old; do
+  n=$((n + 1))
+  (( n > KEEP )) && rm -f -- "$old"
+done < <(find "$DIR" -maxdepth 1 -type f -name 'leak-check-*.txt' | sort -r)
+
+echo
+echo "Report saved: $file"
+echo "To share (public addresses and keys masked): $DIR/latest-redacted.txt"
+exit "$rc"

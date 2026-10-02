@@ -50,9 +50,13 @@ DISABLE_IPV6=1
 IP_LOOKUP_URL="https://ifconfig.me/ip"
 IP_CACHE_TTL=30
 
+# Where the leak-check reports are saved (vpn-check and the panel's "Check
+# for leaks"). Empty: a "VPN leak checks" folder in your Documents.
+#REPORT_DIR=""
+
 # ---- torrent tunnel (rarely changed) ---------------------------------------
 #NS="qbtvpn"                 # network namespace name
 #WG_IF="pqbt0"               # WireGuard interface inside it
 #QBT_CONF="/etc/wireguard/vpnkit-torrent.conf"
 #VPN_FWMARK=51820            # shared by every tunnel; keeps them from nesting
-#HANDSHAKE_MAX_AGE=240       # seconds before the torrent tunnel counts as down
+#HANDSHAKE_MAX_AGE=240       # seconds without a handshake before a tunnel counts as down

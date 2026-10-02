@@ -33,6 +33,7 @@ DISABLE_IPV6=1
 BYPASS_CIDRS=""
 VPN_FWMARK=51820
 KILLSWITCH_ALLOW_LAN=1
+REPORT_DIR=""
 LAN_CIDRS="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 224.0.0.0/4 255.255.255.255/32"
 VPNKIT_PROVIDER="proton"
 
@@ -167,4 +168,15 @@ vpnkit_outside_clients() {  # vpnkit_outside_clients <namespace inode or "">
     (( found )) && printf '%s\n' "$c"
   done
   return 0
+}
+
+# Where vpn-check saves the leak-check reports of the user running it: a
+# folder in Documents ("VPN leak checks"), easy to find in the file manager.
+# REPORT_DIR in vpnkit.conf overrides it.
+vpnkit_report_dir() {
+  if [ -n "${REPORT_DIR:-}" ]; then printf '%s\n' "$REPORT_DIR"; return 0; fi
+  _vpnkit_docs=$(xdg-user-dir DOCUMENTS 2>/dev/null) || _vpnkit_docs=""
+  # xdg-user-dir answers $HOME when no Documents folder is configured.
+  if [ -z "$_vpnkit_docs" ] || [ "$_vpnkit_docs" = "$HOME" ]; then _vpnkit_docs="$HOME/Documents"; fi
+  printf '%s/VPN leak checks\n' "$_vpnkit_docs"
 }

@@ -19,9 +19,24 @@
 - **Show IP addresses in the bar** is now a row at the bottom of the panel, with a switch.
   Off leaves only the lock (or globe) and the torrent icon. The setting is saved in the
   widget's entry in `shell.json`, as before.
-- No change to the system part. Existing installs still see
-  **Update the system part** after updating, because the panel compares version numbers;
-  running it is harmless. VM suite: 153 of 153.
+- **Deeper leak checks for the desktop VPN.** With a server selected the check now also
+  proves that the server answered with a recent handshake (NetworkManager keeps showing a
+  WireGuard profile as connected when the server stopped answering or the key was revoked),
+  that every DNS server the machine would ask is routed into the tunnel, and that the physical
+  interface cannot answer DNS questions. With IPv6 kept on (`--keep-ipv6`) it now tests that
+  IPv6 cannot get out instead of only noting it.
+- **Saved leak-check reports.** Every check, from the panel or the new `vpn-check` command, is
+  saved as a text file in **Documents > VPN leak checks**: a header (date, version, selected
+  servers, kill switch), every check, the result. The newest 20 are kept, `latest.txt` is the
+  most recent, and `latest-redacted.txt` masks public IP addresses, MAC addresses, home paths
+  and anything key-like for sharing. The folder icon on **Check for leaks** opens the folder;
+  "Troubleshoot with AI" hands the agent the newest report. `uninstall.sh --purge` deletes the
+  reports; a plain uninstall keeps them. No new root helper and no new sudo rule: `vpn-check`
+  runs as you and calls `vpn-verify` through its existing rule.
+- README: what the leak check looks at, the reports folder, and a note on WebRTC.
+- The system part changed (`vpn-verify`, `vpn-check`, `vpn-status`, `vpn-diagnose`, the
+  shared library, the uninstaller): after updating, click **Update the system part**. Until
+  then the panel's check works the old way.
 
 ## 0.3.1 (2026-09-30)
 

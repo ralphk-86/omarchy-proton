@@ -119,7 +119,7 @@ tunnel. Left-click opens the panel, right-click toggles the VPN, middle-click re
 | Refresh servers | imports every config waiting in `~/Documents/WireGuard`; the folder icon opens that folder |
 | Import from files | opens the standard file dialog; pick one or more `.conf` files from any folder |
 | Open qBittorrent | starts it inside the tunnel (it refuses when the tunnel is down) |
-| Check for leaks | runs about thirty checks on the live system and shows the result; any failing check is listed in red underneath |
+| Check for leaks | runs about thirty-five checks on the live system and shows the result; any failing check is listed in red underneath. Each check is saved as a report; the folder icon opens them (see [Saved reports](#check-it-and-get-out-of-trouble)) |
 | Troubleshoot with AI | appears only when something is wrong (a failed check, a dropped VPN, the torrent tunnel down); see below |
 | Show IP addresses in the bar | on: the lock or globe plus both addresses; off: only the icons. Saved in the widget's settings |
 
@@ -325,15 +325,41 @@ kill switch still blocks it whenever a server is picked.
 
 ```sh
 vpn-status                  # both tunnels, both external IPs
-vpn-verify                  # the leak checks (same as the panel row)
-sudo vpn-verify --fail-closed   # also pulls each tunnel down and proves nothing gets out
+vpn-check                   # the leak checks, saved as a report (same as the panel row)
+vpn-check --fail-closed     # also pulls each tunnel down and proves nothing gets out
+vpn-check --redact          # the latest report with public addresses and keys masked
+vpn-verify                  # the same checks without saving a report
 vpn-rescue                  # way back: VPN off, kill switch off, confirms the internet works
 vpn-diagnose "what you saw" # hand the problem to your AI agent (see above)
 ```
 
+**What the leak check looks at**, all observed on the live system, not read from settings:
+the torrent namespace (its interfaces, routes, handshake, exit address, DNS resolver and
+firewall), IPv6, where every running qBittorrent really is, launchers that skip the wrapper,
+and, with a server selected, the desktop VPN: that ordinary traffic leaves through it, that the
+kill switch is armed, that a program bound to the physical interface cannot go around it, that
+each DNS server is reached through the tunnel and the physical interface cannot answer DNS
+questions, and that the server has answered with a handshake recently (NetworkManager keeps
+showing a WireGuard profile as connected when its server stopped answering or its key was
+revoked). With IPv6 kept on, it also proves IPv6 cannot get out while the VPN is up.
+
+**Saved reports.** Every check, from the panel or from `vpn-check`, is saved as a text file in
+**Documents > VPN leak checks** (`~/Documents/VPN leak checks/`; `REPORT_DIR` in
+`/etc/vpnkit/vpnkit.conf` moves it). Each report starts with the date, the version and what
+was selected (server, kill switch, torrent server), then every check and the result. The
+newest 20 are kept, `latest.txt` is the most recent, and **`latest-redacted.txt`** is the same
+report with public IP addresses, MAC addresses, home paths and anything that looks like a key
+masked: that is the one to attach to a bug report. Reports stay on your machine; the folder icon
+on the panel's **Check for leaks** row opens the folder.
+
 `vpn-rescue` needs no network to run. A reboot does the same. Independent checks worth doing
 once: ipleak.net and dnsleaktest.com in the browser with a server picked, and ipleak.net's
 "torrent address detection" magnet in qBittorrent.
+
+**WebRTC.** Browser leak tests often warn about WebRTC. With a server selected, every route
+out of the machine goes into the tunnel and the kill switch blocks the rest, so WebRTC can only
+reveal your local network address and the tunnel's, never your public one. browserleaks.com's
+WebRTC page shows what your browser exposes, if you want to see for yourself.
 
 ## Using it with Tailscale
 
@@ -374,6 +400,7 @@ The engine underneath is called `vpnkit`; that is the name you will see in paths
 | `/etc/sysctl.d/99-vpnkit-disable-ipv6.conf` | IPv6 off (unless `--keep-ipv6`) |
 | `/etc/wireguard/`, `/etc/NetworkManager/system-connections/` | your imported configs, mode 0600, root |
 | `~/.local/share/applications/org.qbittorrent.qBittorrent.desktop` | launcher pointing at the wrapper |
+| `~/Documents/VPN leak checks/` | your saved leak-check reports, created by the first check; removed only by `uninstall.sh --purge` |
 | `~/.config/qBittorrent/qBittorrent.conf` | only with `install.sh --qbt-config`: merged with `qbittorrent/qBittorrent.conf.template` (backup kept): bind to the tunnel interface, anonymous mode, require encryption, no UPnP, no local discovery |
 
 The passwordless helpers are written to be safe to grant: they take no paths from the caller,
@@ -398,7 +425,7 @@ the shell does not always reload a plugin's code in place.
 Two steps, in this order: first the system part, then the widget.
 
 ```sh
-~/.config/omarchy/plugins/io.github.ralphk-86.omarchy-proton/uninstall.sh          # keeps servers, configs, settings
+~/.config/omarchy/plugins/io.github.ralphk-86.omarchy-proton/uninstall.sh          # keeps servers, configs, settings, reports
 ~/.config/omarchy/plugins/io.github.ralphk-86.omarchy-proton/uninstall.sh --purge  # removes those too
 ~/.config/omarchy/plugins/io.github.ralphk-86.omarchy-proton/uninstall.sh --restore-ipv6
 omarchy plugin remove io.github.ralphk-86.omarchy-proton
@@ -406,7 +433,9 @@ omarchy plugin remove io.github.ralphk-86.omarchy-proton
 
 The uninstaller switches to the normal connection, removes the kill switch, the torrent
 namespace and every file from the table above. Without `--purge` it keeps your servers, the
-torrent config and `/etc/vpnkit/vpnkit.conf`, so a later reinstall picks up where you left off.
+torrent config, `/etc/vpnkit/vpnkit.conf` and your saved leak-check reports, so a later
+reinstall picks up where you left off. `--purge` deletes the reports too (only the files the
+check wrote; the folder stays if you put anything else in it).
 IPv6 stays off unless you pass `--restore-ipv6`. qBittorrent is no longer confined afterwards.
 
 If you removed the plugin folder first, the system part can still be removed:

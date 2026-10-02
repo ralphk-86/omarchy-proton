@@ -168,7 +168,7 @@ if [[ "${DISABLE_IPV6:-1}" == "1" ]]; then
     fi
   fi
 else
-  meh "DISABLE_IPV6=0 - the host keeps IPv6; with a VPN selected the kill switch blocks it"
+  meh "DISABLE_IPV6=0 - the host keeps IPv6; with a VPN up, check 12 tests that the kill switch blocks it"
 fi
 
 # --- 9. any running qBittorrent is actually inside --------------------------
@@ -297,6 +297,51 @@ if [[ -n "$ACTIVE" ]]; then
   DNSLINKS=$(resolvectl dns 2>/dev/null | awk -F': ' '$2 != "" {print $1}' | sed -n 's/.*(\(.*\))/\1/p' | tr '\n' ' ')
   if [[ "$DNSLINKS" == "$ACTIVE " ]]; then ok "DNS servers are configured on the VPN link only"
   else no "DNS servers are configured on: ${DNSLINKS:-none} (expected only $ACTIVE)"; fi
+
+  # Configured is not the same as used. Follow each DNS server the machine
+  # would ask (the VPN link's, and any in resolv.conf that bypasses the
+  # systemd-resolved stub) and check that the kernel routes it into the tunnel.
+  DNSSRV="$(resolvectl dns "$ACTIVE" 2>/dev/null | sed 's/^[^:]*: *//') $(awk '/^nameserver/ && $2 !~ /^127\.0\.0\.5[34]$/ {print $2}' /etc/resolv.conf 2>/dev/null)"
+  for d in $DNSSRV; do
+    d=${d%%#*}; d=${d%%%*}
+    if [[ "$d" == *:* ]]; then RDEV=$(ip -6 route get "$d" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p')
+    else RDEV=$(ip -4 route get "$d" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p'); fi
+    if [[ -z "$RDEV" ]]; then ok "DNS server $d has no route at all, so it cannot leak"
+    elif [[ "$RDEV" == "$ACTIVE" ]]; then ok "DNS server $d is reached through $ACTIVE"
+    else no "DNS server $d is reached through $RDEV, outside the VPN - a DNS leak"; fi
+  done
+  if [[ -n "$PHYS" ]]; then
+    PDNS=$(resolvectl dns "$PHYS" 2>/dev/null | sed 's/^[^:]*: *//')
+    PDEF=$(resolvectl default-route "$PHYS" 2>/dev/null | sed 's/^[^:]*: *//')
+    if [[ -n "${PDNS// /}" && "$PDEF" == "yes" ]]; then
+      no "$PHYS can answer DNS questions outside the VPN (DNS servers: $PDNS)"
+    else
+      ok "$PHYS cannot take DNS questions away from the VPN"
+    fi
+  fi
+
+  # NetworkManager shows a WireGuard profile as connected even when the
+  # server stopped answering or the key in the config was revoked. Only a
+  # recent handshake proves the server is there.
+  host_get 6 -4 "$IP_LOOKUP_URL" >/dev/null    # give it traffic to handshake over
+  DHS=$($SUDO wg show "$ACTIVE" latest-handshakes 2>/dev/null | awk '{print $2}' | sort -n | tail -1)
+  if [[ -n "${DHS:-}" && "$DHS" -gt 0 ]]; then
+    DAGE=$(( $(date +%s) - DHS ))
+    if (( DAGE < HANDSHAKE_MAX_AGE )); then ok "desktop tunnel: last handshake ${DAGE}s ago"
+    else no "desktop tunnel: last handshake ${DAGE}s ago - the server is not answering (threshold ${HANDSHAKE_MAX_AGE}s)"; fi
+  else
+    no "desktop tunnel: no handshake recorded - the server is not answering, or this config's key was revoked"
+  fi
+
+  # With IPv6 kept on (DISABLE_IPV6=0), prove that it cannot get out: the
+  # tunnel carries IPv4 only, so the kill switch has to stop it.
+  if [[ "${DISABLE_IPV6:-1}" != "1" ]]; then
+    if [[ -n "$(host_get 4 -6 https://ifconfig.co)" ]]; then
+      no "IPv6 reaches the internet around the VPN"
+    else
+      ok "IPv6 cannot get out while the VPN is up"
+    fi
+  fi
 fi
 
 # --- fail-closed proof ------------------------------------------------------

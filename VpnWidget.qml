@@ -24,6 +24,8 @@ Panel {
   readonly property string toggleCmd: "/usr/local/bin/vpn-toggle"
   readonly property string syncCmd: "/usr/local/bin/vpnkit-sync"
   readonly property string verifyCmd: "/usr/local/bin/vpn-verify"
+  // Runs vpn-verify and saves the report in the user's reports folder.
+  readonly property string checkCmd: "/usr/local/bin/vpn-check"
   readonly property string qbtCmd: "/usr/local/bin/qbittorrent"
   readonly property string pickCmd: "/usr/local/bin/vpnkit-pick"
   readonly property string importCmd: "/usr/local/bin/vpn-import"
@@ -31,6 +33,9 @@ Panel {
   property string torrentIf: "pqbt0"
   property string torrentNs: "qbtvpn"
   property string regularIf: ""
+  // Where vpn-check saves the leak-check reports, and the newest one.
+  property string reportDir: ""
+  property string lastReport: ""
   readonly property string diagnoseCmd: "/usr/local/bin/vpn-diagnose"
   // The last leak check's output, for vpn-diagnose to hand to the AI agent.
   readonly property string reportFile: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/vpnkit-last-check.txt"
@@ -180,7 +185,8 @@ Panel {
     if (qbtRunning) return "qBittorrent is running, location unknown"
     return "qBittorrent is not running"
   }
-  readonly property string folderShort: folder.replace(/^\/home\/[^\/]+/, "~")
+  readonly property string folderShort: homeShort(folder)
+  function homeShort(path) { return String(path || "").replace(/^\/home\/[^\/]+/, "~") }
 
   // Cursor rows, top to bottom.
   property bool cursorActive: false
@@ -262,7 +268,12 @@ Panel {
     torrentIf = String(j.torrent_if || "pqbt0")
     torrentNs = String(j.torrent_ns || "qbtvpn")
     regularIf = String(j.regular_if || "")
-    if (demo) { message = ""; lastError = ""; if (j.demo_verify) verifySummary = String(j.demo_verify) }
+    reportDir = String(j.report_dir || "")
+    if (demo) {
+      message = ""; lastError = ""
+      if (j.demo_verify) verifySummary = String(j.demo_verify)
+      if (j.demo_report) lastReport = String(j.demo_report)
+    }
     var next = j.profiles instanceof Array ? j.profiles : []
     if (JSON.stringify(next) !== JSON.stringify(profiles)) profiles = next
     loaded = true
@@ -424,8 +435,12 @@ Panel {
     if (demo) return
     verifySummary = ""
     verifyFailures = []
-    // The report is kept for vpn-diagnose. tee runs as you; only vpn-verify is root.
-    verifyProcess.command = ["bash", "-c", "sudo -n \"$1\" 2>&1 | tee \"$2\"", "vpn-verify", verifyCmd, reportFile]
+    // vpn-check saves the report as you in the reports folder; only
+    // vpn-verify runs as root. A system part from before vpn-check existed
+    // gets the old way: the report kept for this session only.
+    verifyProcess.command = ["bash", "-c",
+      "if [ -x \"$1\" ]; then exec \"$1\"; fi; sudo -n \"$2\" 2>&1 | tee \"$3\"",
+      "vpn-check", checkCmd, verifyCmd, reportFile]
     verifyProcess.running = true
   }
 
@@ -437,6 +452,8 @@ Panel {
       var f = lines[i].match(/\[FAIL\]\s*(.*)$/)
       if (f) fails.push(f[1])
       var r = lines[i].match(/Result:\s*(\d+) passed,\s*(\d+) failed/)
+      var saved = lines[i].match(/^Report saved:\s*(.*)$/)
+      if (saved) lastReport = saved[1]
       if (r) summary = r[2] === "0" ? r[1] + " checks passed, no leaks found" : r[2] + " of " + (parseInt(r[1], 10) + parseInt(r[2], 10)) + " checks FAILED"
     }
     verifyFailures = fails
@@ -463,6 +480,12 @@ Panel {
     if (!installed || qbtRunning || !qbtTunnel) return
     if (demo) return
     Quickshell.execDetached([qbtCmd])
+    close()
+  }
+
+  function openReports() {
+    if (reportDir === "") return
+    Quickshell.execDetached(["bash", "-c", "mkdir -p " + Util.shellQuote(reportDir) + " && xdg-open " + Util.shellQuote(reportDir)])
     close()
   }
 
@@ -997,7 +1020,10 @@ Panel {
               subtitle: vpn.verifying ? "Takes about twenty seconds"
                 : (vpn.verifySummary !== "" ? vpn.verifySummary : "Routes, DNS, IPv6, kill switch, torrent tunnel")
               isPending: vpn.verifying
+              actionGlyph: vpn.reportDir !== "" ? vpn.gFolder : ""
+              actionTooltip: "Open the saved reports"
               onChosen: vpn.verify()
+              onActionChosen: vpn.openReports()
             }
 
             Text {
@@ -1006,6 +1032,19 @@ Panel {
               width: parent.width
               text: vpn.verifyFailures.join("\n")
               color: vpn.urgent
+              font.family: vpn.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              visible: vpn.lastReport !== "" && !vpn.verifying
+              width: parent.width
+              leftPadding: Style.space(36)
+              text: "Report saved in " + vpn.homeShort(vpn.reportDir !== "" ? vpn.reportDir : vpn.lastReport.replace(/\/[^\/]*$/, ""))
+                + ". To share it, use latest-redacted.txt: addresses and keys are masked."
+              color: vpn.dim
               font.family: vpn.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
@@ -1027,7 +1066,7 @@ Panel {
               rowIndex: vpn.ipsIndex
               glyph: vpn.showIps ? vpn.gEye : vpn.gEyeOff
               title: "Show IP addresses in the bar"
-              subtitle: vpn.showIps ? "The bar shows the lock and both addresses" : "The bar shows only the lock or globe and the torrent icon"
+              subtitle: vpn.showIps ? "Icons and both addresses" : "Only the icons"
               toggle: vpn.showIps ? 1 : 0
               onChosen: vpn.setShowIps(!vpn.showIps)
             }
