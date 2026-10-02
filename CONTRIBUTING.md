@@ -95,11 +95,22 @@ omarchy bar set $ID demoStatusFile ""    # back to real data
 (`demo_tab`), and `status-normal.json` shows the normal connection, for the bar-states image.
 
 The README shows both tabs in full (`screenshots/regular.png`, `screenshots/torrents.png`,
-cropped to 1144x1340 at the top right of a 2560x1440 screen). The root `preview.png` is a
-1600x900 landscape image for the marketplace, whose cards crop it to between 2:1 and 3:1
-around the centre. `tests/preview/make-preview.sh` builds it: `capture` takes one
-screenshot-mode capture without any key presses (an empty workspace is needed, default 8),
-`compose` cuts the bar, the panel header and the leak-check row out of it and sets them next to
-the title and feature lines, then writes the two card simulations to check the crop. It needs
-ImageMagick 7 and the JetBrainsMono Nerd Font; the crop coordinates assume a 2560x1440 screen
-at scale 1.25 and can be set in the environment.
+cropped to 1144x1340 at the top right of a 2560x1440 screen) and the bar in four states
+(`screenshots/bar-states.png`). The root `preview.png` (3200x1800) is the marketplace image
+and heads the README. `tests/preview/make-preview.sh` makes all of them except the two tab
+screenshots, without any key presses or clicks:
+
+- `compose`: `preview.png`. The bar strip and the panel rows are drawn with the widget's font,
+  glyphs and colours at three times their size, so the image stays sharp at full size; the
+  title and four features are large and in the middle 60% of the height, because the
+  marketplace's cards crop around the centre. It also writes the 1600 and 720 px copies the
+  marketplace serves.
+- `cards`: the marketplace card at 2x (three and two columns), alone and with name and
+  description, to check the crop.
+- `capture`: a screenshot-mode capture next to the drawn panel (`compare.png`), to check the
+  drawing still matches the widget after a change to the panel.
+- `bar-states`: four captures of the bar from the demo files, at the screen's resolution.
+
+It needs ImageMagick 7 and the JetBrainsMono Nerd Font; `capture` and `bar-states` need an
+empty workspace (default 8) and assume a 2560x1440 screen at scale 1.25 (coordinates can be
+set in the environment).

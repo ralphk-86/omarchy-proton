@@ -34,13 +34,15 @@
   reports; a plain uninstall keeps them. No new root helper and no new sudo rule: `vpn-check`
   runs as you and calls `vpn-verify` through its existing rule.
 - README: what the leak check looks at, the reports folder, and a note on WebRTC.
-- **Marketplace preview and description.** `preview.png` is now a 1600x900 landscape image
-  (bar, panel, title and the four features) that survives the marketplace card's centre crop;
-  it is built from a screenshot-mode capture by `tests/preview/make-preview.sh`. The two
-  full-height panel screenshots stay in the README (`screenshots/regular.png`,
-  `screenshots/torrents.png`). The description now opens with the features ("Proton VPN kill
-  switch, torrent tunnel & leak checks in the bar.") and mentions the leak check, so a search
-  for "leak" finds it.
+- **Marketplace preview and description.** `preview.png` is now a 3200x1800 landscape image:
+  a large title and four short features next to the bar and a shortened panel, all drawn with
+  the widget's own font, glyphs and colours (checked against a capture), so it is sharp on
+  high-density screens and survives the marketplace card's centre crop. The full-height panel
+  screenshots stay in the README (`screenshots/regular.png`, `screenshots/torrents.png`), with
+  a new `screenshots/bar-states.png` of the bar in four states. `tests/preview/make-preview.sh`
+  makes them. The description now opens with the features ("Proton VPN kill switch, torrent
+  tunnel & leak checks in the bar.") and mentions the leak check, so a search for "leak"
+  finds it.
 - The system part changed (`vpn-verify`, `vpn-check`, `vpn-status`, `vpn-diagnose`, the
   shared library, the uninstaller): after updating, click **Update the system part**. Until
   then the panel's check works the old way. VM suite: 181 of 181 (the leak check inside it: 32 passed,

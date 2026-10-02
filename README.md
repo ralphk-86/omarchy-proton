@@ -105,6 +105,8 @@ other providers (Mullvad, IVPN, AirVPN, Windscribe, self-hosted) work too; set
 | open lock, urgent colour | a VPN is up without its kill switch; pick the server again |
 | wrench | setup or an update of the system part is needed |
 
+<img src="screenshots/bar-states.png" alt="The widget in the bar: a lock with both IP addresses, the lock alone with the addresses hidden, the globe on the normal connection, and the globe alone" width="640">
+
 Next to it is the external IP of your regular traffic and, after the download arrow, the exit
 IP of the torrent tunnel. **Show IP addresses in the bar**, the last row of the panel, hides
 the addresses and leaves only the icons. The bar also turns the urgent colour when the torrent
