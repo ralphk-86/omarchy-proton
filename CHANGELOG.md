@@ -8,6 +8,11 @@
   The two-step way (add the widget, then **Finish setup** in its panel) still works and is
   described next to it. The marketplace lists the plugin as *Manual setup* and shows no
   install button, so the README is where people copy it from.
+- **New display name: Proton VPN + Kill Switch + Torrent Tunnel**, in Omarchy, the marketplace
+  and the README, so it says what it does. Still unofficial and not affiliated with Proton AG;
+  the description now starts with "Unofficial". The
+  plugin id (`io.github.ralphk-86.omarchy-proton`), the repository and every command stay the
+  same, so updates work as before.
 - No change to the widget's behaviour or to the system part. Existing installs still see
   **Update the system part** after updating, because the panel compares version numbers;
   running it is harmless.

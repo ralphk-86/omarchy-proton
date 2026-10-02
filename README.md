@@ -1,7 +1,7 @@
-# omarchy-proton
+# Proton VPN + Kill Switch + Torrent Tunnel (unofficial)
 
-Proton VPN for the [Omarchy](https://omarchy.org/) bar over WireGuard, with a kill switch, and
-a second always-on tunnel that qBittorrent cannot leave.
+An unofficial [Omarchy](https://omarchy.org/) bar widget for Proton VPN over WireGuard, with a
+kill switch, and a second always-on tunnel that qBittorrent cannot leave.
 
 > Unofficial. This is a community plugin, not affiliated with or endorsed by Proton AG. It
 > uses the standard WireGuard configs you download from your own Proton VPN account.

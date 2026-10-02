@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "id": "io.github.ralphk-86.omarchy-proton",
-  "name": "Omarchy Proton",
+  "name": "Proton VPN + Kill Switch + Torrent Tunnel",
   "version": "0.3.2",
   "author": "ralphk-86",
   "license": "MIT",
-  "description": "Proton VPN over WireGuard in the bar. Your regular traffic uses either your own IP (\"Normal connection\") or a Proton server's IP, whichever you pick in the panel, with a kill switch while a server is selected. qBittorrent always goes through its own separate tunnel. Drop .conf files into a folder and press Refresh. Unofficial.",
+  "description": "Unofficial Omarchy bar widget for Proton VPN over WireGuard. Your regular traffic uses either your own IP (\"Normal connection\") or a Proton server's IP, whichever you pick in the panel, with a kill switch while a server is selected. qBittorrent always goes through its own separate tunnel. Drop .conf files into a folder and press Refresh. Not affiliated with Proton AG.",
   "repository": "https://github.com/ralphk-86/omarchy-proton",
   "kinds": [
     "bar-widget"
@@ -14,7 +14,7 @@
     "barWidget": "VpnWidget.qml"
   },
   "barWidget": {
-    "displayName": "Omarchy Proton",
+    "displayName": "Proton VPN + Kill Switch + Torrent Tunnel",
     "description": "Shows the external IP of your regular traffic (your own, or the selected server's) and of the torrent tunnel. Left-click opens the panel: pick a server or Normal connection, import configs, check for leaks. Right-click toggles the VPN.",
     "category": "Network",
     "allowMultiple": false,
