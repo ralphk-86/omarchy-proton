@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.3 (2026-10-09)
+
+- **No more false "VPN dropped" alarm when you switch servers or go back to your own
+  connection.** The panel reported a drop whenever a server was selected while no tunnel was
+  up, which is also true for a moment during every switch: the kill switch is armed before a
+  profile connects and removed only after it disconnects, so a poll landing in that second saw
+  "wanted but not connected". With the default five-second refresh that was easy to hit, and
+  the result was a critical notification that got through Do Not Disturb and offered to hand a
+  problem that no longer existed to an AI agent. The bar and the panel still show the live
+  state at once; only the notification now waits for the state to hold still (two polls plus a
+  margin) and is dropped if it clears on its own. The same wait applies to "Torrent tunnel
+  down", which flickered while the torrent server was being switched. qBittorrent outside its
+  tunnel is still reported the instant it is seen, with no delay. Whatever is already wrong
+  when the panel starts is shown but not announced, as before.
+- The panel header no longer says "Traffic blocked" while a switch is running; it keeps the
+  server name with "Switching" underneath, and "Troubleshoot with AI" appears once a problem
+  has settled instead of blinking in and out during a switch.
+- **"Troubleshoot with AI" is honest about when the alert was raised.** A critical notification
+  stays on screen until it is clicked, so the sentence it carries can be hours old.
+  `vpn-diagnose` now labels it as what the panel reported at the time, next to the live
+  `vpn-status --json`, and asks the agent to say so if the two disagree. The `diagnose-vpn`
+  skill starts by comparing them, and documents how to tell a real drop from a deliberate
+  *Normal connection* in the NetworkManager journal, and that a server which is up but silent
+  shows as connected with an unknown IP rather than as blocked.
+- Tests: static checks pass, the marketplace security baseline is `review-required` with no
+  findings, and the VM suite is 181 of 181. The panel's QML is not covered by the VM, so the
+  notification timing was reasoned through and checked with `qmllint`, not exercised there.
+
 ## 0.3.2 (2026-10-02)
 
 - **One line to install.** The top of the README now has a single copy-ready line that adds

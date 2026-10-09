@@ -67,8 +67,13 @@ Their headers explain each one; read them rather than guessing.
 
 ## Establish the facts
 
-1. `vpn-status --json` shows the current state in one line.
-2. The failing lines of the last leak check are in the prompt; the full report is
+1. **Read the reason line as history, not as now.** It is what the panel saw
+   when it raised the alert, and a critical notification stays on screen until
+   it is clicked, so it can be hours old. Compare it with `vpn-status --json`
+   before anything else. If they disagree, say so in the report and work from
+   the live state and the journal.
+2. `vpn-status --json` shows the current state in one line.
+3. The failing lines of the last leak check are in the prompt; the full report is
    the file it names (the newest in the user's "VPN leak checks" folder, see
    `vpn-check --dir`; older reports next to it show when a problem started).
    Each `[FAIL]` line says what was observed. Rerun a single check by hand
@@ -80,7 +85,7 @@ Their headers explain each one; read them rather than guessing.
    answer or its key was revoked (a new config from the provider fixes the
    latter); "DNS server ... reached through <link>" or "<link> can answer DNS
    questions" = DNS can leave outside the tunnel, look at `resolvectl status`.
-3. Look before concluding:
+4. Look before concluding:
    - `ip route`, `ip rule`, `resolvectl status`, `wg show` (as root: `sudo wg show`)
    - `sudo nft list table inet vpnkit_kill`
    - `sudo ip netns exec qbtvpn ip route`, `sudo ip netns exec qbtvpn wg show`
@@ -101,6 +106,19 @@ Their headers explain each one; read them rather than guessing.
   here. The fix is a new config from the Proton dashboard, imported with the panel.
 - **A system update**: compare timestamps against `/var/log/pacman.log`, especially
   NetworkManager, systemd, nftables and wireguard-tools.
+- **An alert that no longer matches the live state.** `blocked` means exactly one
+  thing: the kill switch is armed and no `<prefix>-*` interface exists. Switching
+  servers and choosing *Normal connection* both pass through that state for a
+  moment, because the kill switch is armed before a profile connects and removed
+  only after it disconnects. Since 0.3.3 the panel waits for the state to hold
+  still before it notifies, so a *stale* "VPN dropped" is now either a toast from
+  an older version or one that was left on screen. `journalctl -u NetworkManager`
+  settles it: `reason 'user-requested'` on the profile going down means a person
+  (or `vpn-toggle off`) did it, and a `vpnkit-killswitch off` in the journal right
+  after it is the *Normal connection* row, not a drop.
+- **A server that is up but silent does not show as `blocked`.** The interface
+  still exists, so the panel reports CONNECTED and the external IP goes to
+  unknown. Check the handshake age with `sudo wg show`, not the panel.
 
 ## What each kind of failure usually means
 

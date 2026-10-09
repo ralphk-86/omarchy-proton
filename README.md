@@ -131,7 +131,12 @@ tunnel. Left-click opens the panel, right-click toggles the VPN, middle-click re
 
 **Notifications** appear when the VPN drops and the kill switch starts blocking, when the
 torrent tunnel goes down, if a qBittorrent process is ever found outside its tunnel, and when
-a leak check fails. The critical ones get through Do Not Disturb.
+a leak check fails. The critical ones get through Do Not Disturb. A drop and a torrent tunnel
+going down are announced only once the state has held still for a few seconds: switching
+servers and going back to your own connection pass through both for a moment, and a toast that
+you may read hours later should not describe something that fixed itself. The bar and the panel
+show the live state at once either way, and a qBittorrent found outside its tunnel is reported
+without any delay.
 
 ### When something is wrong: troubleshoot with AI
 

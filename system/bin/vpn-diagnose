@@ -59,11 +59,15 @@ prompt=$(cat <<PROMPT
 The Omarchy Proton VPN plugin on this Omarchy machine reported a problem and I
 want to know what is wrong and how to fix it safely.
 
-What happened:
+What the panel reported when it raised this (a notification can sit on screen
+for a long time, so this may be older than it looks, and the state may have
+changed since):
   $reason
 
 vpn-status --json right now:
   $status
+
+If those two disagree, say so and work from the live state and the journal.
 
 $report_line
 

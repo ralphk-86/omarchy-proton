@@ -18,7 +18,7 @@ Panel {
   moduleName: "io.github.ralphk-86.omarchy-proton"
 
   // Must match VERSION and manifest.json (tests/check.sh verifies it).
-  readonly property string kitVersion: "0.3.2"
+  readonly property string kitVersion: "0.3.3"
 
   readonly property string statusCmd: "/usr/local/bin/vpn-status"
   readonly property string toggleCmd: "/usr/local/bin/vpn-toggle"
@@ -138,6 +138,23 @@ Panel {
   // A VPN that is up without its kill switch was started before the hook ran.
   readonly property bool unguarded: desktopVpn && !killswitch
   readonly property bool alert: danger || torrentDown || blocked || unguarded
+
+  // Two of those states come and go on their own while a command runs, so they
+  // are not alarms until they have held still. Picking a server arms the kill
+  // switch before the profile connects, and "Normal connection" removes it only
+  // after the profile is down, so both paths pass through "a server is wanted
+  // but no tunnel is up" (`blocked`) for a moment; switching the torrent server
+  // takes its tunnel down and back up the same way. The bar and the panel show
+  // the live state, as they should, but a toast - which survives Do Not Disturb
+  // and can hand the problem to an AI agent - waits for the state to settle.
+  // `danger` is never debounced: qBittorrent outside its tunnel is reported the
+  // moment it is seen.
+  readonly property bool settling: busy || syncing || switchingTorrent || settingUp
+  // Two polls plus a margin: long enough to cover switching a server, short
+  // enough that a real drop is still reported while it matters.
+  readonly property int settleMs: Math.max(8000, refreshIntervalSec * 2000 + 3000)
+  property bool blockedSteady: false
+  property bool torrentDownSteady: false
   readonly property bool showIps: setting("showIps", true) !== false
   readonly property int refreshIntervalSec: {
     var n = parseInt(String(setting("refreshIntervalSec", 5)), 10)
@@ -164,7 +181,7 @@ Panel {
   }
 
   readonly property string heroTitle: !installed ? "Setup needed"
-    : (blocked ? "Traffic blocked" : (desktopVpn ? prettyName(conn) : "Normal connection"))
+    : (blocked && !settling ? "Traffic blocked" : (desktopVpn ? prettyName(conn) : "Normal connection"))
   readonly property string heroMeta: !installed ? "One step left before the VPN works"
     : (busy ? "Switching"
       : (blocked ? (wanted !== "" ? prettyName(wanted) : "The VPN") + " is down, kill switch is holding"
@@ -202,7 +219,7 @@ Panel {
   readonly property int launchIndex: pickIndex + 1
   readonly property int verifyIndex: launchIndex + 1
   // "Troubleshoot with AI" appears only when something is wrong.
-  readonly property bool showAi: installed && (verifyFailures.length > 0 || blocked || torrentDown || danger)
+  readonly property bool showAi: installed && (verifyFailures.length > 0 || blockedSteady || torrentDownSteady || danger)
   readonly property int aiIndex: showAi ? verifyIndex + 1 : -1
   // The bar display setting is the last row.
   readonly property int ipsIndex: installed ? (showAi ? aiIndex + 1 : verifyIndex + 1) : -1
@@ -277,6 +294,13 @@ Panel {
     }
     var next = j.profiles instanceof Array ? j.profiles : []
     if (JSON.stringify(next) !== JSON.stringify(profiles)) profiles = next
+    // Whatever is already wrong when the panel starts is shown, not announced:
+    // the settled states are seeded here, while `loaded` is still false, so the
+    // handlers they trigger send nothing.
+    if (!loaded) {
+      blockedSteady = blocked
+      torrentDownSteady = torrentDown
+    }
     loaded = true
     if (cursorIndex >= rowCount) cursorIndex = rowCount - 1
   }
@@ -401,10 +425,14 @@ Panel {
     if (ai) argv.push("--exec", diagnoseCmd, problem)
     Quickshell.execDetached(argv)
   }
-  onBlockedChanged: if (blocked) notify("critical", "VPN dropped",
+  // A state that is still settling is dropped, not queued: when it clears by
+  // itself the timer below stops and nothing is ever sent.
+  onBlockedChanged: if (!blocked) blockedSteady = false
+  onTorrentDownChanged: if (!torrentDown) torrentDownSteady = false
+  onBlockedSteadyChanged: if (blockedSteady) notify("critical", "VPN dropped",
     (wanted !== "" ? prettyName(wanted) : "The server") + " is not connected. The kill switch is blocking regular traffic until you pick a server or Normal connection.",
     "The VPN dropped: " + (wanted !== "" ? wanted : "the chosen server") + " is selected but not connected, so the kill switch is blocking regular traffic.")
-  onTorrentDownChanged: if (torrentDown) notify("normal", "Torrent tunnel down",
+  onTorrentDownSteadyChanged: if (torrentDownSteady) notify("normal", "Torrent tunnel down",
     "qBittorrent has no network until the tunnel is back. Nothing leaks.",
     "The torrent tunnel (namespace qbtvpn) is down, so qBittorrent has no network.")
   onQbtUnprotectedChanged: if (qbtUnprotected) notify("critical", "qBittorrent is outside the tunnel",
@@ -420,8 +448,8 @@ Panel {
       return "The leak check (vpn-verify) found " + verifyFailures.length + " failing check" + (verifyFailures.length === 1 ? "" : "s") + "."
     if (qbtUnprotected) return "A qBittorrent process is running outside the qbtvpn namespace."
     if (otherApps.length > 0) return "A torrent app other than qBittorrent (" + otherAppsText + ") is running outside the qbtvpn namespace."
-    if (blocked) return "The VPN dropped: " + (wanted !== "" ? wanted : "the chosen server") + " is selected but not connected, so the kill switch is blocking regular traffic."
-    if (torrentDown) return "The torrent tunnel (namespace qbtvpn) is down, so qBittorrent has no network."
+    if (blockedSteady) return "The VPN dropped: " + (wanted !== "" ? wanted : "the chosen server") + " is selected but not connected, so the kill switch is blocking regular traffic."
+    if (torrentDownSteady) return "The torrent tunnel (namespace qbtvpn) is down, so qBittorrent has no network."
     return ""
   }
 
@@ -665,6 +693,24 @@ Panel {
     repeat: true
     triggeredOnStart: true
     onTriggered: vpn.refresh(false)
+  }
+
+  // `blocked` and `torrentDown` become alarms only after holding still for
+  // settleMs with no command running. The timer runs while the state is up and
+  // unconfirmed and re-checks on every tick, so a drop that begins during a
+  // switch is still reported once the switch is over.
+  Timer {
+    interval: vpn.settleMs
+    repeat: true
+    running: vpn.blocked && !vpn.blockedSteady
+    onTriggered: if (vpn.blocked && !vpn.settling) vpn.blockedSteady = true
+  }
+
+  Timer {
+    interval: vpn.settleMs
+    repeat: true
+    running: vpn.torrentDown && !vpn.torrentDownSteady
+    onTriggered: if (vpn.torrentDown && !vpn.settling) vpn.torrentDownSteady = true
   }
 
   Timer {

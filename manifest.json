@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.ralphk-86.omarchy-proton",
   "name": "Proton VPN + Kill Switch + Torrent Tunnel",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "author": "Ralph Koterwa",
   "license": "MIT",
   "description": "Proton VPN kill switch, torrent tunnel & leak checks in the bar. Pick your own IP (\"Normal connection\") or a Proton server in the panel; while a server is selected, the kill switch is always on. qBittorrent runs in its own WireGuard tunnel that it cannot leave. The leak check saves a report you can browse. Drop .conf files into a folder and press Refresh. Unofficial. Not affiliated with Proton AG.",
