@@ -322,6 +322,7 @@ hold:
 | `systemd-resolved` answers over a Unix socket, which a network namespace does not isolate | the namespace gets its own `nsswitch.conf` without the `resolve` and `mdns` modules, so lookups go to the in-tunnel resolver |
 | IPv6 around an IPv4-only tunnel | IPv6 is disabled inside the namespace, and by default on the host |
 | qBittorrent started by hand | `/usr/local/bin/qbittorrent` comes first in `PATH`, enters the namespace, and refuses when the tunnel is down |
+| A qBittorrent already running outside the tunnel (started as `/usr/bin/qbittorrent`) | a new qBittorrent hands its torrents and magnet links to the running one over a socket file, which a namespace does not isolate; the wrapper and `qbt-launch` refuse to start while one is running outside |
 
 The status you see is measured, not inferred: a running qBittorrent is reported as protected
 only when the inode of `/proc/<pid>/ns/net` equals the namespace's, and the torrent exit IP is

@@ -23,7 +23,7 @@ outside its namespace.
 | Helper | Arguments | What it can do |
 |---|---|---|
 | `qbt-netns-status` | none allowed | read the namespace and kill switch state |
-| `qbt-launch` | passed to qBittorrent only | start `/usr/bin/qbittorrent` inside the namespace, as the desktop user |
+| `qbt-launch` | passed to qBittorrent only | start `/usr/bin/qbittorrent` inside the namespace, as the desktop user; refuses while the tunnel is down or a qBittorrent of that user runs outside the namespace |
 | `vpnkit-killswitch` | `on <profile>`, `off`, `status`; validated | load or remove one nftables table |
 | `vpnkit-sync` | `sync`, `torrent <name>`, `remove <name>`; validated | import configs from the fixed drop folder, choose the torrent server, delete a server |
 | `vpn-verify` | none allowed | the read-only leak check |

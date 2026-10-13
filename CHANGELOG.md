@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.4 (2026-10-13)
+
+- **qBittorrent no longer starts while another one runs outside the tunnel.** A qBittorrent
+  started as `/usr/bin/qbittorrent` (skipping the wrapper) runs on the regular connection, and
+  a second qBittorrent of the same user hands every torrent and magnet link it is asked to open
+  to that running one, over a socket file that a network namespace does not isolate. So
+  opening a magnet link went to the instance outside the tunnel, even though the new process
+  was started inside it. The wrapper and `qbt-launch` now refuse to start while a qBittorrent
+  of the desktop user is running outside the namespace, and say which process to close. This
+  was already reported as `TORRENT LEAK` in the bar; now it also cannot be fed new torrents.
+  Reported in the marketplace review of 0.3.3.
+- Tests: static checks pass, the marketplace security baseline is `review-required` with no
+  findings, and the VM suite is 185 of 185. Four new VM tests start qBittorrent while one runs
+  outside the namespace (through the wrapper, through `qbt-launch`, and through the wrapper from
+  inside the namespace) and all four fail without this fix. The VM uses a stand-in binary, so
+  qBittorrent's own handover between instances is not exercised there.
+
 ## 0.3.3 (2026-10-09)
 
 - **No more false "VPN dropped" alarm when you switch servers or go back to your own

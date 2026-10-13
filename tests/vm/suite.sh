@@ -253,6 +253,14 @@ pkill -x qbittorrent; sleep 1
 as_user /usr/bin/qbittorrent 600 </dev/null >/dev/null 2>&1 &
 sleep 1
 is "a qbittorrent outside the namespace is detected" "$(status .qbt_unprotected)" "true"
+# A second qBittorrent hands what it opens to the running one over a socket
+# file, which crosses namespaces: with one outside, nothing may start another.
+no "with one outside, the wrapper refuses to start qbittorrent" as_user /usr/local/bin/qbittorrent 5
+no "with one outside, qbt-launch refuses too" as_user sudo -n /usr/local/bin/qbt-launch 5
+no "with one outside, the wrapper refuses even from inside the namespace" ip netns exec qbtvpn runuser -u "$U" -- /usr/local/bin/qbittorrent 5
+as_user /usr/local/bin/qbittorrent 600 </dev/null >/dev/null 2>&1 &
+sleep 2
+is "no second qbittorrent was started" "$(pgrep -c -x qbittorrent)" "1"
 pkill -x qbittorrent; sleep 1
 # A lookup server that never stops answering must not make a helper buffer it.
 big=$(as_user timeout 20 bash -c '. /usr/local/lib/vpnkit/common.sh; vpnkit_fetch http://192.0.2.80:8080/endless 5 | wc -c')

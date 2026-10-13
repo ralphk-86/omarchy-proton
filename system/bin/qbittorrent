@@ -30,6 +30,21 @@ in_namespace() {
   [[ -n "$mine" && "$mine" == "$theirs" ]]
 }
 
+# A qBittorrent already running outside the namespace would receive whatever
+# this one was asked to open (see vpnkit_qbt_outside_pids), so refuse first.
+OUTSIDE=$(vpnkit_qbt_outside_pids "$(stat -Lc '%i' /var/run/netns/"$NS" 2>/dev/null)" "$(id -un)" | paste -sd' ' -)
+if [[ -n "$OUTSIDE" ]]; then
+  cat >&2 <<EOF
+qBittorrent was NOT started: a qBittorrent is already running outside the
+VPN namespace (pid $OUTSIDE).
+
+A new qBittorrent hands its torrents and magnet links to the one already
+running, so they would download on your regular connection. Close that
+qBittorrent (or: kill $OUTSIDE), then start it again.
+EOF
+  exit 1
+fi
+
 if in_namespace; then
   exec "$REAL" "$@"
 fi

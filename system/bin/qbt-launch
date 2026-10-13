@@ -38,6 +38,15 @@ if ! ip netns exec "$NS" ip route show default 2>/dev/null | grep -q .; then
   exit 1
 fi
 
+# FAIL CLOSED: a qBittorrent of the user running outside the namespace would be
+# handed whatever this one is asked to open (see vpnkit_qbt_outside_pids).
+OUTSIDE=$(vpnkit_qbt_outside_pids "$(stat -Lc '%i' /var/run/netns/"$NS")" "$TARGET_USER" | paste -sd' ' -)
+if [[ -n "$OUTSIDE" ]]; then
+  echo "qbt-launch: qBittorrent is already running outside the namespace (pid $OUTSIDE) - refusing." >&2
+  echo "It would receive these torrents and download them outside the tunnel. Close it first." >&2
+  exit 1
+fi
+
 # The GUI still works normally: a network namespace isolates networking only,
 # and the Wayland socket is a filesystem socket, not a network one. sudo keeps
 # WAYLAND_DISPLAY for this command (see the sudoers file); when it is missing
