@@ -155,15 +155,16 @@ transmission-cli deluge deluge-gtk deluged rtorrent ktorrent fragments tixati bi
 frostwire webtorrent"
 
 vpnkit_qbt_outside_pids() {  # vpnkit_qbt_outside_pids <namespace inode or ""> <user>
-  # Prints each qBittorrent of <user> that is NOT inside the torrent namespace.
-  # A second qBittorrent of the same user hands its torrents and magnets to the
-  # running one over a socket file, and socket files cross network namespaces,
-  # so while one of these runs, starting another inside the namespace would
-  # still download outside it. Only the real binary counts: the wrapper is a
-  # script with the same process name. A process that vanished is skipped.
+  # Prints each qBittorrent (GUI or qbittorrent-nox) of <user> that is NOT
+  # inside the torrent namespace. A second qBittorrent of the same user hands
+  # its torrents and magnets to the running one over a socket file, and socket
+  # files cross network namespaces; the GUI and nox share that socket by
+  # default. So while one of these runs, starting another inside the namespace
+  # would still download outside it. Only the real binaries count: the wrapper
+  # is a script with the same process name. A process that vanished is skipped.
   local ns_inode="$1" pid pns
-  for pid in $(pgrep -x qbittorrent -u "$2" 2>/dev/null); do
-    [[ "$(readlink "/proc/$pid/exe" 2>/dev/null)" =~ ^/usr/bin/qbittorrent(\ \(deleted\))?$ ]] || continue
+  for pid in $(pgrep -x 'qbittorrent|qbittorrent-nox' -u "$2" 2>/dev/null); do
+    [[ "$(readlink "/proc/$pid/exe" 2>/dev/null)" =~ ^/usr/bin/qbittorrent(-nox)?(\ \(deleted\))?$ ]] || continue
     pns=$(stat -Lc '%i' "/proc/$pid/ns/net" 2>/dev/null) || continue
     [[ -n "$ns_inode" && "$pns" == "$ns_inode" ]] || printf '%s\n' "$pid"
   done

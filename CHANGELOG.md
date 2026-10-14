@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.5 (2026-10-14)
+
+- **The 0.3.4 guard also covers `qbittorrent-nox`.** The GUI and `qbittorrent-nox` share the
+  default profile and its socket file, so a `qbittorrent-nox` running outside the tunnel was
+  handed magnet links from the protected launcher just like an outside GUI. The wrapper and
+  `qbt-launch` now refuse while either runs outside the namespace. Reported in the
+  marketplace review of 0.3.4.
+- Tests: static checks pass, the marketplace security baseline is `review-required` with no
+  findings, and the VM suite is 187 of 187 (two runs). The two new VM tests start qBittorrent
+  while a stand-in `qbittorrent-nox` runs outside the namespace, and both fail without this fix.
+
 ## 0.3.4 (2026-10-13)
 
 - **qBittorrent no longer starts while another one runs outside the tunnel.** A qBittorrent

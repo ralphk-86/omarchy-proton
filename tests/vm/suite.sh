@@ -262,6 +262,13 @@ as_user /usr/local/bin/qbittorrent 600 </dev/null >/dev/null 2>&1 &
 sleep 2
 is "no second qbittorrent was started" "$(pgrep -c -x qbittorrent)" "1"
 pkill -x qbittorrent; sleep 1
+# qbittorrent-nox shares the GUI's profile and socket, so it counts the same.
+cp /usr/bin/sleep /usr/bin/qbittorrent-nox     # stand-in
+as_user /usr/bin/qbittorrent-nox 600 </dev/null >/dev/null 2>&1 &
+sleep 1
+no "with qbittorrent-nox outside, the wrapper refuses to start qbittorrent" as_user /usr/local/bin/qbittorrent 5
+no "with qbittorrent-nox outside, qbt-launch refuses too" as_user sudo -n /usr/local/bin/qbt-launch 5
+pkill -x qbittorrent-nox; sleep 1; rm -f /usr/bin/qbittorrent-nox
 # A lookup server that never stops answering must not make a helper buffer it.
 big=$(as_user timeout 20 bash -c '. /usr/local/lib/vpnkit/common.sh; vpnkit_fetch http://192.0.2.80:8080/endless 5 | wc -c')
 is "an endless lookup response is dropped, not buffered" "$big" "0"
