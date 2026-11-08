@@ -171,6 +171,22 @@ vpnkit_qbt_outside_pids() {  # vpnkit_qbt_outside_pids <namespace inode or ""> <
   return 0
 }
 
+vpnkit_resolver_safe() {  # vpnkit_resolver_safe <dir holding resolv.conf + nsswitch.conf>
+  # True when a process reading these files can only resolve names through the
+  # tunnel: nsswitch.conf exists and its hosts line does not use `resolve` or
+  # `mdns` (systemd-resolved answers over a Unix socket, which a network
+  # namespace does not isolate), and resolv.conf names at least one nameserver.
+  # Called on /etc/netns/<ns> before entering the namespace, and on /etc from
+  # inside it, where `ip netns exec` bind-mounts those files - but only the ones
+  # that existed when the process entered: a process that entered too early keeps
+  # the host's files for its whole life.
+  local dir="$1"
+  [[ -s "$dir/nsswitch.conf" && -s "$dir/resolv.conf" ]] || return 1
+  grep -qE '^[[:space:]]*hosts:' "$dir/nsswitch.conf" || return 1
+  ! grep -qE '^[[:space:]]*hosts:.*\b(resolve|mdns[46_a-z]*)\b' "$dir/nsswitch.conf" || return 1
+  grep -qE '^[[:space:]]*nameserver[[:space:]]+[^[:space:]]' "$dir/resolv.conf"
+}
+
 vpnkit_outside_clients() {  # vpnkit_outside_clients <namespace inode or "">
   # Prints each running torrent app (from TORRENT_CLIENTS) that is NOT inside
   # the torrent namespace, once per name. Needs root to read other users' /proc.

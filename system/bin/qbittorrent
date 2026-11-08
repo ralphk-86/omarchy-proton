@@ -46,6 +46,19 @@ EOF
 fi
 
 if in_namespace; then
+  # Inside the namespace, /etc is what `ip netns exec` mounted when this
+  # process (or its parent) entered. If it entered before the namespace's
+  # resolver files existed, /etc still holds the host's nsswitch.conf, and
+  # lookups would reach systemd-resolved outside the tunnel. Refuse then.
+  if ! vpnkit_resolver_safe /etc; then
+    cat >&2 <<EOF
+qBittorrent was NOT started: this shell is inside the VPN namespace '$NS', but
+it entered before the namespace's DNS settings existed, so name lookups would
+go around the tunnel. Close this shell and start qBittorrent again from the
+launcher or a new terminal.
+EOF
+    exit 1
+  fi
   exec "$REAL" "$@"
 fi
 

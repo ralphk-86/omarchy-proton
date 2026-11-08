@@ -316,6 +316,36 @@ no "tunnel down: qbittorrent refuses to start" as_user /usr/local/bin/qbittorren
 ip -n qbtvpn link set pqbt0 up; ip -n qbtvpn route replace default dev pqbt0
 is "tunnel restored" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "10.2.0.3"
 
+# The namespace's resolver files must be in place before anything enters: a
+# process that enters without them keeps the host's nsswitch.conf (resolve ->
+# systemd-resolved over a Unix socket, outside the tunnel) for its whole life.
+# Reported in the marketplace review of 0.3.6.
+NSDIR=/etc/netns/qbtvpn; NSBAK=$(mktemp -d)
+yes "qbt-netns-up writes the resolver files before the default route" \
+  awk '/vpnkit_resolver_safe "\/etc\/netns/ && !r {r=NR} /route add default/ && !d {d=NR} END {exit !(r && d && r < d)}' /usr/local/bin/qbt-netns-up
+yes "no temporary files are left in $NSDIR (ip netns exec mounts every entry)" \
+  bash -c "[[ \$(ls -A $NSDIR | sort | paste -sd,) == nsswitch.conf,resolv.conf ]]"
+mv "$NSDIR/nsswitch.conf" "$NSBAK/"
+no "without the namespace's nsswitch.conf, qbt-launch refuses" as_user sudo -n /usr/local/bin/qbt-launch 5
+no "and so does the wrapper" as_user /usr/local/bin/qbittorrent 5
+no "and the wrapper refuses inside a namespace entered without them" ip netns exec qbtvpn runuser -u "$U" -- /usr/local/bin/qbittorrent 5
+# A qBittorrent that entered too early is caught by the leak check.
+ip netns exec qbtvpn runuser -u "$U" -- /usr/bin/qbittorrent 600 </dev/null >/dev/null 2>&1 &
+sleep 1
+mv "$NSBAK/nsswitch.conf" "$NSDIR/"
+OUT=$(vpn-verify 2>&1); rc=$?
+is "a qBittorrent that entered before the resolver files existed fails the leak check" "$rc" "1"
+yes "and is named" grep -q "FAIL.*sees the host's DNS settings" <<<"$OUT"
+pkill -x qbittorrent; sleep 1
+printf 'hosts: mymachines resolve [!UNAVAIL=return] files myhostname dns\n' > "$NSBAK/unsafe"
+cp "$NSDIR/nsswitch.conf" "$NSBAK/nsswitch.conf"; cp "$NSBAK/unsafe" "$NSDIR/nsswitch.conf"
+no "with resolve in the namespace's nsswitch.conf, qbt-launch refuses" as_user sudo -n /usr/local/bin/qbt-launch 5
+cp "$NSBAK/nsswitch.conf" "$NSDIR/nsswitch.conf"; rm -rf "$NSBAK"
+as_user /usr/local/bin/qbittorrent 600 </dev/null >/dev/null 2>&1 &
+sleep 2
+yes "a qBittorrent started normally resolves only through the tunnel" bash -c '/usr/local/bin/vpn-verify | grep -q "PASS.*resolves names only through the tunnel"'
+pkill -x qbittorrent; sleep 1
+
 # ---------------------------------------------------------------------------
 section "4. Desktop VPN and kill switch"
 nft -f - <<EOF

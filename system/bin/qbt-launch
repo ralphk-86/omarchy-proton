@@ -32,6 +32,18 @@ if ! ip netns list 2>/dev/null | grep -qw "$NS"; then
   exit 1
 fi
 
+# FAIL CLOSED: refuse unless the namespace's resolver files are in place.
+# `ip netns exec` mounts them over /etc only if they exist when qBittorrent
+# enters, and it keeps whatever it got for its whole life; without them it would
+# use the host's nsswitch.conf, whose `resolve` module reaches systemd-resolved
+# over a Unix socket and resolves outside the tunnel. Checked before the route,
+# so a namespace still being built (or whose build failed) is refused.
+if ! vpnkit_resolver_safe "/etc/netns/$NS"; then
+  echo "qbt-launch: the VPN namespace's DNS settings (/etc/netns/$NS) are missing or unsafe - refusing." >&2
+  echo "Rebuild the tunnel: sudo systemctl restart qbt-netns.service" >&2
+  exit 1
+fi
+
 # FAIL CLOSED: refuse to launch unless the tunnel actually has a route.
 if ! ip netns exec "$NS" ip route show default 2>/dev/null | grep -q .; then
   echo "qbt-launch: tunnel is DOWN - refusing to launch qBittorrent." >&2

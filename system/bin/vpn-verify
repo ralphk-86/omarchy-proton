@@ -179,7 +179,17 @@ FOUND=0
 for pid in $(pgrep -x qbittorrent 2>/dev/null); do
   FOUND=1
   PNS=$($SUDO stat -Lc '%i' "/proc/$pid/ns/net" 2>/dev/null)
-  if [[ "$PNS" == "$NS_INODE" ]]; then ok "pid $pid is inside the namespace (inode match)"
+  if [[ "$PNS" == "$NS_INODE" ]]; then
+    ok "pid $pid is inside the namespace (inode match)"
+    # Inside is not enough: the /etc it sees is what `ip netns exec` mounted
+    # when it entered. A process that entered before the namespace's resolver
+    # files existed keeps the host's nsswitch.conf, whose `resolve` module
+    # answers over systemd-resolved's Unix socket, outside the tunnel.
+    if $SUDO bash -c '. /usr/local/lib/vpnkit/common.sh; vpnkit_resolver_safe "$1"' _ "/proc/$pid/root/etc" 2>/dev/null; then
+      ok "pid $pid resolves names only through the tunnel (its nsswitch.conf excludes resolve/mdns)"
+    else
+      no "pid $pid sees the host's DNS settings (entered the namespace before they were set up) - names can resolve outside the tunnel; restart qBittorrent"
+    fi
   else no "pid $pid is running OUTSIDE the namespace - kill it now"; fi
 done
 (( FOUND )) || meh "qBittorrent is not running"

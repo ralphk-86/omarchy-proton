@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.7 (2026-11-08)
+
+- **qBittorrent can no longer enter the torrent namespace before its resolver files exist.**
+  `qbt-netns-up` gave the tunnel its default route before it wrote `/etc/netns/qbtvpn/resolv.conf`
+  and `nsswitch.conf`, and `qbt-launch` only checked for that route. `ip netns exec` bind-mounts
+  those files only if they exist when a process enters, and the process keeps that view for its
+  whole life. So a qBittorrent started in that window during first-time setup (or after a setup
+  that failed there) kept the host's `nsswitch.conf`; on a host using `nss-resolve`, tracker
+  lookups reached systemd-resolved over its Unix socket and left through the normal connection.
+  Now the files are written, each one complete (temporary file and rename), before the namespace
+  even exists, and the build stops if they are not safe; `qbt-launch` and the wrapper refuse
+  while they are missing or list `resolve`/`mdns` (the wrapper, inside the namespace, checks the
+  `/etc` it actually sees); and the leak check reads the `nsswitch.conf` and `resolv.conf` each
+  running qBittorrent sees, so one that entered too early fails it. Reported in the marketplace
+  review of 0.3.6.
+- Tests: static checks pass, the marketplace security baseline is `review-required` with no
+  findings, and the VM suite is 207 of 207. The 9 new VM tests check that the resolver files are
+  written before the route and leave no temporary entries in `/etc/netns/qbtvpn`, that `qbt-launch`
+  and the wrapper refuse without them or with `resolve` in them (the wrapper also from inside the
+  namespace), and that a qBittorrent that entered before they existed fails the leak check.
+
 ## 0.3.6 (2026-11-07)
 
 - **IPv6 is now switched off in saved network profiles that carry IPv6 DNS servers.**

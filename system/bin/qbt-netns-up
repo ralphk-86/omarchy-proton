@@ -56,6 +56,67 @@ fi
 ip netns del "$NS" 2>/dev/null || true
 ip link del "$WG_IF" 2>/dev/null || true
 
+# --- namespace-local DNS: written BEFORE the namespace has any route ---------
+# `ip netns exec` bind-mounts /etc/netns/<ns>/* over /etc for the process it
+# starts, but only the files that exist at that moment, and a running process
+# keeps those mounts for life. So the resolver files must be complete before the
+# tunnel has a default route (qbt-launch starts qBittorrent as soon as it sees
+# one): otherwise a qBittorrent entering in between would keep the host's
+# nsswitch.conf, whose `resolve` module reaches systemd-resolved over a Unix
+# socket and resolves outside the tunnel. Each file is written to a temporary
+# name and renamed into place, so a reader never sees a partial file.
+#
+# resolv.conf: processes inside the namespace read /etc/netns/<ns>/resolv.conf
+# as their /etc/resolv.conf. Pointing it at the in-tunnel resolver means DNS is
+# only reachable THROUGH the tunnel. No tunnel, no DNS. No leak.
+mkdir -p "/etc/netns/$NS"
+# Temporary files live next to the folder, not in it: `ip netns exec` bind-mounts
+# every entry of /etc/netns/<ns>/ over /etc. Same filesystem, so the renames are atomic.
+NSDNS_TMP=$(mktemp -d "/etc/netns/.vpnkit-$NS.XXXXXX")
+{
+  echo "# In-tunnel DNS. Only reachable via the WireGuard tunnel."
+  echo "# No tunnel => no resolver => no DNS leak, by construction."
+  for d in ${DNS//,/ }; do
+    [[ "$d" == *:* && "${DISABLE_IPV6:-1}" == "1" ]] && continue
+    echo "nameserver $d"
+  done
+  echo "options edns0 trust-ad"
+} > "$NSDNS_TMP/resolv.conf"
+
+# --- CRITICAL: namespace-local nsswitch.conf --------------------------------
+# The host's nsswitch uses the `resolve` NSS module, which talks to
+# systemd-resolved over a UNIX SOCKET in /run. Unix sockets are NOT isolated by
+# a network namespace, so resolved - running in the ROOT namespace - would
+# happily answer lookups over the real interface. That is a genuine DNS leak.
+#
+# Dropping `resolve` and `mdns` forces glibc to speak plain DNS to the
+# nameservers in the namespace's resolv.conf, which are only reachable through
+# the tunnel. No tunnel => no DNS.
+cat > "$NSDNS_TMP/nsswitch.conf" <<'NSS'
+# Namespace-local NSS config. Deliberately excludes the `resolve` (systemd-
+# resolved) and `mdns` modules - see qbt-netns-up for why.
+passwd:     files systemd
+group:      files [SUCCESS=merge] systemd
+shadow:     files systemd
+gshadow:    files systemd
+publickey:  files
+hosts:      files myhostname dns
+networks:   files
+protocols:  files
+services:   files
+ethers:     files
+rpc:        files
+netgroup:   files
+NSS
+chmod 644 "$NSDNS_TMP/resolv.conf" "$NSDNS_TMP/nsswitch.conf"
+mv -f "$NSDNS_TMP/nsswitch.conf" "/etc/netns/$NS/nsswitch.conf"
+mv -f "$NSDNS_TMP/resolv.conf" "/etc/netns/$NS/resolv.conf"
+rmdir "$NSDNS_TMP"
+if ! vpnkit_resolver_safe "/etc/netns/$NS"; then
+  log "ERROR: the namespace resolver files in /etc/netns/$NS are not safe - not building the tunnel."
+  exit 1
+fi
+
 # --- build the namespace ----------------------------------------------------
 log "creating namespace $NS"
 ip netns add "$NS"
@@ -132,48 +193,6 @@ done
 ip -n "$NS" link set "$WG_IF" up
 ip -n "$NS" route add default dev "$WG_IF"
 
-# --- namespace-local DNS ----------------------------------------------------
-# Processes inside the namespace read /etc/netns/<ns>/resolv.conf as their
-# /etc/resolv.conf. Pointing it at the in-tunnel resolver means DNS is only
-# reachable THROUGH the tunnel. No tunnel, no DNS. No leak.
-mkdir -p "/etc/netns/$NS"
-{
-  echo "# In-tunnel DNS. Only reachable via the WireGuard tunnel."
-  echo "# No tunnel => no resolver => no DNS leak, by construction."
-  for d in ${DNS//,/ }; do
-    [[ "$d" == *:* && "${DISABLE_IPV6:-1}" == "1" ]] && continue
-    echo "nameserver $d"
-  done
-  echo "options edns0 trust-ad"
-} > "/etc/netns/$NS/resolv.conf"
-chmod 644 "/etc/netns/$NS/resolv.conf"
-
-# --- CRITICAL: namespace-local nsswitch.conf --------------------------------
-# The host's nsswitch uses the `resolve` NSS module, which talks to
-# systemd-resolved over a UNIX SOCKET in /run. Unix sockets are NOT isolated by
-# a network namespace, so resolved - running in the ROOT namespace - would
-# happily answer lookups over the real interface. That is a genuine DNS leak.
-#
-# Dropping `resolve` and `mdns` forces glibc to speak plain DNS to the
-# nameservers in the namespace's resolv.conf, which are only reachable through
-# the tunnel. No tunnel => no DNS.
-cat > "/etc/netns/$NS/nsswitch.conf" <<'NSS'
-# Namespace-local NSS config. Deliberately excludes the `resolve` (systemd-
-# resolved) and `mdns` modules - see qbt-netns-up for why.
-passwd:     files systemd
-group:      files [SUCCESS=merge] systemd
-shadow:     files systemd
-gshadow:    files systemd
-publickey:  files
-hosts:      files myhostname dns
-networks:   files
-protocols:  files
-services:   files
-ethers:     files
-rpc:        files
-netgroup:   files
-NSS
-chmod 644 "/etc/netns/$NS/nsswitch.conf"
 
 
 log "namespace $NS is up"
