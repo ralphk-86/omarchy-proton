@@ -297,6 +297,23 @@ if [[ -n "$ACTIVE" ]]; then
   DNSLINKS=$(resolvectl dns 2>/dev/null | awk -F': ' '$2 != "" {print $1}' | sed -n 's/.*(\(.*\))/\1/p' | tr '\n' ' ')
   if [[ "$DNSLINKS" == "$ACTIVE " ]]; then ok "DNS servers are configured on the VPN link only"
   else no "DNS servers are configured on: ${DNSLINKS:-none} (expected only $ACTIVE)"; fi
+  # Global servers (resolved.conf DNS=, or NetworkManager [global-dns] such as
+  # Omarchy's "omarchy dns Cloudflare") are asked alongside the VPN link and,
+  # with a global-dns override, instead of it: the VPN's resolver goes unused.
+  GDNS=$(resolvectl dns 2>/dev/null | sed -n 's/^Global: *//p')
+  if [[ -n "${GDNS// /}" ]]; then
+    no "global DNS servers override the VPN's DNS: $GDNS (from /etc/systemd/resolved.conf DNS= or NetworkManager [global-dns]; 'omarchy dns' sets both). Set DNS per connection instead"
+    for d in $GDNS; do
+      d=${d%%#*}; d=${d%%%*}
+      [[ "$d" == *:* ]] && continue   # IPv6 is checked in section 8
+      RDEV=$(ip -4 route get "$d" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p')
+      if [[ -n "$RDEV" && "$RDEV" != "$ACTIVE" ]]; then
+        no "global DNS server $d is reached through $RDEV, outside the VPN - a DNS leak"
+      fi
+    done
+  else
+    ok "no global DNS servers override the VPN's DNS"
+  fi
 
   # Configured is not the same as used. Follow each DNS server the machine
   # would ask (the VPN link's, and any in resolv.conf that bypasses the

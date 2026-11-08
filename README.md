@@ -37,7 +37,8 @@ Details: [Install](#install).
 [How to use it](#how-to-use-it) · [Requirements](#requirements) · [Install](#install) ·
 [Add servers](#add-servers) · [How the protection works](#how-the-protection-works) ·
 [Check it, and get out of trouble](#check-it-and-get-out-of-trouble) ·
-[Using it with Tailscale](#using-it-with-tailscale) · [Settings](#settings) ·
+[Using it with Tailscale](#using-it-with-tailscale) ·
+[DNS and Omarchy's DNS setting](#dns-and-omarchys-dns-setting) · [Settings](#settings) ·
 [What gets installed](#what-gets-installed) · [Update](#update) · [Uninstall](#uninstall) ·
 [Security and privacy](#security-and-privacy) · [Limits](#limits) ·
 [Development and tests](#development-and-tests)
@@ -380,6 +381,30 @@ Tailscale keeps working with a server selected: the kill switch lets traffic thr
 rules that take precedence over the VPN's. Nothing to configure. If a Tailscale machine does
 not answer while a server is selected, check with `vpn-toggle off` whether it answers without
 the VPN; if it does, please open an issue.
+
+## DNS and Omarchy's DNS setting
+
+While a server is selected, DNS should go to the server's own resolver (Proton: `10.2.0.1`),
+inside the tunnel. A **global** DNS setting overrides that for every connection, the VPN's
+included: Omarchy's `omarchy dns Cloudflare` (and Google, Custom) writes one into
+`/etc/NetworkManager/conf.d/20-omarchy-dns.conf` (`[global-dns]`) and into `DNS=` in
+`/etc/systemd/resolved.conf`. Your lookups then go to that provider instead. The kill switch
+still keeps them inside the tunnel, so your own IP does not show, but the VPN's resolver (and
+Proton's NetShield) goes unused and DNS leak test sites show the other provider. The installer
+warns about it and the leak check fails on it.
+
+To keep, say, Cloudflare on the normal connection and the VPN's DNS while a server is picked,
+set it per connection and remove the global setting:
+
+```sh
+nmcli connection modify "Wired connection 1" ipv4.dns "1.1.1.1 1.0.0.1" ipv4.ignore-auto-dns yes
+sudo rm /etc/NetworkManager/conf.d/20-omarchy-dns.conf
+sudo sed -i 's/^DNS=/#DNS=/' /etc/systemd/resolved.conf
+sudo systemctl reload NetworkManager && sudo systemctl restart systemd-resolved
+```
+
+Then pick the server again and run the leak check. Running `omarchy dns ...` later puts the
+global setting back.
 
 ## Settings
 

@@ -50,18 +50,32 @@ for f in qbt-netns-up qbt-netns-down qbt-netns-status qbt-launch qbittorrent \
 done
 rm -rf /etc/netns/qbtvpn /etc/vpnkit/providers
 # Your settings survive a plain uninstall, so a reinstall behaves the same.
-(( PURGE )) && rm -rf /etc/vpnkit
-rm -f /etc/sudoers.d/99-vpnkit /etc/sudoers.d/10-vpnkit
-
+# Before --purge removes /etc/vpnkit: ipv6-profiles.saved holds each profile's
+# IPv6 settings from before the install (method, dns, dns-search).
 if (( RESTORE_V6 )); then
+  V6_SAVED=/etc/vpnkit/ipv6-profiles.saved
   rm -f /etc/sysctl.d/99-vpnkit-disable-ipv6.conf
   sysctl -qw net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0
   while IFS=: read -r name type; do
     case "$type" in
-      802-3-ethernet|802-11-wireless) nmcli connection modify "$name" ipv6.method auto || true ;;
+      802-3-ethernet|802-11-wireless)
+        saved=""; method="auto"; dns=""; search=""
+        [[ -f "$V6_SAVED" ]] && saved=$(awk -F'\t' -v n="$name" '$1 == n { print; exit }' "$V6_SAVED")
+        if [[ -n "$saved" ]]; then
+          IFS=$'\t' read -r _ method dns search <<< "$saved"
+          [[ -n "$method" && "$method" != "disabled" ]] || method="auto"
+        fi
+        nmcli connection modify "$name" ipv6.method "$method" ipv6.dns "$dns" ipv6.dns-search "$search" \
+          || nmcli connection modify "$name" ipv6.method auto || true
+        ;;
     esac
   done < <(nmcli -t -f NAME,TYPE connection show)
+  rm -f "$V6_SAVED"
   echo "IPv6 re-enabled; reconnect the network (or reboot) for addresses to come back."
 fi
+
+(( PURGE )) && rm -rf /etc/vpnkit
+rm -f /etc/sudoers.d/99-vpnkit /etc/sudoers.d/10-vpnkit
+
 rm -rf /usr/local/lib/vpnkit
 echo "vpnkit system part removed."

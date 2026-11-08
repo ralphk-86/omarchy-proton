@@ -163,6 +163,13 @@ JS
 # ---------------------------------------------------------------------------
 section "1. Fresh install through install.sh (a stock machine without wireguard-tools)"
 no "wg is not installed yet" command -v wg
+# Omarchy's DNS picker puts ipv6.dns on every wired/Wi-Fi profile, and
+# NetworkManager then refuses ipv6.method=disabled unless it is cleared in the
+# same call (seen on a real install, 0.3.5). Recreate that before installing.
+PPROF=$(nmcli -g GENERAL.CONNECTION device show "$PHYS" 2>/dev/null | head -1)
+nmcli connection modify "$PPROF" ipv6.method auto ipv6.dns "2606:4700:4700::1111" ipv6.ignore-auto-dns yes
+is "the physical profile carries an IPv6 DNS server, as Omarchy's DNS picker leaves it" \
+  "$(nmcli -g ipv6.dns connection show "$PPROF" | sed 's/\\:/:/g')" "2606:4700:4700::1111"
 # The real path: the user runs install.sh in a terminal and types the sudo
 # password once.
 in_terminal "$PLUGIN/install.sh" > /tmp/install.log 2>&1; rc=$?
@@ -195,6 +202,11 @@ is "drop folder is private" "$(stat -c %a "$DROP")" "700"
 is "drop folder belongs to the user" "$(stat -c %U "$DROP")" "$U"
 is "IPv6 is off on the physical link" "$(sysctl -n net.ipv6.conf.$PHYS.disable_ipv6)" "1"
 is "loopback keeps IPv6" "$(sysctl -n net.ipv6.conf.lo.disable_ipv6)" "0"
+is "the physical profile has ipv6.method=disabled despite its IPv6 DNS server" \
+  "$(nmcli -g ipv6.method connection show "$PPROF")" "disabled"
+no "the installer printed no IPv6 warning" grep -q "Could not set ipv6.method=disabled" /tmp/install.log
+yes "the profile's IPv6 settings were saved for the uninstall" \
+  grep -qF "$(printf '%s\tauto\t2606:4700:4700::1111' "$PPROF")" /etc/vpnkit/ipv6-profiles.saved
 no "tester has no passwordless sudo in general" as_user sudo -n true
 yes "tester may run the status helper without a password" as_user sudo -n /usr/local/bin/qbt-netns-status
 no "tester may NOT run the leak check with arguments" as_user sudo -n /usr/local/bin/vpn-verify --fail-closed
@@ -396,6 +408,20 @@ yes "and is named" grep -q "FAIL.*$VPHYS can answer DNS questions outside the VP
 if [[ -n "${prevdns// /}" ]]; then resolvectl dns "$VPHYS" $prevdns; resolvectl default-route "$VPHYS" "${prevdr:-no}"
 else resolvectl revert "$VPHYS"; fi
 
+# A global DNS server (what `omarchy dns Cloudflare` writes into resolved.conf)
+# overrides the VPN's resolver: the check must fail and name it.
+yes "with no global DNS server, the check says so" grep -q "PASS.*no global DNS servers override" <<<"$(vpn-verify 2>&1)"
+mkdir -p /etc/systemd/resolved.conf.d
+printf '[Resolve]\nDNS=192.0.2.53\n' > /etc/systemd/resolved.conf.d/99-suite-global.conf
+systemctl restart systemd-resolved; sleep 2
+OUT=$(vpn-verify 2>&1); rc=$?
+is "a global DNS server fails the leak check" "$rc" "1"
+yes "and is named" grep -q "FAIL.*global DNS servers override the VPN's DNS: 192.0.2.53" <<<"$OUT"
+rm -f /etc/systemd/resolved.conf.d/99-suite-global.conf
+systemctl restart systemd-resolved; sleep 2
+as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
+yes "after removing it the leak check passes again" vpn-verify
+
 # A server that never answers (its side no longer knows our key, as when a
 # config is revoked) while NetworkManager still shows the profile as up.
 ip netns exec provider /tmp/wg-static set wgA peer "$(cat "$WG/deskA.pub")" remove
@@ -480,6 +506,9 @@ no "sudoers rule gone" test -e /etc/sudoers.d/99-vpnkit
 no "dispatcher hook gone" test -e /etc/NetworkManager/dispatcher.d/50-vpnkit
 no "service gone" test -e /etc/systemd/system/qbt-netns.service
 is "IPv6 back on" "$(sysctl -n net.ipv6.conf.all.disable_ipv6)" "0"
+is "the physical profile's IPv6 method is back" "$(nmcli -g ipv6.method connection show "$PPROF")" "auto"
+is "and its IPv6 DNS server is back" "$(nmcli -g ipv6.dns connection show "$PPROF" | sed 's/\\:/:/g')" "2606:4700:4700::1111"
+no "the saved IPv6 settings are cleared" test -e /etc/vpnkit/ipv6-profiles.saved
 yes "servers are kept by a plain uninstall" nmcli connection show proton-ca-1
 yes "settings are kept by a plain uninstall" test -f /etc/vpnkit/vpnkit.conf
 yes "the leak-check reports are kept by a plain uninstall" test -s "$REPORTS/latest.txt"

@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.6 (2026-11-07)
+
+- **IPv6 is now switched off in saved network profiles that carry IPv6 DNS servers.**
+  Omarchy's DNS picker (`omarchy dns Cloudflare`) puts IPv6 DNS servers on every wired and
+  Wi-Fi profile, and NetworkManager refuses `ipv6.method=disabled` while they are there. The
+  installer printed NetworkManager's error and carried on, so the profile kept IPv6 on and could
+  turn it back on for that link at its next activation (the running link stayed covered by the
+  sysctl). The installer now clears the profile's static IPv6 settings in the same call, warns
+  loudly if a profile still cannot be changed, and saves what was there in
+  `/etc/vpnkit/ipv6-profiles.saved`, so the install's rollback and `uninstall.sh
+  --restore-ipv6` put the IPv6 DNS servers back instead of dropping them. Found on a real
+  install.
+- **The leak check fails on a global DNS setting.** A NetworkManager `[global-dns]` section or
+  `DNS=` in `resolved.conf` (both written by `omarchy dns Cloudflare|Google|Custom`) overrides
+  the VPN's DNS: lookups went to that provider instead of the server's resolver. They stayed
+  inside the tunnel, so the home IP never showed, but the VPN's resolver (and Proton's
+  NetShield) went unused, and leak test sites showed the other provider. The check now names
+  global DNS servers, and flags any that is routed outside the VPN as a DNS leak; the
+  installer warns about them. New README section: "DNS and Omarchy's DNS setting".
+- Tests: static checks pass (now with a `.private-patterns` file), the marketplace security
+  baseline is `review-required` with no findings, and the VM suite is 198 of 198. The new VM
+  tests put an IPv6 DNS server on the physical profile before installing (as Omarchy's DNS
+  picker leaves it) and check it is disabled, saved and restored on uninstall, and set a global
+  DNS server and check that the leak check fails and names it.
+
 ## 0.3.5 (2026-10-14)
 
 - **The 0.3.4 guard also covers `qbittorrent-nox`.** The GUI and `qbittorrent-nox` share the

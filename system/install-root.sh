@@ -126,6 +126,34 @@ rm -f "$tmp"
 
 # ----------------------------------------------------------------- ipv6 ----
 WIRED_V6=()   # profiles whose ipv6.method we changed, for rollback
+V6_SAVED=/etc/vpnkit/ipv6-profiles.saved
+# v6_save_profile <name>: remember a profile's IPv6 settings before we clear
+# them (name, method, dns, dns-search, tab separated). An entry already there
+# is kept: it holds the settings from before the first install.
+v6_save_profile() {
+  local name="$1"
+  [[ -f "$V6_SAVED" ]] && cut -f1 "$V6_SAVED" | grep -qxF -- "$name" && return 0
+  printf '%s\t%s\t%s\t%s\n' "$name" \
+    "$(nmcli -g ipv6.method connection show "$name" 2>/dev/null)" \
+    "$(nmcli -g ipv6.dns connection show "$name" 2>/dev/null | sed 's/\\:/:/g')" \
+    "$(nmcli -g ipv6.dns-search connection show "$name" 2>/dev/null)" >> "$V6_SAVED"
+  chmod 644 "$V6_SAVED"
+}
+# v6_restore_profile <name>: put back what v6_save_profile saved (method
+# "auto" when nothing was saved), then forget the entry.
+v6_restore_profile() {
+  local name="$1" saved="" method="auto" dns="" search=""
+  [[ -f "$V6_SAVED" ]] && saved=$(awk -F'\t' -v n="$name" '$1 == n { print; exit }' "$V6_SAVED")
+  if [[ -n "$saved" ]]; then
+    IFS=$'\t' read -r _ method dns search <<< "$saved"
+    [[ -n "$method" && "$method" != "disabled" ]] || method="auto"
+  fi
+  nmcli connection modify "$name" ipv6.method "$method" ipv6.dns "$dns" ipv6.dns-search "$search" \
+    || nmcli connection modify "$name" ipv6.method auto || true
+  if [[ -f "$V6_SAVED" ]]; then
+    awk -F'\t' -v n="$name" '$1 != n' "$V6_SAVED" > "$V6_SAVED.tmp" && mv "$V6_SAVED.tmp" "$V6_SAVED"
+  fi
+}
 if [[ "${DISABLE_IPV6:-1}" == "1" ]]; then
   say "Disabling IPv6 (loopback keeps ::1)"
   install -m 644 "$SYS/sysctl.d/99-vpnkit-disable-ipv6.sysctl" /etc/sysctl.d/99-vpnkit-disable-ipv6.conf
@@ -134,16 +162,32 @@ if [[ "${DISABLE_IPV6:-1}" == "1" ]]; then
   # whose ipv6.method is not "disabled", so the saved profiles have to agree
   # with the sysctl. This takes effect on their next activation; the running
   # link is already covered by the sysctl above.
+  # NetworkManager refuses method=disabled while the profile still carries
+  # static IPv6 settings (e.g. ipv6.dns, which Omarchy's DNS picker sets), so
+  # they are cleared in the same call. What was there is saved in V6_SAVED,
+  # one line per profile, so a rollback or uninstall can put it back.
+  V6_FAILED=()
   while IFS=: read -r name type; do
     case "$type" in
       802-3-ethernet|802-11-wireless)
         method=$(nmcli -g ipv6.method connection show "$name" 2>/dev/null || true)
         if [[ "$method" != "disabled" ]]; then
-          nmcli connection modify "$name" ipv6.method disabled && WIRED_V6+=("$name")
+          v6_save_profile "$name"
+          if nmcli connection modify "$name" ipv6.method disabled ipv6.dns "" ipv6.dns-search "" \
+               ipv6.addresses "" ipv6.gateway "" ipv6.routes ""; then
+            WIRED_V6+=("$name")
+          else
+            V6_FAILED+=("$name")
+          fi
         fi
         ;;
     esac
   done < <(nmcli -t -f NAME,TYPE connection show)
+  if (( ${#V6_FAILED[@]} )); then
+    warn "Could not set ipv6.method=disabled on: ${V6_FAILED[*]}"
+    warn "IPv6 is off now (sysctl), but NetworkManager may turn it back on for that link"
+    warn "when it reconnects. Fix: nmcli connection modify \"<name>\" ipv6.method disabled"
+  fi
   if (( ${#WIRED_V6[@]} )); then
     echo "    ipv6.method=disabled on: ${WIRED_V6[*]}"
     # Apply it to the running link too, without taking the link down; else
@@ -156,6 +200,21 @@ if [[ "${DISABLE_IPV6:-1}" == "1" ]]; then
 else
   echo "    IPv6 left on (DISABLE_IPV6=0)"
   rm -f /etc/sysctl.d/99-vpnkit-disable-ipv6.conf
+fi
+
+# ------------------------------------------------------------ global DNS ---
+# A global DNS setting (NetworkManager [global-dns], or DNS= in resolved.conf;
+# Omarchy's "omarchy dns Cloudflare|Google|Custom" writes both) overrides the
+# DNS of every connection, the VPN's included, so its resolver is never used.
+# Not changed here: it is the user's choice, and the normal connection may rely
+# on it. Said loudly, because the leak check fails on it.
+gdns=$(resolvectl dns 2>/dev/null | sed -n 's/^Global: *//p')
+if [[ -n "${gdns// /}" ]]; then
+  warn "Global DNS servers are set: $gdns"
+  warn "They override the VPN's DNS while a server is selected (the leak check fails on this)."
+  warn "Fix: set DNS per connection (nmcli connection modify \"<name>\" ipv4.dns \"...\"), then remove"
+  warn "the global setting: /etc/NetworkManager/conf.d/*.conf [global-dns], and DNS= in"
+  warn "/etc/systemd/resolved.conf. README: \"DNS and Omarchy's DNS setting\"."
 fi
 
 # ------------------------------------------------------- dispatcher hook ---
@@ -205,7 +264,9 @@ else
   warn "No internet after the install - undoing the network-facing changes"
   rm -f /etc/sysctl.d/99-vpnkit-disable-ipv6.conf
   sysctl -qw net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0 || true
-  for name in "${WIRED_V6[@]}"; do nmcli connection modify "$name" ipv6.method auto || true; done
+  for name in "${WIRED_V6[@]}"; do
+    v6_restore_profile "$name"
+  done
   internet_ok && echo "    internet is back after the rollback" \
               || echo "    STILL no internet - run vpn-rescue, then check the router"
   exit 1
