@@ -73,9 +73,10 @@ vpnkit_dns_answers() {  # vpnkit_dns_answers <IPv4 address>: true when a DNS ser
   [[ "$reply" =~ ^766b[89a-f] ]]
 }
 
-vpnkit_direct_rules_loaded() {  # Chrome direct's table and its main-table rule are in place
+vpnkit_direct_rules_loaded() {  # Chrome direct's table and both its policy rules are in place
   nft list table inet vpnkit_direct >/dev/null 2>&1 \
-    && [[ -n "$(ip -4 rule list priority 90 fwmark "$DIRECT_FWMARK" table main 2>/dev/null)" ]]
+    && [[ -n "$(ip -4 rule list priority 90 fwmark "$DIRECT_FWMARK" table main 2>/dev/null)" ]] \
+    && [[ -n "$(ip -4 rule list priority 89 fwmark "$DIRECT_FWMARK" to 100.64.0.0/10 table 52 2>/dev/null)" ]]
 }
 
 _vpnkit_in_root() {  # _vpnkit_in_root <pid> <absolute path>: that file as <pid> sees it

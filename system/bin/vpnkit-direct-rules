@@ -14,9 +14,11 @@
 #          and add the policy rules for that mark:
 #            * priority 90: the main table, i.e. the normal connection, ahead
 #              of NetworkManager's WireGuard rules
-#            * priority 89: tailnet addresses to Tailscale's table 52, only
-#              while that table exists (so an exit node never captures the
-#              rest), and removed again when it no longer does
+#            * priority 89: tailnet addresses (only those, so an exit node
+#              never captures the rest) to Tailscale's table 52. Always
+#              there: while table 52 is empty or missing, the lookup finds
+#              nothing and falls through to priority 90, and once Tailscale
+#              comes up (after boot, say) Chrome reaches the tailnet
 #          plus NAT: a marked packet leaving a non-tunnel interface took the
 #          tunnel's source address when its route was first chosen, so it is
 #          masqueraded. Loopback is left alone: local services see 127.0.0.1.
@@ -68,11 +70,7 @@ case "$#:${1:-}" in
     # Added only when missing: deleting first would leave a moment in which
     # marked packets follow the VPN instead.
     rule_present "${main_rule[@]}" || ip -4 rule add "${main_rule[@]}"
-    if ip -4 route show table "$TS_TABLE" 2>/dev/null | grep -q .; then
-      rule_present "${tail_rule[@]}" || ip -4 rule add "${tail_rule[@]}"
-    else
-      while ip -4 rule del "${tail_rule[@]}" 2>/dev/null; do :; done
-    fi
+    rule_present "${tail_rule[@]}" || ip -4 rule add "${tail_rule[@]}"
     ;;
   1:down)
     nft delete table inet "$TABLE" 2>/dev/null || true

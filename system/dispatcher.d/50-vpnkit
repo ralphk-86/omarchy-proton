@@ -22,8 +22,8 @@ ACTION="${2:-}"
 NMCLI=/usr/bin/nmcli
 WANTED_FILE=/run/vpnkit/wanted
 
-# Chrome direct, when on: load its rules again, so the rule that keeps tailnet
-# addresses on Tailscale's table follows Tailscale coming and going.
+# Chrome direct, when on: load its rules again (idempotent), so a rule that
+# went missing comes back when a link comes up.
 if vpnkit_direct_on && systemctl is-active --quiet vpnkit-direct.service; then
   /usr/local/bin/vpnkit-direct-rules up >/dev/null 2>&1
 fi

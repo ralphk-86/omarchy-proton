@@ -521,14 +521,16 @@ ino2=$(stat -c %i "$DSLICE" 2>/dev/null)
 yes "restarting the unit recreates the cgroup" test -n "$ino2" -a "$ino2" != "$ino"
 is "rules follow a recreated cgroup" "$(slice_ip)" "$HOME_IP"
 
-# Tailnet addresses stay on Tailscale's table, only when that table exists.
-no "no tailnet rule without Tailscale's table" tailnet_rule
-ip route add 100.100.100.100/32 dev lo table 52
+# Tailnet addresses stay on Tailscale's table: the rule is there while on,
+# also when Tailscale (table 52) is not, and is part of "rules loaded".
+no "(no Tailscale table here)" bash -c 'ip -4 route show table 52 2>/dev/null | grep -q .'
+yes "the tailnet rule is there anyway" tailnet_rule
+is "and the slice still gets out from home (the empty table falls through)" "$(slice_ip)" "$HOME_IP"
+ip -4 rule del priority 89 fwmark 51821 to 100.64.0.0/10 table 52
+is "without the tailnet rule, the rules count as not loaded" "$(direct status | jq -r .rules)" "false"
 /etc/NetworkManager/dispatcher.d/50-vpnkit "$PHYS" up
-yes "after a link comes up with Tailscale's table there, tailnet addresses use it" tailnet_rule
-ip route flush table 52
-/usr/local/bin/vpnkit-direct-rules up
-no "the tailnet rule goes when the table does" tailnet_rule
+yes "a link coming up loads it again" tailnet_rule
+is "status: rules loaded again" "$(direct status | jq -r .rules)" "true"
 
 systemd-run --quiet --slice=vpnkitdirect.slice --uid=$U --unit=suite-in-slice sleep 120
 no "off is refused while something runs in the slice" direct off
@@ -866,6 +868,7 @@ rm -rf /run/systemd/system/vpnkit-direct.service.d; systemctl daemon-reload
 is "off" "$(direct off 2>&1)" "direct: off"
 no "off: nothing installed" nft list table inet vpnkit_direct
 no "off: no fwmark rule" direct_rule
+no "off: no tailnet rule" tailnet_rule
 no "off: no slice" test -d "$DSLICE"
 no "kill switch line gone" ks_line
 yes "the kill switch itself stays armed" nft list table inet vpnkit_kill
