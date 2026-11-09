@@ -1,7 +1,7 @@
 # Chrome direct: design
 
 Status: approved by the owner, 2026-11-09 ("go ahead and write it up, make all necessary
-changes"). Companion to `2026-11-09-firefox-tunnel-design.md`; both ship in 0.4.0.
+changes"). Ships alone in 0.4.0; the companion `2026-11-09-firefox-tunnel-design.md` follows in 0.5.0.
 
 ## Intent
 
@@ -134,6 +134,35 @@ user config without a flag, network changes tested only in the VM).
 6. **Omarchy web apps go direct too.** `omarchy-launch-webapp` opens them in the default
    browser, i.e. through the override, and they run inside the same Chrome anyway. The README
    lists this.
+
+## Settled after the final review (designer's calls, 2026-11-09)
+
+The final review checked the code against real Chrome, and a VM run with real Chrome 157 confirmed it
+(`.superpowers` investigation, not in git):
+
+7. **Chrome must not be able to move itself out of the slice.** Real Chrome asks the user systemd
+   manager on every start for its own `app-com.google.Chrome-<pid>.scope`, and PID 1 attaches it:
+   within a second the browser leaves `vpnkitdirect.slice`, later children start outside, pages load
+   through the VPN, and every later launch is refused. Fix: Chrome gets a **filtered session bus**
+   (`xdg-dbus-proxy`, official repos) with no access at all to `org.freedesktop.systemd1`; portals,
+   secrets (`--password-store=gnome-libsecret`) and notifications keep working. The proxy runs as the
+   user outside the slice and lives exactly as long as Chrome. Cost: Chrome's tray icon is not shown
+   (the proxy cannot grant `StatusNotifierItem-*` names). Any user process can still ask to be moved
+   out of the slice; that only ever moves it onto the VPN (fail-safe) and is not prevented.
+8. **Apps Chrome opens do not inherit the exemption.** Links and downloads Chrome hands to other apps go
+   through `xdg-open`; Chrome gets a Chrome-only `xdg-open` that starts the handler in its own user
+   scope, outside the slice, so it follows the bar.
+9. **Chrome's own wrapper processes are Chrome.** `/opt/google/chrome/google-chrome` keeps two
+   `/usr/bin/cat` children of the browser for its whole life, and short-lived interpreter steps run at
+   start-up. A `cat` whose parent's exe is under `/opt/google/chrome/`, and an interpreter whose script
+   argument is under `/opt/google/chrome/`, count as Chrome. The panel/bar also requires an "other"
+   process on two consecutive polls before it alerts.
+10. **The tailnet rule is always present while on** (`priority 89 fwmark 51821 to 100.64.0.0/10 lookup
+    52`): a lookup in an empty table 52 falls through to priority 90, so it is never worse, and Chrome
+    reaches tailnet hosts once Tailscale comes up after boot. This replaces "only if Tailscale's table
+    exists" in item 3.
+11. **Tests use real Chrome for the containment checks**, not a stand-in, in addition to the stand-in
+    checks that remain.
 
 ## What the owner should know (README)
 
