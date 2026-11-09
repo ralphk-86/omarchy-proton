@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # ============================================================================
 #  vpnkit-direct - turn Chrome direct on or off.
 #

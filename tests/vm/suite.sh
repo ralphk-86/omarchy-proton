@@ -837,6 +837,26 @@ chrome_start
 is "an ordinary chrome-flags.conf starts Chrome" "$(cut -d' ' -f1 /tmp/chrome-probe 2>/dev/null)" "$HOME_IP"
 chrome_stop
 rm -f "$FC"
+# Language, data folders and input method reach Chrome; a language value
+# with a slash does not even reach the launcher (sudo keeps only safe ones).
+CHROME_ENV=(LANG=de_DE.UTF-8 LC_TIME=en_GB.UTF-8 XDG_DATA_DIRS=/usr/local/share:/usr/share:/opt/suite
+            GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx)
+chrome_start
+is "Chrome gets the caller's language, data folders and input method" \
+  "$(for v in LANG LC_TIME XDG_DATA_DIRS GTK_IM_MODULE QT_IM_MODULE XMODIFIERS SDL_IM_MODULE; do printf '%s=%s ' $v "$(envof $v)"; done)" \
+  "LANG=de_DE.UTF-8 LC_TIME=en_GB.UTF-8 XDG_DATA_DIRS=/usr/local/share:/usr/share:/opt/suite GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx "
+chrome_stop
+CHROME_ENV=(LANG=../../../tmp/suite-locale LC_ALL=/tmp/suite-locale)
+chrome_start
+is "a language value with a slash is dropped" "$(envof LANG)|$(envof LC_ALL)" "|"
+chrome_stop
+CHROME_ENV=()
+# Without its rules loaded (one went missing), nothing starts.
+rm -f /tmp/chrome-probe
+ip -4 rule del priority 90 fwmark 51821 table main
+refuses "direct-launch refuses while the rules are not loaded" "rules are not loaded" sudo -n /usr/local/bin/direct-launch
+/usr/local/bin/vpnkit-direct-rules up
+no "and no Chrome was started" test -e /tmp/chrome-probe
 # The environment that reaches the launcher is what the sudoers file keeps.
 OUT=$(timeout 15 "${ASU[@]}" sudo -n -E /usr/local/bin/direct-launch 2>&1 </dev/null)
 yes "sudo does not hand direct-launch the caller's environment (-E)" grep -q "not allowed to preserve the environment" <<<"$OUT"
@@ -1195,8 +1215,21 @@ yes "servers are kept by a plain uninstall" nmcli connection show proton-ca-1
 yes "settings are kept by a plain uninstall" test -f /etc/vpnkit/vpnkit.conf
 yes "the leak-check reports are kept by a plain uninstall" test -s "$REPORTS/latest.txt"
 in_terminal "$PLUGIN/install.sh" > /tmp/install3.log 2>&1
+# A step of the root half that fails (here: Chrome direct's unit refuses to
+# stop) is reported, and everything else is still removed, the user's part
+# included.
+direct on >/dev/null 2>&1
+install -d /run/systemd/system/vpnkit-direct.service.d
+printf '[Unit]\nRefuseManualStop=yes\n' > /run/systemd/system/vpnkit-direct.service.d/suite.conf
+systemctl daemon-reload
 in_terminal "$PLUGIN/uninstall.sh" --purge > /tmp/uninstall2.log 2>&1; rc=$?
-is "uninstall.sh --purge exits 0" "$rc" "0"
+is "uninstall.sh --purge reports a failed step of the system part" "$rc" "1"
+yes "and says so" grep -q "reported a problem" /tmp/uninstall2.log
+yes "but finishes" grep -q "==> Done" /tmp/uninstall2.log
+no "Chrome direct's rules are gone even so" nft list table inet vpnkit_direct
+no "and its fwmark rules" direct_rule
+rm -rf /run/systemd/system/vpnkit-direct.service.d; systemctl daemon-reload
+systemctl stop vpnkit-direct.service vpnkitdirect.slice >/dev/null 2>&1
 no "--purge removes the servers" nmcli connection show proton-ca-1
 no "--purge removes the torrent config" test -e /etc/wireguard/vpnkit-torrent.conf
 no "--purge removes the settings" test -e /etc/vpnkit

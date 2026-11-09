@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # ============================================================================
 #  vpn-verify - prove the isolation, do not assume it.
 #

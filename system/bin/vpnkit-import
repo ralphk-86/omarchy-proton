@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # ============================================================================
 #  vpnkit-import - turn one WireGuard config into a desktop VPN profile.
 #  Root only; called by vpnkit-sync for every file in the drop folder.

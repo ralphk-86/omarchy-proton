@@ -50,7 +50,16 @@ rm -f "$HOME/.local/share/applications/org.qbittorrent.qBittorrent.desktop"
 [[ -x /usr/local/bin/vpn-direct ]] && /usr/local/bin/vpn-direct launcher off || true
 
 echo "==> Removing the system files (one password prompt)"
-if [[ -t 0 ]]; then sudo /usr/bin/bash "$ROOT" "$@"; else pkexec /usr/bin/bash "$ROOT" "$@"; fi
+# The root half removes what it can even when one step fails (it says which),
+# and then exits non-zero; the rest here still runs. If it did not run at all
+# (no password, cancelled), its last step, removing /usr/local/lib/vpnkit,
+# did not happen either: stop here.
+rc=0
+if [[ -t 0 ]]; then sudo /usr/bin/bash "$ROOT" "$@" || rc=$?; else pkexec /usr/bin/bash "$ROOT" "$@" || rc=$?; fi
+if (( rc != 0 )); then
+  [[ -e /usr/local/lib/vpnkit ]] && { echo "The system part was not removed (exit $rc)."; exit "$rc"; }
+  echo "[!] The system part was removed, but reported a problem (exit $rc): see above. Running uninstall.sh again retries it."
+fi
 
 if [[ -n "$REPORTS" && -d "$REPORTS" ]]; then
   echo "==> Removing the leak-check reports in $REPORTS"
@@ -60,3 +69,4 @@ if [[ -n "$REPORTS" && -d "$REPORTS" ]]; then
 fi
 
 echo "==> Done. The widget stays until you run: omarchy plugin remove io.github.ralphk-86.omarchy-proton"
+exit "$rc"

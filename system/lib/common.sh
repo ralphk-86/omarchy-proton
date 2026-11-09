@@ -201,8 +201,10 @@ NSS
 vpnkit_gui_env() {  # vpnkit_gui_env <user> <uid>: sets the array VPNKIT_GUI_ENV
   # The environment a GUI program started by a root launcher (qbt-launch,
   # direct-launch) gets, as NAME=value words for env(1): the user's runtime
-  # dir, session bus, HOME, USER, LOGNAME, and the display variables sudo kept
-  # for the launcher (see the sudoers file). When WAYLAND_DISPLAY is missing
+  # dir, session bus, HOME, USER, LOGNAME, and the display, language and
+  # input-method variables sudo kept for the launcher (the sudoers file keeps
+  # the display and input-method ones; sudo itself keeps LANG, LANGUAGE and
+  # LC_* when their values are safe). When WAYLAND_DISPLAY is missing
   # or stale, the first compositor socket in the runtime dir is used; on
   # Hyprland that is wayland-1, not wayland-0.
   local user="$1" rundir="/run/user/$2" wl s v
@@ -223,7 +225,8 @@ vpnkit_gui_env() {  # vpnkit_gui_env <user> <uid>: sets the array VPNKIT_GUI_ENV
   )
   [[ -n "$wl" ]] && VPNKIT_GUI_ENV+=(WAYLAND_DISPLAY="$wl")
   for v in DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE QT_QPA_PLATFORMTHEME QT_STYLE_OVERRIDE \
-           XCURSOR_THEME XCURSOR_SIZE GTK_THEME HYPRLAND_INSTANCE_SIGNATURE; do
+           XCURSOR_THEME XCURSOR_SIZE GTK_THEME HYPRLAND_INSTANCE_SIGNATURE XDG_DATA_DIRS \
+           GTK_IM_MODULE QT_IM_MODULE XMODIFIERS SDL_IM_MODULE LANG LANGUAGE $(compgen -e LC_); do
     [[ -n "${!v:-}" ]] && VPNKIT_GUI_ENV+=("$v=${!v}")
   done
   return 0

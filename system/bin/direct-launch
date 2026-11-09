@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # ============================================================================
 #  direct-launch - start Google Chrome in Chrome direct's slice, so it keeps
 #  the normal connection while a desktop server is selected.
@@ -55,6 +55,8 @@ vpnkit_direct_on || refuse "Chrome direct is off - refusing. Start Chrome as usu
 systemctl is-active --quiet vpnkit-direct.service \
   || refuse "Chrome direct is on but vpnkit-direct.service is not active - refusing. See: journalctl -u vpnkit-direct.service"
 [[ -d "/sys/fs/cgroup/$DIRECT_SLICE" ]] || refuse "the slice $DIRECT_SLICE does not exist - refusing"
+vpnkit_direct_rules_loaded \
+  || refuse "Chrome direct's rules are not loaded - refusing. Turn it off and on again (vpn-direct off, then on)"
 
 for a in "$@"; do
   vpnkit_chrome_flag_refused "$a" && refuse "refusing the flag ${a%%=*}: it makes Chrome start another program, which would get the normal connection too"

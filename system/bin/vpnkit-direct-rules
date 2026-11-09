@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # ============================================================================
 #  vpnkit-direct-rules - load or remove Chrome direct's rules.
 #

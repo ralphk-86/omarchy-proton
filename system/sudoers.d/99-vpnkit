@@ -6,9 +6,11 @@
 Defaults!/usr/local/bin/qbt-netns-status !log_allowed, !pam_session
 
 # The launcher starts a GUI program as the desktop user, so it needs to know
-# which compositor socket and theme to use. Nothing here is read as root.
-Defaults!/usr/local/bin/qbt-launch env_keep += "WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE QT_QPA_PLATFORMTHEME QT_STYLE_OVERRIDE XCURSOR_THEME XCURSOR_SIZE GTK_THEME HYPRLAND_INSTANCE_SIGNATURE"
-Defaults!/usr/local/bin/direct-launch env_keep += "WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE QT_QPA_PLATFORMTHEME QT_STYLE_OVERRIDE XCURSOR_THEME XCURSOR_SIZE GTK_THEME HYPRLAND_INSTANCE_SIGNATURE"
+# which compositor socket, theme, data folders and input method to use.
+# Nothing here is read as root. (LANG and LC_* need no entry: sudo keeps them
+# by itself, and only with safe values.)
+Defaults!/usr/local/bin/qbt-launch env_keep += "WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE QT_QPA_PLATFORMTHEME QT_STYLE_OVERRIDE XCURSOR_THEME XCURSOR_SIZE GTK_THEME HYPRLAND_INSTANCE_SIGNATURE XDG_DATA_DIRS GTK_IM_MODULE QT_IM_MODULE XMODIFIERS SDL_IM_MODULE"
+Defaults!/usr/local/bin/direct-launch env_keep += "WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE QT_QPA_PLATFORMTHEME QT_STYLE_OVERRIDE XCURSOR_THEME XCURSOR_SIZE GTK_THEME HYPRLAND_INSTANCE_SIGNATURE XDG_DATA_DIRS GTK_IM_MODULE QT_IM_MODULE XMODIFIERS SDL_IM_MODULE"
 
 @USER@ ALL=(root) NOPASSWD: /usr/local/bin/qbt-netns-status ""
 @USER@ ALL=(root) NOPASSWD: /usr/local/bin/qbt-launch

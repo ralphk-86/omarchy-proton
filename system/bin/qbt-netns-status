@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # ============================================================================
 #  qbt-netns-status - read-only status of the qBittorrent VPN namespace,
 #  AND verification that any running qBittorrent is actually inside it, and

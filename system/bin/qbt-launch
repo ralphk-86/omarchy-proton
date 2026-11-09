@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # ============================================================================
 #  qbt-launch - start qBittorrent INSIDE the isolated VPN namespace.
 #

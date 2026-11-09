@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # ============================================================================
 #  vpnkit-sync - import WireGuard configs from the drop folder.
 #
