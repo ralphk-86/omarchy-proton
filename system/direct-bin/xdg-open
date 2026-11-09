@@ -1,0 +1,22 @@
+#!/usr/bin/bash
+# ============================================================================
+#  xdg-open for Chrome direct only. Installed to
+#  /usr/local/lib/vpnkit/direct-bin/xdg-open, a folder that comes first in the
+#  PATH direct-launch gives Chrome, and nowhere else.
+#
+#  Chrome hands links to other apps, downloads it opens and other protocols
+#  (mailto:, zoommtg:, ...) to xdg-open. Started by Chrome, the app would be
+#  Chrome's child and inherit Chrome direct's slice: your own IP. So the app
+#  is started in a scope of its own under your user's service manager, outside
+#  the slice: it follows the bar like any other app. The scope is created
+#  before anything runs in it, over your real session bus (Chrome's own bus is
+#  filtered and has no service manager). If the scope cannot be created,
+#  nothing is opened.
+# ============================================================================
+set -u
+rundir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+# The app gets the real session bus and the normal PATH, not Chrome's.
+export XDG_RUNTIME_DIR="$rundir"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=$rundir/bus"
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"
+exec /usr/bin/systemd-run --user --scope --quiet --collect -- /usr/bin/xdg-open "$@"

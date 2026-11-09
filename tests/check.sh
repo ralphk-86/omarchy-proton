@@ -14,7 +14,7 @@ grep -q "kitVersion: \"$v\"" VpnWidget.qml && ok "VpnWidget.qml is $v" || bad "V
 grep -q "^## $v" CHANGELOG.md && ok "CHANGELOG has $v" || bad "CHANGELOG has no entry for $v"
 
 echo "2. Shell syntax"
-for f in install.sh uninstall.sh system/*.sh system/bin/* system/lib/*.sh system/dispatcher.d/* tests/*.sh; do
+for f in install.sh uninstall.sh system/*.sh system/bin/* system/lib/*.sh system/direct-bin/* system/dispatcher.d/* tests/*.sh; do
   if head -1 "$f" | grep -q python3; then
     python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$f" 2>/dev/null || bad "syntax: $f"
   else
@@ -29,7 +29,7 @@ visudo -c -f "$tmp" >/dev/null 2>&1 && ok "valid" || bad "sudoers template does 
 rm -f "$tmp"
 
 echo "4. Everything the installer installs is executable"
-for f in install.sh uninstall.sh system/install-root.sh system/uninstall-root.sh system/bin/* system/dispatcher.d/*; do
+for f in install.sh uninstall.sh system/install-root.sh system/uninstall-root.sh system/bin/* system/direct-bin/* system/dispatcher.d/*; do
   [[ -x "$f" ]] || bad "not executable: $f"
 done
 (( fail )) || ok "modes fine"

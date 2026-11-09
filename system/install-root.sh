@@ -48,8 +48,10 @@ internet_ok() {
 say "Checking prerequisites"
 # command -> the official Arch package that provides it. Omarchy ships most of
 # these; whatever is missing is installed from the official repositories.
+# xdg-dbus-proxy: Chrome direct gives Chrome a filtered session bus (direct-launch).
 declare -A PKG=( [wg]=wireguard-tools [nft]=nftables [nmcli]=networkmanager [jq]=jq [curl]=curl
-                 [ip]=iproute2 [visudo]=sudo [uuidgen]=util-linux [runuser]=util-linux )
+                 [ip]=iproute2 [visudo]=sudo [uuidgen]=util-linux [runuser]=util-linux
+                 [xdg-dbus-proxy]=xdg-dbus-proxy )
 NEED=()
 for c in "${!PKG[@]}"; do
   command -v "$c" >/dev/null 2>&1 || NEED+=("${PKG[$c]}")
@@ -100,6 +102,9 @@ say "Installing helpers to /usr/local/bin"
 install -d -m 755 /usr/local/lib/vpnkit
 install -m 644 "$SYS/lib/common.sh" /usr/local/lib/vpnkit/common.sh
 install -m 644 "$SYS/lib/direct.sh" /usr/local/lib/vpnkit/direct.sh
+# Chrome direct's xdg-open, first in Chrome's PATH only (see direct-launch).
+install -d -m 755 /usr/local/lib/vpnkit/direct-bin
+install -m 755 "$SYS/direct-bin/xdg-open" /usr/local/lib/vpnkit/direct-bin/xdg-open
 install -m 644 "$SRC/VERSION" /usr/local/lib/vpnkit/VERSION
 install -m 755 "$SYS/uninstall-root.sh" /usr/local/lib/vpnkit/uninstall-root.sh
 # What an AI agent follows when the user picks "Troubleshoot with AI" (vpn-diagnose).

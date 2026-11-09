@@ -15,6 +15,11 @@ DIRECT_FWMARK=51821
 DIRECT_SLICE="vpnkitdirect.slice"
 DIRECT_STATE="/etc/vpnkit/direct-apps"
 DIRECT_BIN="/usr/bin/google-chrome-stable"
+# Comes first in Chrome's PATH: Chrome's own xdg-open, which starts the app
+# outside the slice (see direct-bin/xdg-open).
+DIRECT_PATH_DIR="/usr/local/lib/vpnkit/direct-bin"
+# Chrome's session bus is a filtered proxy of the user's (see direct-launch).
+DIRECT_PROXY="/usr/bin/xdg-dbus-proxy"
 
 # Is Chrome direct turned on? Only `vpnkit-direct on` writes the state file.
 vpnkit_direct_on() {

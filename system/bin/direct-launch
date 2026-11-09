@@ -18,6 +18,19 @@
 #      while a Chrome of the user runs outside the slice (a new Chrome hands
 #      its windows to the running one, which would open them there)
 #
+#  Chrome must stay in the slice. On every start it asks the user's service
+#  manager (org.freedesktop.systemd1 on the session bus) for a scope of its
+#  own, and that would move it out of the slice, onto the VPN, with every
+#  process it starts afterwards. So Chrome gets a filtered session bus: a proxy
+#  (xdg-dbus-proxy, run as the user, outside the slice) that lets it reach the
+#  portals, the secret service, notifications and the few other services
+#  listed below, and on which the service manager does not exist. The proxy
+#  ends when Chrome does. If it does not start, Chrome is not started.
+#
+#  Apps Chrome opens (links, downloads, mailto: ...) go through xdg-open; the
+#  first one in Chrome's PATH is the kit's (DIRECT_PATH_DIR), which starts the
+#  app outside the slice, so it follows the bar.
+#
 #  With DIRECT_DNS set, Chrome gets a private mount namespace in which
 #  /etc/resolv.conf names DIRECT_DNS only and /etc/nsswitch.conf has no
 #  `resolve` or `mdns`, so names are resolved by DIRECT_DNS and not by
@@ -97,11 +110,67 @@ if [[ -n "$DIRECT_DNS" ]]; then
   esac
 fi
 
-# The same environment qbt-launch gives qBittorrent (vpnkit_gui_env), plus
-# XDG_CONFIG_HOME, so the package script finds chrome-flags.conf where it was
-# checked above.
+[[ -x "$DIRECT_PROXY" ]] \
+  || refuse "$DIRECT_PROXY is missing (package xdg-dbus-proxy), so Chrome could move itself out of Chrome direct - refusing. Run the setup again"
+[[ -x "$DIRECT_PATH_DIR/xdg-open" ]] \
+  || refuse "$DIRECT_PATH_DIR/xdg-open is missing, so apps Chrome opens would get the normal connection too - refusing. Run the setup again"
+RUNDIR="/run/user/$TARGET_UID"
+[[ -d "$RUNDIR" ]] || refuse "$RUNDIR does not exist: $TARGET_USER has no session - refusing"
+
+# --- Chrome's session bus: a filtered proxy of the user's ------------------
+# What Chrome may reach on it. Nothing at all of org.freedesktop.systemd1
+# (the user's service manager): under --filter a name without a rule does not
+# exist. The tray icon is not possible: its bus name
+# (org.kde.StatusNotifierItem-<pid>-<n>) cannot be granted through the proxy.
+BUS_POLICY=(
+  --talk='org.freedesktop.portal.*'        # file chooser, screen sharing, settings, network status
+  --talk=org.freedesktop.secrets           # saved passwords (libsecret)
+  --talk=org.freedesktop.Notifications
+  --talk=org.freedesktop.ScreenSaver       # keeps the screen on during a video
+  --talk=org.freedesktop.FileManager1      # "Show in folder"
+  --talk=org.a11y.Bus
+  --talk=org.kde.StatusNotifierWatcher
+  --talk=ca.desrt.dconf
+  --talk='org.gtk.vfs.*'
+  --own='org.mpris.MediaPlayer2.chrome.*'  # media keys
+)
+TGID=$(id -g "$TARGET_USER")
+as_target() { setpriv --reuid="$TARGET_UID" --regid="$TGID" --init-groups -- "$@"; }
+# The socket lives in the user's runtime dir, made and cleaned by the user,
+# never by root. A user who swaps it can only make Chrome leave the slice.
+BUSDIR="$RUNDIR/vpnkit-direct"
+BUSSOCK="$BUSDIR/bus-$$"
+as_target mkdir -p -m 700 "$BUSDIR" || refuse "could not create $BUSDIR - refusing"
+as_target rm -f "$BUSSOCK" || refuse "could not clear $BUSSOCK - refusing"
+# The proxy's lifetime: it gets the write end of a pipe (--fd) and exits when
+# no reader is left; the read end is held here and handed on to Chrome
+# through exec, and nothing else has it. It writes one byte once it listens.
+SYNC_DIR=$(mktemp -d)
+mkfifo -m 600 "$SYNC_DIR/sync"
+exec {SYNC_R}<>"$SYNC_DIR/sync"   # read-write: opening does not wait for a writer
+exec {SYNC_W}>"$SYNC_DIR/sync"
+rm -rf "$SYNC_DIR"
+# Run as the user, in the caller's cgroup (outside the slice): it carries
+# only Unix sockets. It holds nothing of the caller's terminal.
+as_target "$DIRECT_PROXY" --fd=3 "unix:path=$RUNDIR/bus" "$BUSSOCK" --filter "${BUS_POLICY[@]}" \
+  3>&"$SYNC_W" {SYNC_R}<&- {SYNC_W}>&- </dev/null >/dev/null 2>&1 &
+exec {SYNC_W}>&-
+# Fail closed: no byte within 5 s (it exited, or hangs) means no Chrome.
+IFS= read -r -N1 -t 5 -u "$SYNC_R" _ \
+  || refuse "Chrome's filtered session bus (xdg-dbus-proxy) did not start - refusing"
+[[ -S "$BUSSOCK" ]] || refuse "Chrome's filtered session bus has no socket ($BUSSOCK) - refusing"
+
+# The same environment qbt-launch gives qBittorrent (vpnkit_gui_env), except
+# the session bus, which is the proxy; plus XDG_CONFIG_HOME, so the package
+# script finds chrome-flags.conf where it was checked above, and a PATH that
+# starts with the kit's xdg-open.
 vpnkit_gui_env "$TARGET_USER" "$TARGET_UID"
-ENVV=("${VPNKIT_GUI_ENV[@]}" XDG_CONFIG_HOME="$THOME/.config")
+ENVV=()
+for v in "${VPNKIT_GUI_ENV[@]}"; do
+  [[ "$v" == DBUS_SESSION_BUS_ADDRESS=* ]] || ENVV+=("$v")
+done
+ENVV+=(DBUS_SESSION_BUS_ADDRESS="unix:path=$BUSSOCK" XDG_CONFIG_HOME="$THOME/.config"
+       PATH="$DIRECT_PATH_DIR:/usr/local/sbin:/usr/local/bin:/usr/bin")
 
 # The scope is created in the slice while this is still root; systemd-run then
 # drops to the user (with the user's groups) and runs Chrome in it.

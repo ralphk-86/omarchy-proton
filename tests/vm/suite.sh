@@ -174,6 +174,7 @@ JS
 # ---------------------------------------------------------------------------
 section "1. Fresh install through install.sh (a stock machine without wireguard-tools)"
 no "wg is not installed yet" command -v wg
+XDBUS_BEFORE=$(command -v xdg-dbus-proxy || true)
 # Omarchy's DNS picker puts ipv6.dns on every wired/Wi-Fi profile, and
 # NetworkManager then refuses ipv6.method=disabled unless it is cleared in the
 # same call (seen on a real install, 0.3.5). Recreate that before installing.
@@ -188,6 +189,9 @@ is "install.sh exits 0" "$rc" "0"
 (( rc == 0 )) || sed 's/^/      /' /tmp/install.log | tail -25
 yes "missing dependency was installed (wg)" command -v wg
 yes "missing dependency was installed (nft)" command -v nft
+yes "Chrome direct's dependency is installed (xdg-dbus-proxy${XDBUS_BEFORE:+, was there before})" command -v xdg-dbus-proxy
+yes "Chrome direct's xdg-open is installed, outside PATH" test -x /usr/local/lib/vpnkit/direct-bin/xdg-open
+yes "Chrome direct's library is installed" test -r /usr/local/lib/vpnkit/direct.sh
 for f in vpn-status vpn-toggle vpn-import vpn-verify vpn-check vpn-rescue vpn-diagnose vpnkit-pick vpnkit-sync vpnkit-import vpnkit-killswitch vpnkit-direct vpnkit-direct-rules vpn-direct direct-launch google-chrome-stable qbt-netns-up qbt-launch qbittorrent; do
   yes "installed /usr/local/bin/$f" test -x /usr/local/bin/$f
 done
@@ -223,6 +227,13 @@ yes "the profile's IPv6 settings were saved for the uninstall" \
 no "tester has no passwordless sudo in general" as_user sudo -n true
 yes "tester may run the status helper without a password" as_user sudo -n /usr/local/bin/qbt-netns-status
 no "tester may NOT run the leak check with arguments" as_user sudo -n /usr/local/bin/vpn-verify --fail-closed
+
+# Real Google Chrome (from the [omarchy] repository) and a virtual X display,
+# for the Chrome direct checks with the real browser (4c), while the VM still
+# has the real internet. Chrome is installed after the kit, as a user would.
+pacman -S --needed --noconfirm google-chrome xorg-server-xvfb > /tmp/chrome-install.log 2>&1
+yes "real Google Chrome is installed for the Chrome direct checks" test -x /opt/google/chrome/chrome
+yes "and Xvfb" command -v Xvfb
 
 gateway on
 is "the lookup service answers with the home address" "$(myip)" "$HOME_IP"
@@ -539,19 +550,24 @@ direct_dns 127.0.0.1
 # Stand-ins: "Chrome" writes where it landed (exit address, what the loopback
 # resolver and the in-tunnel one answer, who it runs as) and stays; a copy of
 # sleep under /opt/google/chrome is a Chrome process for the "outside" checks.
+# The real Chrome (installed in section 1) waits aside until 4c.
+mv /usr/bin/google-chrome-stable /usr/bin/google-chrome-stable.real
+mv /opt/google/chrome /opt/google/chrome.real
 cat > /usr/bin/google-chrome-stable <<EOF
 #!/usr/bin/env bash
 echo \$\$ > /tmp/chrome-probe.pid
 echo "HOME=\$HOME XDG_CONFIG_HOME=\${XDG_CONFIG_HOME:-} ARGS=\$*" > /tmp/chrome-probe.env
+env > /tmp/chrome-probe.fullenv
 echo "\$(curl -4 -s --max-time 4 $LOOKUP) \$(getent hosts direct-only.test | awk '{print \$1}') \$(getent hosts only-in-tunnel.test >/dev/null && echo leak || echo noleak) \$(id -un)" > /tmp/chrome-probe
 exec /opt/google/chrome/chrome 600
 EOF
 chmod 755 /usr/bin/google-chrome-stable
 install -d /opt/google/chrome; cp /usr/bin/sleep /opt/google/chrome/chrome
 CHROME_PID=""
+CHROME_ENV=()   # extra NAME=value for the caller's environment
 chrome_start() {  # start "Chrome" as the user through the wrapper; wait for its probe
-  rm -f /tmp/chrome-probe /tmp/chrome-probe.pid /tmp/chrome-probe.env
-  as_user /usr/local/bin/google-chrome-stable "$@" </dev/null >/dev/null 2>&1 &
+  rm -f /tmp/chrome-probe /tmp/chrome-probe.pid /tmp/chrome-probe.env /tmp/chrome-probe.fullenv
+  as_user env "${CHROME_ENV[@]}" /usr/local/bin/google-chrome-stable "$@" </dev/null >/dev/null 2>&1 &
   local i; for i in $(seq 1 40); do [[ -s /tmp/chrome-probe ]] && break; sleep 0.5; done
   CHROME_PID=$(cat /tmp/chrome-probe.pid 2>/dev/null)
   # Until the script has become "Chrome", it is a shell in the slice.
@@ -606,6 +622,71 @@ cp /run/systemd/resolve/stub-resolv.conf /run/systemd/resolve/.suite-new
 mv /run/systemd/resolve/.suite-new /run/systemd/resolve/stub-resolv.conf
 is "resolver override survives a host-side rename" "$(in_ns grep '^nameserver' /etc/resolv.conf 2>/dev/null | paste -sd, -)" "nameserver 127.0.0.1"
 yes "and the host's own resolver settings are untouched" grep -q '^nameserver 127.0.0.53' /etc/resolv.conf
+
+# Chrome's session bus is a filtered proxy without the user's service manager
+# (real Chrome would ask it to move Chrome out of the slice), and the first
+# xdg-open in its PATH is the kit's.
+envof() { sed -n "s/^$1=//p" /tmp/chrome-probe.fullenv 2>/dev/null; }
+BUSA=$(envof DBUS_SESSION_BUS_ADDRESS); BUSS=${BUSA#unix:path=}
+yes "Chrome's session bus is the kit's proxy" grep -qE "^unix:path=/run/user/$UID_T/vpnkit-direct/bus-[0-9]+$" <<<"$BUSA"
+yes "its socket is there while Chrome runs" test -S "$BUSS"
+PROXY_PID=$(pgrep -u $U -x xdg-dbus-proxy | head -1)
+yes "the proxy runs as the user" test -n "$PROXY_PID"
+no "outside Chrome direct's slice" grep -q vpnkitdirect.slice "/proc/${PROXY_PID:-none}/cgroup"
+yes "(the user's service manager is on the real session bus)" \
+  as_user busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.DBus.Peer Ping
+yes "the bus proxy relays the bus itself" \
+  as_user busctl --address="$BUSA" call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ListNames
+no "but Chrome cannot reach the user's service manager through it" \
+  as_user busctl --address="$BUSA" call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.DBus.Peer Ping
+NAMES=$(as_user busctl --address="$BUSA" call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ListNames 2>&1)
+no "nor see it" grep -q systemd1 <<<"$NAMES"
+is "Chrome's PATH starts with the kit's xdg-open" "$(envof PATH | cut -d: -f1)" "/usr/local/lib/vpnkit/direct-bin"
+chrome_stop
+no "the bus proxy ends with Chrome" test -d "/proc/${PROXY_PID:-none}"
+no "and its socket is gone" test -e "$BUSS"
+# Without its bus proxy or its xdg-open, Chrome is not started.
+rm -f /tmp/chrome-probe
+mv /usr/bin/xdg-dbus-proxy /usr/bin/xdg-dbus-proxy.real
+refuses "without xdg-dbus-proxy, direct-launch refuses" "xdg-dbus-proxy" sudo -n /usr/local/bin/direct-launch
+printf '#!/bin/sh\nexit 1\n' > /usr/bin/xdg-dbus-proxy; chmod 755 /usr/bin/xdg-dbus-proxy
+refuses "and when the bus proxy does not start" "did not start" sudo -n /usr/local/bin/direct-launch
+mv -f /usr/bin/xdg-dbus-proxy.real /usr/bin/xdg-dbus-proxy
+mv /usr/local/lib/vpnkit/direct-bin/xdg-open /tmp/suite-xdg-open
+refuses "and without the kit's xdg-open" "xdg-open is missing" sudo -n /usr/local/bin/direct-launch
+mv /tmp/suite-xdg-open /usr/local/lib/vpnkit/direct-bin/xdg-open
+no "no Chrome was started meanwhile" test -e /tmp/chrome-probe
+no "and no bus proxy is left behind" pgrep -u $U -x xdg-dbus-proxy
+chrome_start
+
+# An app opened through the kit's xdg-open (what Chrome runs for links,
+# downloads and mailto:) starts outside the slice and follows the bar. The
+# handler writes where it ran and where it exits.
+cat > /usr/local/sbin/suite-handler <<'SH'
+#!/usr/bin/env bash
+{ echo "args: $*"; cat /proc/self/cgroup; echo "exit-ip=$(curl -4 -s --max-time 4 http://192.0.2.80:8080/)"; } > /tmp/handler.out 2>&1
+SH
+chmod 755 /usr/local/sbin/suite-handler
+printf '[Desktop Entry]\nType=Application\nName=Suite handler\nExec=/usr/local/sbin/suite-handler %%u\nMimeType=x-scheme-handler/vpntest;\nNoDisplay=true\n' \
+  > "$UHOME/.local/share/applications/suite-handler.desktop"
+chown $U:$U "$UHOME/.local/share/applications/suite-handler.desktop"
+as_user xdg-mime default suite-handler.desktop x-scheme-handler/vpntest
+handler_out() {  # wait for the handler's report
+  local i; for i in $(seq 1 30); do grep -q '^exit-ip=' /tmp/handler.out 2>/dev/null && break; sleep 0.5; done
+  cat /tmp/handler.out 2>/dev/null
+}
+open_in_slice() {  # open_in_slice <xdg-open> <url>: as the user, from a scope in the slice
+  rm -f /tmp/handler.out
+  systemd-run --scope --quiet --slice=vpnkitdirect.slice --uid=$U -- \
+    env HOME=$UHOME XDG_RUNTIME_DIR=/run/user/$UID_T "$1" "$2" </dev/null >/dev/null 2>&1
+  handler_out
+}
+H=$(open_in_slice /usr/bin/xdg-open vpntest://plain)
+is "(the plain xdg-open, run in the slice, leaves the app there: home address)" "$(sed -n 's/^exit-ip=//p' <<<"$H")" "$HOME_IP"
+H=$(open_in_slice /usr/local/lib/vpnkit/direct-bin/xdg-open vpntest://kit)
+yes "the kit's xdg-open starts the app in a scope of the user's manager" grep -q "^0::/user.slice/.*/user@$UID_T.service/" <<<"$H"
+no "outside Chrome direct's slice" grep -q vpnkitdirect.slice <<<"$H"
+is "so the app follows the bar (server A)" "$(sed -n 's/^exit-ip=//p' <<<"$H")" "10.2.0.2"
 
 # --- What the status and the leak check say about it ------------------------
 # The Chrome started straight into the slice above skipped the launcher, so it
@@ -816,6 +897,141 @@ bash -c 'printf x > /dev/udp/10.0.2.3/53'
 yes "(the DNS counter does count a packet that leaves)" test "$(( $(dns_leaks) - before ))" -ge 1
 
 # ---------------------------------------------------------------------------
+section "4c. Chrome direct: real Chrome"
+# The stand-ins above cannot show what real Chrome does on its own: it asks
+# the user's service manager for a scope of its own (which would move it out
+# of the slice), its start script leaves two `cat`s running, and it opens
+# other apps through xdg-open. Real Google Chrome, headed on a virtual X
+# display, started the way the user starts it: the wrapper on PATH.
+rm -rf /opt/google/chrome
+mv /opt/google/chrome.real /opt/google/chrome
+mv -f /usr/bin/google-chrome-stable.real /usr/bin/google-chrome-stable
+# A second web service: logs every request (time, client address, path), and
+# /launch is a page that opens vpntest:// (the suite's handler) by itself.
+cat > /tmp/logsrv.py <<'PY'
+import http.server, socketserver, time
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        with open("/tmp/seen.log", "a") as f:
+            f.write("%s %s %s\n" % (time.strftime("%H:%M:%S"), self.client_address[0], self.path))
+        if self.path.startswith("/launch"):
+            body = b'<html><body><script>location.href = "vpntest://from-chrome";</script></body></html>'
+        else:
+            body = ("<html><body><pre>%s</pre></body></html>" % self.client_address[0]).encode()
+        self.send_response(200); self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body))); self.send_header("Connection", "close")
+        self.end_headers(); self.wfile.write(body)
+    def log_message(self, *a): pass
+class S(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True; allow_reuse_address = True
+S(("0.0.0.0", 8081), H).serve_forever()
+PY
+rm -f /tmp/seen.log
+ip netns exec provider python3 /tmp/logsrv.py </dev/null >/dev/null 2>&1 &
+LOGSRV_PID=$!
+# Let pages open vpntest:// without asking (a managed policy, as an admin would set it).
+install -d /etc/opt/chrome/policies/managed
+printf '{"AutoLaunchProtocolsFromOrigins":[{"protocol":"vpntest","allowed_origins":["*"]}]}\n' \
+  > /etc/opt/chrome/policies/managed/suite.json
+as_user Xvfb :99 -nolisten tcp </dev/null >/dev/null 2>&1 &
+XVFB_PID=$!
+direct_dns 127.0.0.1
+is "on" "$(direct on 2>&1)" "direct: on"
+as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
+is "server A is selected" "$(myip)" "10.2.0.2"
+sleep 1
+real_chrome() {  # real_chrome <url> [handover]: through the wrapper, as the user on display :99
+  # A hand-over start exits at once; it gets a time limit, the first one not
+  # (a limit would end Chrome with it).
+  local t=(); [[ "${2:-}" == handover ]] && t=(timeout --foreground 60)
+  "${t[@]}" "${ASU[@]}" DISPLAY=:99 /usr/local/bin/google-chrome-stable \
+    --no-first-run --no-default-browser-check "$1" </dev/null >>/tmp/chrome-real.log 2>&1
+}
+seen() {  # seen <path>: the client address of the first request for <path>, waiting up to 30 s
+  local i; for i in $(seq 1 60); do grep -q " $1\$" /tmp/seen.log 2>/dev/null && break; sleep 0.5; done
+  awk -v p="$1" '$3 == p {print $2; exit}' /tmp/seen.log 2>/dev/null
+}
+chrome_procs() {  # pid of every Chrome process of the user (binary under /opt/google/chrome)
+  local p; for p in $(pgrep -u $U); do
+    [[ "$(readlink /proc/$p/exe 2>/dev/null)" == /opt/google/chrome/* ]] && echo "$p"
+  done
+}
+browser_pid() {  # the browser process: Chrome's binary without --type=
+  local p; for p in $(chrome_procs); do
+    [[ "$(readlink /proc/$p/exe)" == /opt/google/chrome/chrome ]] || continue
+    tr '\0' '\n' < /proc/$p/cmdline 2>/dev/null | grep -q '^--type=' || { echo "$p"; return; }
+  done
+}
+netsvc_pid() {
+  local p; for p in $(chrome_procs); do
+    tr '\0' '\n' < /proc/$p/cmdline 2>/dev/null | grep -q 'network.mojom.NetworkService' && { echo "$p"; return; }
+  done
+}
+not_in_slice() {  # pids of the given ones that are not in the slice
+  local p; for p in "$@"; do grep -q '^0::/vpnkitdirect.slice/' /proc/$p/cgroup 2>/dev/null || echo "$p"; done
+}
+rm -f /tmp/chrome-real.log
+real_chrome http://192.0.2.80:8081/first &
+T0=$SECONDS
+is "real Chrome loads a page from the home address" "$(seen /first)" "$HOME_IP"
+# Chrome asks for its own scope within a second of starting; give it a minute.
+sleep $(( 60 - (SECONDS - T0) > 0 ? 60 - (SECONDS - T0) : 0 ))
+BROWSER=$(browser_pid)
+yes "the browser runs after a minute" test -n "$BROWSER"
+yes "and it is still in Chrome direct's slice" grep -q '^0::/vpnkitdirect.slice/' "/proc/${BROWSER:-none}/cgroup"
+is "every Chrome process is in the slice" "$(not_in_slice $(chrome_procs) | paste -sd' ' -)" ""
+is "the user's manager made no scope for Chrome" \
+  "$(as_user systemctl --user list-units --all --no-legend 'app-com.google.Chrome*' 2>&1)" ""
+PROXY_PID=$(pgrep -u $U -x xdg-dbus-proxy | head -1)
+yes "Chrome's bus proxy runs" test -n "$PROXY_PID"
+no "outside the slice" grep -q vpnkitdirect.slice "/proc/${PROXY_PID:-none}/cgroup"
+# The network service Chrome restarts after it dies is started by the
+# browser: it would land wherever the browser is.
+NS1=$(netsvc_pid)
+yes "Chrome's network service runs" test -n "$NS1"
+[[ -n "$NS1" ]] && kill -9 "$NS1"
+sleep 2
+# A second start through the wrapper hands the URL to the running Chrome.
+real_chrome http://192.0.2.80:8081/after-restart handover; rc=$?
+is "a second start through the wrapper hands over to the running Chrome" "$rc" "0"
+is "the page after the restart comes from the home address too" "$(seen /after-restart)" "$HOME_IP"
+NS2=$(netsvc_pid)
+yes "the network service was restarted" test -n "$NS2" -a "$NS2" != "$NS1"
+yes "inside the slice" grep -q '^0::/vpnkitdirect.slice/' "/proc/${NS2:-none}/cgroup"
+is "the hand-over left no extra bus proxy behind" "$(sleep 2; pgrep -u $U -x xdg-dbus-proxy | wc -l)" "1"
+# Its start script's `cat`s and its other helpers count as Chrome.
+is "status: Chrome inside, nothing outside" "$(status '[.direct_chrome_inside, .direct_chrome_outside] | @json')" '[true,false]'
+is "status: nothing in the slice that is not Chrome" "$(status '[.direct_helpers, .direct_others] | @json')" '[[],[]]'
+yes "(the start script's cat processes are there)" bash -c "pgrep -u $U -x cat | grep -q ."
+OUT=$(vpn-verify 2>&1); rc=$?
+is "the leak check passes with real Chrome running" "$rc" "0"
+(( rc == 0 )) || grep -E "FAIL" <<<"$OUT" | sed 's/^/      /'
+yes "only Chrome runs in the slice" grep -q "PASS.*only Chrome runs in Chrome direct's slice" <<<"$OUT"
+yes "and the probe in it leaves from the normal connection" grep -q "PASS.*a probe in Chrome direct's slice exits from the normal connection" <<<"$OUT"
+yes "and every Chrome process uses DIRECT_DNS only" grep -q "PASS.*Chrome uses DIRECT_DNS (127.0.0.1) only" <<<"$OUT"
+# An app Chrome opens (here: a page that opens vpntest://) runs outside the
+# slice and follows the bar.
+rm -f /tmp/handler.out
+real_chrome http://192.0.2.80:8081/launch handover
+is "the launch page was loaded from the home address" "$(seen /launch)" "$HOME_IP"
+H=$(handler_out)
+yes "Chrome ran the app it opened" grep -q '^args: vpntest://from-chrome' <<<"$H"
+no "outside Chrome direct's slice" grep -q vpnkitdirect.slice <<<"$H"
+is "so it exits through server A, not the home address" "$(sed -n 's/^exit-ip=//p' <<<"$H")" "10.2.0.2"
+# Closing Chrome ends its bus proxy too.
+[[ -n "$BROWSER" ]] && kill "$BROWSER"
+for i in $(seq 1 40); do [[ -z "$(chrome_procs)" ]] && break; sleep 0.5; done
+is "Chrome closed" "$(chrome_procs | wc -l)" "0"
+sleep 1
+no "its bus proxy ended with it" pgrep -u $U -x xdg-dbus-proxy
+is "and left no socket" "$(ls -A /run/user/$UID_T/vpnkit-direct 2>/dev/null)" ""
+for i in $(seq 1 20); do grep -qx 'populated 0' "$DSLICE/cgroup.events" && break; sleep 0.5; done
+is "off once Chrome is closed" "$(direct off 2>&1)" "direct: off"
+as_user /usr/local/bin/vpn-toggle off >/dev/null 2>&1
+kill "$XVFB_PID" "$LOGSRV_PID" 2>/dev/null
+rm -f /etc/opt/chrome/policies/managed/suite.json
+
+# ---------------------------------------------------------------------------
 section "5. The leak check, the rescue, and deleting a server"
 as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
 OUT=$(vpn-verify --fail-closed 2>&1); rc=$?
@@ -947,6 +1163,7 @@ no "Chrome direct state gone" test -e /etc/vpnkit/direct-apps
 no "namespace gone" bash -c "ip netns list | grep -qw qbtvpn"
 no "helpers gone" test -e /usr/local/bin/vpn-status
 no "Chrome direct helpers gone" bash -c 'ls /usr/local/bin/vpnkit-direct /usr/local/bin/vpnkit-direct-rules /usr/local/bin/vpn-direct /usr/local/bin/direct-launch /usr/local/bin/google-chrome-stable 2>/dev/null | grep -q .'
+no "Chrome direct's library and xdg-open gone" bash -c 'ls /usr/local/lib/vpnkit/direct.sh /usr/local/lib/vpnkit/direct-bin 2>/dev/null | grep -q .'
 no "uninstall removes the launcher override" test -e "$DESK"
 no "sudoers rule gone" test -e /etc/sudoers.d/99-vpnkit
 no "dispatcher hook gone" test -e /etc/NetworkManager/dispatcher.d/50-vpnkit

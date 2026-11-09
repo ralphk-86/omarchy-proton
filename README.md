@@ -177,7 +177,8 @@ copies your IP, `esc` closes.
 - Omarchy 4 or newer (the Quickshell-based shell), with NetworkManager in charge of the network,
   which is the Omarchy default.
 - Packages: `networkmanager`, `nftables`, `jq` and `curl` are part of a stock Omarchy.
-  `wireguard-tools` is not; **setup installs it for you** from the official repositories
+  `wireguard-tools` is not, and `xdg-dbus-proxy` (which [Chrome direct](#chrome-direct) uses)
+  may not be; **setup installs them for you** from the official repositories
   (`pacman -S --needed`), along with any of the others that are missing. Nothing comes from the
   AUR and nothing is downloaded from anywhere else.
 - `qbittorrent` is optional and is not installed for you. If you want the torrent tunnel:
