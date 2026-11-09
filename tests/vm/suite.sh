@@ -748,6 +748,22 @@ is "the user's own manifest registers a helper" "$(status '[.direct_helpers, .di
 rm -rf "$UHOME/.config/google-chrome"
 systemctl stop suite-other.scope 2>/dev/null; sleep 1
 is "status: and it is gone again" "$(status '[.direct_helpers, .direct_others] | @json')" '[[],[]]'
+# Chrome's start script sends its output through `cat`s whose parent is
+# Chrome, and bash runs Chrome's scripts while it starts: those are Chrome.
+# A `cat` with another parent is not.
+mkfifo /tmp/suite-fifo
+printf 'read -r _ <> /tmp/suite-fifo\n' > /opt/google/chrome/suite-script
+wrap() { systemd-run --scope --quiet --slice=vpnkitdirect.slice --unit="$1" -- "${@:2}" </dev/null >/dev/null 2>&1 & }
+wrap suite-wrap1 bash -c 'exec > >(exec cat); exec /opt/google/chrome/chrome 300'
+wrap suite-wrap2 /usr/bin/bash /opt/google/chrome/suite-script
+sleep 1
+is "status: Chrome's cat and a bash on Chrome's script count as Chrome" "$(status '[.direct_helpers, .direct_others] | @json')" '[[],[]]'
+yes "(the cat is there)" bash -c "systemctl show -p ControlGroup --value suite-wrap1.scope | xargs -I{} cat /sys/fs/cgroup{}/cgroup.procs | xargs -I{} readlink /proc/{}/exe | grep -qx /usr/bin/cat"
+wrap suite-wrap3 bash -c 'exec > >(exec cat); exec sleep 300'
+sleep 1
+is "status: a cat whose parent is not Chrome is named" "$(status '.direct_others | join(",")')" "cat,sleep"
+systemctl stop suite-wrap1.scope suite-wrap2.scope suite-wrap3.scope 2>/dev/null
+rm -f /tmp/suite-fifo /opt/google/chrome/suite-script; sleep 1
 
 # A resolver that stops answering. The bar polls the status every few
 # seconds, so the status asks at most every 30 s (cached in DNSCACHE); the

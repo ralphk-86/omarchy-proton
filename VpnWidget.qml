@@ -115,7 +115,10 @@ Panel {
   property bool directOverrideOk: true
   property bool directOutside: false
   property var directHelpers: []
+  // Programs in Chrome direct's slice that are not Chrome, once two polls in
+  // a row have seen them (directOthersSeen holds the last poll's).
   property var directOthers: []
+  property var directOthersSeen: []
 
   property string pendingTarget: ""
   property string armedRemove: ""
@@ -326,8 +329,15 @@ Panel {
     directOutside = j.direct_chrome_outside === true
     var helpers = j.direct_helpers instanceof Array ? j.direct_helpers : []
     if (JSON.stringify(helpers) !== JSON.stringify(directHelpers)) directHelpers = helpers
+    // Like a drop, something that is not Chrome is an alarm only once it holds
+    // still: two polls in a row. Short-lived steps (Chrome's start-up, an app
+    // it hands to xdg-open on its way out of the slice) are not. The leak
+    // check (vpn-verify) still names them at once.
     var others = j.direct_others instanceof Array ? j.direct_others : []
-    if (JSON.stringify(others) !== JSON.stringify(directOthers)) directOthers = others
+    var seen = directOthersSeen
+    var steady = others.filter(function (n) { return seen.indexOf(n) >= 0 })
+    if (JSON.stringify(others) !== JSON.stringify(directOthersSeen)) directOthersSeen = others
+    if (JSON.stringify(steady) !== JSON.stringify(directOthers)) directOthers = steady
     aiAgent = String(j.ai_agent || "")
     torrentIf = String(j.torrent_if || "pqbt0")
     torrentNs = String(j.torrent_ns || "qbtvpn")

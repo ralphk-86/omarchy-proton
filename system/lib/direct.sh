@@ -37,7 +37,7 @@ vpnkit_chrome_outside_pids() {  # vpnkit_chrome_outside_pids <user>
     [[ "$(readlink "/proc/$pid/exe" 2>/dev/null)" == /opt/google/chrome/* ]] || continue
     cg=$(cat "/proc/$pid/cgroup" 2>/dev/null) || continue
     [[ -n "$cg" ]] || continue
-    [[ "$cg" == *"0::/$DIRECT_SLICE/"* ]] || printf '%s\n' "$pid"
+    [[ "$cg" == "0::/$DIRECT_SLICE/"* ]] || printf '%s\n' "$pid"
   done
   return 0
 }
@@ -127,6 +127,34 @@ _vpnkit_host_paths() {  # _vpnkit_host_paths <user>: programs named in native-me
   return 0
 }
 
+_vpnkit_chrome_wrapper() {  # _vpnkit_chrome_wrapper <pid> <exe>: one of Chrome's own start-up processes
+  # Chrome's start script (/opt/google/chrome/google-chrome, run by bash)
+  # sends Chrome's output through two `cat`s (exec > >(exec cat)) that live as
+  # long as Chrome: /usr/bin/cat, run as plain "cat", whose parent is a Chrome
+  # binary. While Chrome starts, bash runs that script, and the package's
+  # /usr/bin/google-chrome-stable (DIRECT_BIN) before it: an interpreter whose
+  # script (argv[1] or argv[2]) is one of those.
+  local pid="$1" exe="$2" ppid pexe a
+  local -a argv=()
+  { mapfile -d '' -n 3 -t argv < "/proc/$pid/cmdline"; } 2>/dev/null || return 1
+  case "$exe" in
+    /usr/bin/cat)
+      [[ ${#argv[@]} -eq 1 && "${argv[0]}" == cat ]] || return 1
+      ppid=$(sed -n 's/^.*) . \([0-9]*\) .*$/\1/p' "/proc/$pid/stat" 2>/dev/null) || return 1
+      [[ "$ppid" =~ ^[0-9]+$ ]] || return 1
+      pexe=$(readlink "/proc/$ppid/exe" 2>/dev/null) || return 1
+      [[ "${pexe% (deleted)}" == /opt/google/chrome/* ]]
+      ;;
+    /usr/bin/bash|/usr/bin/dash)
+      for a in "${argv[1]:-}" "${argv[2]:-}"; do
+        [[ "$a" == "$DIRECT_BIN" || ( "$a" == /opt/google/chrome/* && "$a" != *..* ) ]] && return 0
+      done
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 _vpnkit_prog_name() {  # _vpnkit_prog_name <path or name>: a printable program name
   local n="${1##*/}"
   n=$(printf '%s' "$n" | tr -cd 'A-Za-z0-9._+-' | head -c 64)
@@ -136,7 +164,9 @@ _vpnkit_prog_name() {  # _vpnkit_prog_name <path or name>: a printable program n
 vpnkit_direct_scan() {  # vpnkit_direct_scan <user>: what runs in Chrome direct's slice (root), ending in "done"
   # One line each:
   #   chrome <pid> ok|bad|-  a Chrome process (its binary is under
-  #                          /opt/google/chrome) in the slice, and whether its
+  #                          /opt/google/chrome, or it is one of Chrome's own
+  #                          start-up processes: _vpnkit_chrome_wrapper) in
+  #                          the slice, and whether its
   #                          resolver override holds; "-" when DIRECT_DNS is
   #                          empty or the process sees no file system
   #   outside <pid>          a Chrome of <user> outside the slice (on the VPN)
@@ -158,7 +188,9 @@ vpnkit_direct_scan() {  # vpnkit_direct_scan <user>: what runs in Chrome direct'
       [[ -n "$st" && "$st" != Z ]] || continue        # gone, or a zombie: sends nothing
       exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || exe=""
       exe="${exe% (deleted)}"
-      if [[ "$exe" != /opt/google/chrome/* ]]; then others+=("$pid"); continue; fi
+      if [[ "$exe" != /opt/google/chrome/* ]] && ! _vpnkit_chrome_wrapper "$pid" "$exe"; then
+        others+=("$pid"); continue
+      fi
       r="-"
       if [[ -n "$DIRECT_DNS" ]]; then
         # Processes that share a mount namespace and a root see the same files.
