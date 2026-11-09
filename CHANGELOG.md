@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.4.0 (2026-11-09)
+
+- **New, off until you turn it on: Chrome direct.** Google Chrome keeps your normal connection
+  (your own IP) all the time, also while a server is selected; everything else keeps following
+  the bar, and qBittorrent keeps its tunnel. For the sites that expect your home address. Turn
+  it on with the panel's new switch **Chrome uses your own IP**, or `vpn-direct on` (`off` to
+  undo), then close Chrome once so its next start lands in the right place. Chrome runs in a
+  system slice that only root can put a process into, started by a new root launcher
+  (`direct-launch`); the kill switch lets that slice's packets out, but never its plain DNS
+  outside a tunnel. Every normal way to open Chrome lands there: the launcher entry, Omarchy's
+  browser shortcut and links from other apps when Chrome is your default browser, and
+  `google-chrome-stable` in a terminal. README: "Chrome direct".
+- **`DIRECT_DNS`, a resolver for Chrome alone.** Empty by default: Chrome uses the system
+  resolver, which follows the bar. Set to a loopback address (for example a local ad-blocking
+  resolver on `127.0.0.1`), Chrome asks that one only, with a server selected or not. Other
+  addresses are refused, and so is a resolver that does not answer when you turn Chrome direct
+  on.
+- **The status, the panel and the leak check know about it.** While it is on, the panel shows a
+  Chrome line and `vpn-status` a `Chrome direct` line; the bar turns the urgent colour when
+  something is wrong with it. The leak check proves Chrome leaves from your own address while a
+  server is selected, that `DIRECT_DNS` answers and is the only resolver Chrome sees, and names
+  every program in Chrome's slice that is not Chrome: a Chrome native-messaging helper is a
+  warning, anything else a failure (it uses your own IP too, because Chrome started it).
+- What you should know before turning it on: sites see your home IP in Chrome; anything Chrome
+  starts shares the exemption; Omarchy web apps go direct too when Chrome is your default
+  browser; Tailscale hosts stay reachable from Chrome. Like the kill switch, it protects
+  against accidents, not against software running as you. Two new passwordless helpers,
+  `vpnkit-direct` (exactly `on`, `off` or `status`) and `direct-launch`, are listed in
+  SECURITY.md.
+- **Upgrading:** nothing changes until you turn Chrome direct on; after "Update the system
+  part" Chrome follows the bar as before. If you want Chrome on a local resolver, set
+  `DIRECT_DNS` in `/etc/vpnkit/vpnkit.conf` first, then turn it on.
+- Tests: static checks pass. VM suite: 365 passed, 0 failed. The 158 new VM tests cover the
+  slice and its rules, the kill switch's exception (present only while on), DNS from the slice,
+  Tailscale's addresses, the launcher's refusals (child-program flags, also in
+  `chrome-flags.conf`, Chrome already running outside the slice), Chrome's private resolver
+  files surviving a host-side rewrite, the status, the leak check's findings, turning it off
+  while Chrome runs, and a clean uninstall. The VM uses a stand-in Chrome, and the panel's new
+  row and switch have not been checked on screen.
+
 ## 0.3.7 (2026-11-08)
 
 - **qBittorrent can no longer enter the torrent namespace before its resolver files exist.**

@@ -36,6 +36,7 @@ Details: [Install](#install).
 **Contents:** [Quick start](#quick-start) · [What you choose](#what-you-choose) ·
 [How to use it](#how-to-use-it) · [Requirements](#requirements) · [Install](#install) ·
 [Add servers](#add-servers) · [How the protection works](#how-the-protection-works) ·
+[Chrome direct](#chrome-direct) ·
 [Check it, and get out of trouble](#check-it-and-get-out-of-trouble) ·
 [Using it with Tailscale](#using-it-with-tailscale) ·
 [DNS and Omarchy's DNS setting](#dns-and-omarchys-dns-setting) · [Settings](#settings) ·
@@ -60,8 +61,9 @@ Details for each step follow below.
 
 ## What you choose
 
-Your regular traffic (browser, apps, everything except qBittorrent) goes out one of two ways,
-and you pick which in the panel:
+Your regular traffic (browser, apps, everything except qBittorrent, and except Chrome if you
+turn on [Chrome direct](#chrome-direct)) goes out one of two ways, and you pick which in the
+panel:
 
 - **Normal connection:** your own IP address, no VPN. This is the default, and what you get
   after a reboot.
@@ -77,14 +79,14 @@ The bar always shows which IP your regular traffic is using right now. Torrents 
 qBittorrent always uses its own tunnel, whatever you pick for regular traffic, and the bar
 shows that IP too.
 
-Two tunnels, on purpose:
+Two tunnels, on purpose, and one exception you can turn on:
 
-| | Desktop VPN | Torrent tunnel |
-|---|---|---|
-| What goes through it | everything you do, when you pick a server | qBittorrent, always |
-| Default | off: you are on your normal connection | on from boot |
-| You control it | from the bar panel | you don't; it is never toggled |
-| If it fails | kill switch: traffic is blocked until you pick a server or "Normal connection" | qBittorrent has no network at all |
+| | Desktop VPN | Torrent tunnel | Chrome direct (optional) |
+|---|---|---|---|
+| What goes through it | everything you do, when you pick a server | qBittorrent, always | Google Chrome, always on your normal connection |
+| Default | off: you are on your normal connection | on from boot | off: Chrome follows the bar like everything else |
+| You control it | from the bar panel | you don't; it is never toggled | the panel's **Chrome uses your own IP** switch, or `vpn-direct on`/`off` |
+| If it fails | kill switch: traffic is blocked until you pick a server or "Normal connection" | qBittorrent has no network at all | Chrome goes into the VPN or is blocked, never other apps out; the panel says so |
 
 Most setups use one VPN for both jobs, and they conflict: you want to switch the browsing VPN
 on and off freely, and you never want torrents to be off it. Here they are independent.
@@ -120,6 +122,7 @@ tunnel. Left-click opens the panel, right-click toggles the VPN, middle-click re
 |---|---|
 | Header | where your regular traffic goes right now, and its IP; "kill switch on" with a server |
 | Torrents line | the torrent server, its IP, and whether qBittorrent is running inside the tunnel; the copy icon copies the IP |
+| Chrome line | only while [Chrome direct](#chrome-direct) is on: "Your own IP" and the resolver Chrome uses, or the first problem in the urgent colour |
 | **Regular traffic / Torrents** | which traffic the list below chooses a server for |
 | Normal connection | (Regular traffic tab) your own IP, no VPN; removes the kill switch |
 | One row per server | click to use it for the tab you are on; a tick marks the current one. The server the other tab uses is greyed and labelled. The trash icon deletes a server (click twice) |
@@ -128,6 +131,7 @@ tunnel. Left-click opens the panel, right-click toggles the VPN, middle-click re
 | Open qBittorrent | starts it inside the tunnel (it refuses when the tunnel is down) |
 | Check for leaks | runs about thirty-five checks on the live system and shows the result; any failing check is listed in red underneath. Each check is saved as a report; the folder icon opens them (see [Saved reports](#check-it-and-get-out-of-trouble)) |
 | Troubleshoot with AI | appears only when something is wrong (a failed check, a dropped VPN, the torrent tunnel down); see below |
+| Chrome uses your own IP | (shown when Google Chrome is installed) turns [Chrome direct](#chrome-direct) on or off |
 | Show IP addresses in the bar | on: the lock or globe plus both addresses; off: only the icons. Saved in the widget's settings |
 
 **Notifications** appear when the VPN drops and the kill switch starts blocking, when the
@@ -302,8 +306,9 @@ The names above are the defaults; `WG_IF`, `NS` and the provider prefix can be c
 
 **Kill switch.** Picking a server loads an nftables table that rejects everything leaving the
 machine unless it goes out through a VPN interface, is WireGuard's own encrypted traffic, or
-stays on your local network. DNS is rejected outside a tunnel even towards your router. It is
-loaded *before* the old connection is dropped, so switching servers has no open moment. Only
+stays on your local network (or, only if you turned it on, comes from Chrome under
+[Chrome direct](#chrome-direct)). DNS is rejected outside a tunnel even towards your router.
+It is loaded *before* the old connection is dropped, so switching servers has no open moment. Only
 **Normal connection** (`vpn-toggle off`) removes it. A server that stops answering, a profile
 NetworkManager drops, or waking from suspend therefore leaves you blocked, with the bar
 saying so, never silently on your own IP. A NetworkManager hook arms the switch even when a
@@ -335,6 +340,76 @@ flashes `TORRENT LEAK`.
 IPv4 only. To keep IPv6 while no VPN is selected, install with `install.sh --keep-ipv6`; the
 kill switch still blocks it whenever a server is picked.
 
+## Chrome direct
+
+Some sites expect your own address: your bank, work tools that lock out VPN addresses, a
+browser extension tied to your home connection. **Chrome direct** keeps Google Chrome on your
+normal connection (your own IP) all the time, also while a server is selected, and can give it
+a resolver of its own (`DIRECT_DNS`). Everything else keeps following the bar, and qBittorrent
+keeps its tunnel. One app only: Google Chrome (`/usr/bin/google-chrome-stable`). Chromium and
+other browsers follow the bar.
+
+**It is off until you turn it on.** Until then nothing changes: Chrome follows the bar like
+every other program, and none of the rules below are loaded. Turn it on or off with the
+**Chrome uses your own IP** switch in the panel (shown when Chrome is installed), or in a
+terminal:
+
+```sh
+vpn-direct on     # Chrome keeps your own IP from its next start
+vpn-direct off    # Chrome follows the bar again
+```
+
+**Close Chrome once each time you turn it on or off**, so its next start lands in the right
+place. A Chrome that was already open when you turned it on keeps using the VPN (the panel says
+"restart Chrome"), and while it runs a new Chrome window is refused, because Chrome would hand
+it to the running one. Turning it off is refused while Chrome runs with your own IP.
+
+While it is on, the panel shows a **Chrome: direct** line under the torrents line ("Your own IP
+· DNS 127.0.0.1", or the first problem in the urgent colour) and `vpn-status` a
+`Chrome direct` line. Every normal way to open Chrome lands in it: the launcher entry and its
+actions (pointed at the kit's wrapper while it is on), Omarchy's browser shortcut and links
+from other apps when Chrome is your default browser, and `google-chrome-stable` in a terminal.
+
+**DNS.** `DIRECT_DNS` in `/etc/vpnkit/vpnkit.conf` decides where Chrome looks up names:
+
+- **Empty (the default):** the system resolver, which follows the bar: the server's resolver
+  through the tunnel while a server is selected.
+- **A loopback address**, for example a local ad-blocking resolver on `127.0.0.1`: Chrome asks
+  that one alone, with a server selected or not, so its ad blocking is the same either way.
+  Only loopback addresses (`127.x.x.x`) are accepted: a resolver anywhere else would be asked in
+  plain text outside the tunnel, which the kill switch never allows. Turning Chrome direct on
+  is refused while that resolver does not answer, and the panel and the leak check say when it
+  stops answering. The resolver's own lookups are not exempt; they follow
+  the bar like any other program.
+
+Set it before you turn Chrome direct on. If you change it later, restart Chrome.
+
+**How it works.** Chrome is started by a root launcher (`direct-launch`), as you, in a system
+slice (`vpnkitdirect.slice`) that only root can put a process into, so no other program can
+join it. An nftables table marks that slice's packets so they take the normal route, and the
+kill switch lets those marked packets out, after its rule that rejects DNS outside a tunnel:
+Chrome's plain DNS still cannot leave that way. With `DIRECT_DNS` set, Chrome runs with its own
+copy of the resolver files, naming `DIRECT_DNS` alone. Turned off, the slice, the rules and the
+kill switch's exception are gone, and `google-chrome-stable` starts Chrome unchanged.
+
+**What you should know:**
+
+- **Sites see your home IP in Chrome**, also with a server selected. That is the point; use
+  another browser for anything that should go through the VPN.
+- **Anything Chrome itself starts gets the same exemption:** a downloaded file opened from
+  Chrome, an extension's native-messaging helper. The leak check names each one. A program
+  registered as a Chrome native-messaging helper (a manifest in
+  `/etc/opt/chrome/native-messaging-hosts` or `~/.config/google-chrome/NativeMessagingHosts`)
+  is a warning; anything else is a failure, and the bar turns the urgent colour. Close it, or
+  open the file from outside Chrome.
+- **Omarchy web apps go direct too** when Chrome is your default browser: Omarchy opens them in
+  it, so they run inside the same Chrome.
+- **Tailscale hosts stay reachable from Chrome.** Tailnet addresses (`100.64.0.0/10`) keep
+  Tailscale's routes; the rest of Chrome's traffic takes the normal connection, even with a
+  Tailscale exit node.
+- **It protects against accidents, not against software running as you**, like the kill
+  switch. See [Limits](#limits) and [SECURITY.md](SECURITY.md).
+
 ## Check it, and get out of trouble
 
 ```sh
@@ -344,6 +419,7 @@ vpn-check --fail-closed     # also pulls each tunnel down and proves nothing get
 vpn-check --redact          # the latest report with public addresses and keys masked
 vpn-verify                  # the same checks without saving a report
 vpn-rescue                  # way back: VPN off, kill switch off, confirms the internet works
+vpn-direct on|off           # Chrome direct on or off (see Chrome direct)
 vpn-diagnose "what you saw" # hand the problem to your AI agent (see above)
 ```
 
@@ -355,7 +431,10 @@ kill switch is armed, that a program bound to the physical interface cannot go a
 each DNS server is reached through the tunnel and the physical interface cannot answer DNS
 questions, and that the server has answered with a handshake recently (NetworkManager keeps
 showing a WireGuard profile as connected when its server stopped answering or its key was
-revoked). With IPv6 kept on, it also proves IPv6 cannot get out while the VPN is up.
+revoked). With IPv6 kept on, it also proves IPv6 cannot get out while the VPN is up. With
+[Chrome direct](#chrome-direct) on, it checks that its rules are loaded, that a probe in its
+slice leaves from your own address while a server is selected, that `DIRECT_DNS` answers and is
+the only resolver each Chrome process sees, and names anything in the slice that is not Chrome.
 
 **Saved reports.** Every check, from the panel or from `vpn-check`, is saved as a text file in
 **Documents > VPN leak checks** (`~/Documents/VPN leak checks/`; `REPORT_DIR` in
@@ -422,6 +501,7 @@ Everything else is in `/etc/vpnkit/vpnkit.conf`, which the installer never overw
 | `KILLSWITCH_ALLOW_LAN` | `1` | keep the local network reachable while the kill switch is on |
 | `DISABLE_IPV6` | `1` | see above |
 | `VPNKIT_PROVIDER` | `proton` | naming preset; `generic`, `mullvad`, `ivpn`, `airvpn`, `windscribe` for other providers |
+| `DIRECT_DNS` | empty | the resolver Chrome asks while [Chrome direct](#chrome-direct) is on. Empty: the system resolver, which follows the bar. Otherwise a loopback address only (`127.x.x.x`), such as a local ad-blocking resolver on `127.0.0.1` |
 
 ## What gets installed
 
@@ -429,21 +509,24 @@ The engine underneath is called `vpnkit`; that is the name you will see in paths
 
 | Path | What |
 |---|---|
-| `/usr/local/bin/vpn-*`, `vpnkit-*`, `qbt-*`, `qbittorrent` | the commands and helpers |
+| `/usr/local/bin/vpn-*`, `vpnkit-*`, `qbt-*`, `direct-launch`, `qbittorrent`, `google-chrome-stable` | the commands and helpers; `qbittorrent` and `google-chrome-stable` are wrappers that come first in `PATH` (the Chrome one starts Chrome unchanged while Chrome direct is off) |
 | `/usr/local/lib/vpnkit/` | shared library, version, a copy of the uninstaller, the `diagnose-vpn` skill for AI troubleshooting |
 | `/etc/vpnkit/` | settings (no secrets) |
-| `/etc/sudoers.d/99-vpnkit` | passwordless rules for five specific helpers, validated with `visudo -c` before install |
+| `/etc/sudoers.d/99-vpnkit` | passwordless rules for seven specific helpers, validated with `visudo -c` before install |
 | `/etc/NetworkManager/dispatcher.d/50-vpnkit` | arms the kill switch, reconnects after resume |
 | `/etc/systemd/system/qbt-netns.service` | builds the torrent namespace at boot |
+| `/etc/systemd/system/vpnkit-direct.service`, `vpnkitdirect.slice` | Chrome direct's slice and rules; installed always, enabled only while it is on |
+| `/etc/vpnkit/direct-apps` | only while Chrome direct is on: says that it is |
 | `/etc/sysctl.d/99-vpnkit-disable-ipv6.conf` | IPv6 off (unless `--keep-ipv6`) |
 | `/etc/wireguard/`, `/etc/NetworkManager/system-connections/` | your imported configs, mode 0600, root |
 | `~/.local/share/applications/org.qbittorrent.qBittorrent.desktop` | launcher pointing at the wrapper |
+| `~/.local/share/applications/google-chrome.desktop` | only while Chrome direct is on: Chrome's launcher entry pointing at the wrapper (a file of your own there is backed up next to it first) |
 | `~/Documents/VPN leak checks/` | your saved leak-check reports, created by the first check; removed only by `uninstall.sh --purge` |
 | `~/.config/qBittorrent/qBittorrent.conf` | only with `install.sh --qbt-config`: merged with `qbittorrent/qBittorrent.conf.template` (backup kept): bind to the tunnel interface, anonymous mode, require encryption, no UPnP, no local discovery |
 
 The passwordless helpers are written to be safe to grant: they take no paths from the caller,
-validate every argument, the launcher drops to your user before starting qBittorrent, and the
-status helper only reads.
+validate every argument, the launchers drop to your user before starting qBittorrent or
+Chrome, and the status helper only reads.
 
 ## Update
 
@@ -470,8 +553,9 @@ omarchy plugin remove io.github.ralphk-86.omarchy-proton
 ```
 
 The uninstaller switches to the normal connection, removes the kill switch, the torrent
-namespace and every file from the table above. Without `--purge` it keeps your servers, the
-torrent config, `/etc/vpnkit/vpnkit.conf` and your saved leak-check reports, so a later
+namespace and every file from the table above. It also turns Chrome direct off and removes its
+rules; a Chrome still running with your own IP is closed. Without `--purge` it keeps your
+servers, the torrent config, `/etc/vpnkit/vpnkit.conf` and your saved leak-check reports, so a later
 reinstall picks up where you left off. `--purge` deletes the reports too (only the files the
 check wrote; the folder stays if you put anything else in it).
 IPv6 stays off unless you pass `--restore-ipv6`. qBittorrent is no longer confined afterwards.
@@ -486,9 +570,11 @@ If you removed the plugin folder first, the system part can still be removed:
   comes back is read with a time limit and a 256-byte size cap, so a broken or hostile lookup
   server cannot flood a helper. There is no telemetry and nothing else is contacted, apart
   from `pacman` installing packages during setup. *Troubleshoot with AI* starts your own AI agent only when you click it.
+  With Chrome direct on and `DIRECT_DNS` set, the status helper also asks that resolver (on
+  your own machine) one question at most every 30 seconds, to see that it answers.
 - **Keys:** your configs contain private keys. They are removed from the drop folder once
   imported and kept only in root-owned files with mode 0600.
-- **Root:** setup and uninstall run as root once, when you enter your password. Five
+- **Root:** setup and uninstall run as root once, when you enter your password. Seven
   purpose-built helpers may be run by your user without a password; each takes no paths and
   validates its arguments. The full list, and how to report a vulnerability, is in
   [SECURITY.md](SECURITY.md).
@@ -507,6 +593,10 @@ If you removed the plugin folder first, the system part can still be removed:
 - Only qBittorrent is confined. Other torrent clients (Transmission, Deluge, a browser
   extension) run on the normal connection or the desktop VPN like any other program.
 - WireGuard through NetworkManager only. No OpenVPN.
+- [Chrome direct](#chrome-direct) is a deliberate hole in the kill switch for one app, Google
+  Chrome, and only while you have it on. Like the kill switch, it protects against accidents,
+  not against software running as you: such software can ask Chrome to start a program, which
+  then shares Chrome's exemption. The leak check names what it finds in Chrome's slice.
 - Switching servers uses NetworkManager's normal permissions: fine from your desktop session;
   from an SSH session NetworkManager (polkit) may refuse, and then the kill switch keeps you
   blocked until you switch from the desktop or run `vpn-toggle off`.

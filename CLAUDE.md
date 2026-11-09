@@ -19,11 +19,12 @@ The repository is meant to be public. Treat every file and every commit as publi
 - `SECURITY.md`: the table of root helpers. Keep it true.
 - `tests/vm/README.md`: what the test VM is and is not.
 
-## Architecture in five lines
+## Architecture in six lines
 
 1. `VpnWidget.qml` shows `vpn-status --json` and runs commands. No VPN logic in QML.
-2. `system/bin/*` are installed to `/usr/local/bin`. `vpn-*` are user commands; `vpnkit-*` and
-   `qbt-*` are helpers, five of them callable through passwordless sudo.
+2. `system/bin/*` are installed to `/usr/local/bin`. `vpn-*` are user commands; `vpnkit-*`,
+   `qbt-*` and `direct-launch` are helpers; `qbittorrent` and `google-chrome-stable` are PATH
+   wrappers. Seven commands are callable through passwordless sudo (the table in `SECURITY.md`).
 3. Desktop VPN = NetworkManager WireGuard profiles named `<prefix>-<tag>`, written as keyfiles
    by `vpnkit-import`, never connected automatically. Kill switch = nftables table
    `inet vpnkit_kill`, armed by `vpn-toggle <server>` and by the dispatcher hook, removed only
@@ -32,6 +33,11 @@ The repository is meant to be public. Treat every file and every commit as publi
    `/etc/wireguard/vpnkit-torrent.conf`. `/usr/local/bin/qbittorrent` shadows the real binary.
 5. Configs arrive through the drop folder (`~/Documents/WireGuard`, `torrent/` inside it for
    the torrent tunnel); `vpnkit-sync` imports and then removes them from the folder.
+6. Chrome direct (opt-in) = slice `vpnkitdirect.slice` (only root places processes there),
+   nftables table `inet vpnkit_direct` marking its packets 51821 for the main table, and
+   `meta mark 51821 accept` in the kill switch (after its DNS reject) only while on.
+   `vpnkit-direct on|off|status` switches it; `direct-launch`, behind the
+   `google-chrome-stable` wrapper, starts Chrome in the slice.
 
 ## Non-negotiable rules
 
