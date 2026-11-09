@@ -29,6 +29,8 @@ Panel {
   readonly property string qbtCmd: "/usr/local/bin/qbittorrent"
   readonly property string pickCmd: "/usr/local/bin/vpnkit-pick"
   readonly property string importCmd: "/usr/local/bin/vpn-import"
+  // Chrome direct on/off (it also points Chrome's launcher entry at the wrapper).
+  readonly property string directCmd: "/usr/local/bin/vpn-direct"
   // The torrent tunnel's interface; it exists only inside the namespace.
   property string torrentIf: "pqbt0"
   property string torrentNs: "qbtvpn"
@@ -92,6 +94,7 @@ Panel {
   property string qbtServer: ""
   property string qbtConn: ""
   property string pendingTorrent: ""
+  property string pendingDirect: ""
   // Which traffic the server list is choosing for: "regular" or "torrents".
   property string tab: "regular"
   property bool qbtRunning: false
@@ -101,6 +104,18 @@ Panel {
   property var otherApps: []
   readonly property string otherAppsText: otherApps.join(", ")
   property var profiles: []
+  // Chrome direct (opt-in): Chrome keeps the normal connection while a server
+  // is selected. The checks are vpn-status's; null there means unknown.
+  property bool directAvailable: false
+  property bool directEnabled: false
+  property bool directKnown: false
+  property string directDns: ""
+  property bool directWorking: true
+  property bool directDnsOk: true
+  property bool directOverrideOk: true
+  property bool directOutside: false
+  property var directHelpers: []
+  property var directOthers: []
 
   property string pendingTarget: ""
   property string armedRemove: ""
@@ -125,6 +140,7 @@ Panel {
   readonly property bool syncing: syncProcess.running || pickProcess.running
   readonly property bool switchingTorrent: torrentProcess.running
   readonly property bool verifying: verifyProcess.running
+  readonly property bool switchingDirect: directProcess.running
   // Setup runs in a visible Omarchy terminal (sudo asks there), the same way
   // Omarchy's own installers do. The panel only knows it was started; it is
   // done when the installed version matches this widget's.
@@ -137,7 +153,11 @@ Panel {
   readonly property bool torrentDown: loaded && qbtKnown && qbtConfigured && !qbtTunnel
   // A VPN that is up without its kill switch was started before the hook ran.
   readonly property bool unguarded: desktopVpn && !killswitch
-  readonly property bool alert: danger || torrentDown || blocked || unguarded
+  // Chrome direct is on but something is wrong with it, or something that is
+  // not Chrome uses the home IP through it.
+  readonly property bool directProblem: directEnabled
+    && (!directKnown || !directWorking || !directDnsOk || !directOverrideOk || directOthers.length > 0)
+  readonly property bool alert: danger || torrentDown || blocked || unguarded || directProblem
 
   // Two of those states come and go on their own while a command runs, so they
   // are not alarms until they have held still. Picking a server arms the kill
@@ -202,6 +222,17 @@ Panel {
     if (qbtRunning) return "qBittorrent is running, location unknown"
     return "qBittorrent is not running"
   }
+  readonly property string directDetail: {
+    if (!directKnown) return "State unknown: the status helper did not answer"
+    if (!directWorking) return "Not working: its service or rules are missing. Turn it off and on again"
+    if (directOthers.length > 0) return directOthers.join(", ") + " is not Chrome but uses your own IP too. Close it"
+    if (!directDnsOk) return "DIRECT_DNS (" + directDns + ") does not answer: Chrome cannot look up names"
+    if (!directOverrideOk) return "Chrome no longer uses DIRECT_DNS only. Restart Chrome"
+    var parts = ["Your own IP", directDns !== "" ? "DNS " + directDns : "system DNS"]
+    if (directHelpers.length > 0) parts.push("also " + directHelpers.join(", "))
+    if (directOutside) parts.push("restart Chrome: it still uses the VPN")
+    return parts.join(" \u00b7 ")
+  }
   readonly property string folderShort: homeShort(folder)
   function homeShort(path) { return String(path || "").replace(/^\/home\/[^\/]+/, "~") }
 
@@ -221,8 +252,11 @@ Panel {
   // "Troubleshoot with AI" appears only when something is wrong.
   readonly property bool showAi: installed && (verifyFailures.length > 0 || blockedSteady || torrentDownSteady || danger)
   readonly property int aiIndex: showAi ? verifyIndex + 1 : -1
+  // The Chrome direct switch, when Chrome is installed (or it is on).
+  readonly property bool showDirect: installed && (directAvailable || directEnabled)
+  readonly property int directIndex: showDirect ? (showAi ? aiIndex : verifyIndex) + 1 : -1
   // The bar display setting is the last row.
-  readonly property int ipsIndex: installed ? (showAi ? aiIndex + 1 : verifyIndex + 1) : -1
+  readonly property int ipsIndex: installed ? (showDirect ? directIndex : (showAi ? aiIndex : verifyIndex)) + 1 : -1
   readonly property int rowCount: installed ? ipsIndex + 1 : 1
 
   // "proton-se-21" -> "Sweden 21", "vpn-us-ny-45" -> "USA NY 45"
@@ -281,6 +315,19 @@ Panel {
     qbtUnprotected = j.qbt_unprotected === true
     var apps = j.other_torrent_apps instanceof Array ? j.other_torrent_apps : []
     if (JSON.stringify(apps) !== JSON.stringify(otherApps)) otherApps = apps
+    directAvailable = j.direct_available === true
+    directEnabled = j.direct_enabled === true
+    directKnown = j.direct_known === true
+    directDns = String(j.direct_dns || "")
+    // Only a plain true counts as fine; null (unknown) does not.
+    directWorking = j.direct_unit === true && j.direct_rules === true
+    directDnsOk = j.direct_dns_ok === true
+    directOverrideOk = j.direct_override_ok !== false
+    directOutside = j.direct_chrome_outside === true
+    var helpers = j.direct_helpers instanceof Array ? j.direct_helpers : []
+    if (JSON.stringify(helpers) !== JSON.stringify(directHelpers)) directHelpers = helpers
+    var others = j.direct_others instanceof Array ? j.direct_others : []
+    if (JSON.stringify(others) !== JSON.stringify(directOthers)) directOthers = others
     aiAgent = String(j.ai_agent || "")
     torrentIf = String(j.torrent_if || "pqbt0")
     torrentNs = String(j.torrent_ns || "qbtvpn")
@@ -380,6 +427,18 @@ Panel {
     pendingTorrent = name
     torrentProcess.command = ["sudo", "-n", syncCmd, "torrent", name]
     torrentProcess.running = true
+  }
+
+  // Chrome direct on or off. Turning it off is refused while Chrome runs in
+  // its slice; the helper's message says so and is shown as the error.
+  function setDirect(on) {
+    if (demo || switchingDirect || !installed) return
+    if ((on === true) === directEnabled) return
+    lastError = ""
+    message = ""
+    pendingDirect = on ? "on" : "off"
+    directProcess.command = [directCmd, pendingDirect]
+    directProcess.running = true
   }
 
   // First click arms, a second click within three seconds deletes.
@@ -562,6 +621,7 @@ Panel {
     else if (cursorIndex === launchIndex) launchQbt()
     else if (cursorIndex === verifyIndex) verify()
     else if (cursorIndex === aiIndex) troubleshoot()
+    else if (cursorIndex === directIndex) setDirect(!directEnabled)
     else if (cursorIndex === ipsIndex) setShowIps(!showIps)
     else if (cursorIndex >= firstServerIndex && cursorIndex < refreshIndex) pickServer(profiles[cursorIndex - firstServerIndex])
   }
@@ -630,6 +690,27 @@ Panel {
       vpn.pendingTorrent = ""
       if (exitCode !== 0) vpn.lastError = String(torrentStderr.text || "").replace(/^vpnkit-sync:\s*/, "").trim() || "Could not switch the torrent server."
       else vpn.message = "Torrents now use " + vpn.prettyName(target) + "."
+      vpn.refresh(true)
+    }
+  }
+
+  Process {
+    id: directProcess
+    running: false
+    command: []
+    stdout: StdioCollector { id: directStdout; waitForEnd: true }
+    stderr: StdioCollector { id: directStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      var on = vpn.pendingDirect === "on"
+      vpn.pendingDirect = ""
+      if (exitCode !== 0) {
+        vpn.lastError = String(directStderr.text || "").split("\n").map(function(l) { return l.replace(/^(vpnkit-direct|vpn-direct|sudo):\s*/, "").trim() })
+          .filter(function(l) { return l !== "" }).join("\n") || (on ? "Could not turn on Chrome direct." : "Could not turn off Chrome direct.")
+      } else {
+        var said = String(directStdout.text || "").split("\n").filter(function(l) { return l.trim() !== "" && !/^direct: (on|off)$/.test(l.trim()) })
+        vpn.message = said.length > 0 ? said.join(" ")
+          : (on ? "Chrome now uses your own IP. Start it from the launcher." : "Chrome follows the bar again.")
+      }
       vpn.refresh(true)
     }
   }
@@ -902,6 +983,50 @@ Panel {
             }
           }
 
+          // Chrome direct, under the torrents line, while it is on.
+          RowLayout {
+            visible: vpn.installed && vpn.directEnabled
+            width: parent.width
+            spacing: Style.space(8)
+
+            Text {
+              textFormat: Text.PlainText
+              text: vpn.directProblem ? vpn.gAlert : vpn.gDirect
+              color: vpn.directProblem ? vpn.urgent : vpn.foreground
+              font.family: vpn.fontFamily
+              font.pixelSize: Style.font.body
+              horizontalAlignment: Text.AlignHCenter
+              Layout.preferredWidth: Style.space(22)
+              Layout.leftMargin: Style.space(6)
+              Layout.alignment: Qt.AlignVCenter
+            }
+
+            ColumnLayout {
+              Layout.fillWidth: true
+              spacing: Style.space(1)
+
+              Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                text: "Chrome: direct"
+                color: vpn.directProblem ? vpn.urgent : vpn.foreground
+                font.family: vpn.fontFamily
+                font.pixelSize: Style.font.body
+                elide: Text.ElideRight
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                text: vpn.directDetail
+                color: vpn.directProblem ? vpn.urgent : vpn.dim
+                font.family: vpn.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+            }
+          }
+
           PanelSeparator {
             visible: vpn.installed
             foreground: vpn.foreground
@@ -1106,6 +1231,20 @@ Panel {
               subtitle: vpn.aiAgent !== "" ? "Opens " + vpn.aiAgent + " with what went wrong. It asks before changing anything."
                 : "Choose an AI agent first (Omarchy menu: Setup, Defaults, Agent)"
               onChosen: vpn.troubleshoot()
+            }
+
+            ChoiceRow {
+              visible: vpn.showDirect
+              width: parent.width
+              rowIndex: vpn.directIndex
+              glyph: vpn.gDirect
+              title: "Chrome uses your own IP"
+              subtitle: vpn.switchingDirect ? "Switching"
+                : (vpn.directEnabled ? "Only Chrome skips the VPN. Close Chrome to turn this off"
+                  : "Keeps Chrome off the VPN, everything else follows the bar")
+              isPending: vpn.switchingDirect
+              toggle: vpn.directEnabled ? 1 : 0
+              onChosen: vpn.setDirect(!vpn.directEnabled)
             }
 
             ChoiceRow {

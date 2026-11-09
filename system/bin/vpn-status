@@ -76,6 +76,12 @@ else
   fi
 fi
 
+# --- Chrome direct -----------------------------------------------------------
+# On or off is the state file, which anyone may read; how it is doing comes
+# from the status helper, and without it is unknown (null).
+DIRECT_ON=false; vpnkit_direct_on && DIRECT_ON=true
+CHROME_THERE=false; [[ -x "$DIRECT_BIN" ]] && CHROME_THERE=true
+
 # --- configs waiting in the drop folder -------------------------------------
 INBOX=$(find "$CONFIG_DIR" "$CONFIG_DIR/torrent" -maxdepth 1 -type f -name '*.conf' 2>/dev/null | wc -l)
 
@@ -85,7 +91,11 @@ AGENT=$(omarchy-default-agent 2>/dev/null | head -1) || AGENT=""
 STATUS=$(jq -cn \
   --arg conn "$ACTIVE" --arg iface "$IFACE" --arg ip "$EXT_IP" --arg profiles "$PROFILES" \
   --arg version "$VPNKIT_VERSION" --arg folder "$CONFIG_DIR" --arg prefix "$PROFILE_PREFIX" --arg agent "$AGENT" --arg torrent_if "$WG_IF" --arg torrent_ns "$NS" --arg regular_if "$REGULAR_IF" --arg report_dir "$(vpnkit_report_dir)" \
+  --arg direct_dns "$DIRECT_DNS" --argjson direct_on "$DIRECT_ON" --argjson chrome "$CHROME_THERE" \
   --argjson inbox "$INBOX" --argjson blocked "$BLOCKED" --argjson known "$KNOWN" --argjson ns "$NS_JSON" '
+  ($ns.direct | if type == "object" and (.enabled | type) == "boolean" then . else null end) as $d
+  | def d(k): if $d == null or $direct_on == false then null else $d[k] end;
+    def names(k): if $d == null then [] else ($d[k] // "") | split(",") | map(select(. != "")) end;
   {
     desktop_vpn:     ($conn != "" or $iface != ""),
     server:          ($conn | ltrimstr($prefix + "-")),
@@ -115,6 +125,18 @@ STATUS=$(jq -cn \
     qbt_protected:   ($ns.qbt_protected == true),
     qbt_unprotected: ($ns.qbt_unprotected == true),
     other_torrent_apps: (($ns.other_clients // "") | split(",") | map(select(. != ""))),
+    direct_available:   $chrome,
+    direct_known:       ($d != null),
+    direct_enabled:     $direct_on,
+    direct_dns:         $direct_dns,
+    direct_unit:        d("unit"),
+    direct_rules:       d("rules"),
+    direct_dns_ok:      d("dns_ok"),
+    direct_chrome_inside:  d("chrome_inside"),
+    direct_chrome_outside: d("chrome_outside"),
+    direct_override_ok: d("override_ok"),
+    direct_helpers:     (if $direct_on then names("helpers") else [] end),
+    direct_others:      (if $direct_on then names("others") else [] end),
     profiles:        ($profiles | split("\n") | map(select(. != "")))
   }')
 
@@ -155,6 +177,25 @@ case "$MODE" in
       (if (.other_torrent_apps | length) > 0 then
          "Other torrent apps : \(.other_torrent_apps | join(", ")) - NOT in the torrent tunnel, they use your regular connection"
        else empty end),
+      (if .direct_enabled then
+         "Chrome direct      : on · home IP · \(if .direct_dns != "" then "DNS " + .direct_dns else "system DNS" end)",
+         (if .direct_known | not then
+            "                     state unknown: the status helper did not answer"
+          else
+            (if .direct_unit != true or .direct_rules != true then
+               "                     *** NOT WORKING: vpnkit-direct.service or its rules are missing (vpn-direct off, then on) ***" else empty end),
+            (if .direct_dns_ok == false then
+               "                     *** DIRECT_DNS (\(.direct_dns)) does not answer: Chrome cannot look up names ***" else empty end),
+            (if .direct_override_ok == false then
+               "                     *** Chrome no longer uses DIRECT_DNS only: restart Chrome ***" else empty end),
+            (if (.direct_others | length) > 0 then
+               "                     *** also with your own IP, not Chrome: \(.direct_others | join(", ")) - close it ***" else empty end),
+            (if (.direct_helpers | length) > 0 then
+               "                     Chrome helpers with your own IP too: \(.direct_helpers | join(", "))" else empty end),
+            (if .direct_chrome_outside == true then
+               "                     a Chrome started earlier still uses the VPN: close Chrome and start it again" else empty end)
+          end)
+       else "Chrome direct      : off" end),
       (if .inbox > 0 then "Waiting in the folder: \(.inbox) config(s) - run vpn-import" else empty end)
     ' <<<"$STATUS"
     ;;

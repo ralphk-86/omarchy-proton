@@ -323,6 +323,128 @@ vpnkit_dns_answers() {  # vpnkit_dns_answers <IPv4 address>: true when a DNS ser
   [[ "$reply" =~ ^766b[89a-f] ]]
 }
 
+vpnkit_direct_rules_loaded() {  # Chrome direct's table and its main-table rule are in place
+  nft list table inet vpnkit_direct >/dev/null 2>&1 \
+    && [[ -n "$(ip -4 rule list priority 90 fwmark "$DIRECT_FWMARK" table main 2>/dev/null)" ]]
+}
+
+_vpnkit_in_root() {  # _vpnkit_in_root <pid> <absolute path>: that file as <pid> sees it
+  # Through /proc/<pid>/root, so the process's own mounts count. A symlink's
+  # absolute target would be resolved against OUR root (resolv.conf is one),
+  # so the last component's links are followed by hand, inside <pid>'s root.
+  local root="/proc/$1/root" p="$2" t i
+  for i in 1 2 3 4 5 6 7 8; do
+    if [[ ! -L "$root$p" ]]; then printf '%s\n' "$root$p"; return 0; fi
+    t=$(readlink -- "$root$p") || return 1
+    [[ "$t" == /* ]] || t="$(dirname -- "$p")/$t"
+    p=$(realpath -m -s -- "$t") || return 1
+  done
+  return 1
+}
+
+_vpnkit_override_ok() {  # _vpnkit_override_ok <pid> <tmp dir>: 0 ok, 1 not, 2 sees no file system
+  # A process that DIRECT_DNS applies to sees resolv.conf naming DIRECT_DNS
+  # and nothing else, and an nsswitch.conf without resolve/mdns (else glibc
+  # asks systemd-resolved, i.e. the VPN's resolver). Chrome's sandboxed
+  # children run in an empty root: they cannot open either file, so they
+  # have nothing to check. Files are read capped and only if regular.
+  local pid="$1" tmp="$2" f n
+  [[ -d "/proc/$pid/root/etc" ]] || return 2
+  for n in resolv.conf nsswitch.conf; do
+    : > "$tmp/$n"
+    f=$(_vpnkit_in_root "$pid" "/etc/$n") || return 1
+    [[ -f "$f" ]] || return 1
+    timeout 2 head -c 16384 -- "$f" > "$tmp/$n" 2>/dev/null || return 1
+  done
+  vpnkit_resolver_safe "$tmp" || return 1
+  [[ "$(awk '$1 == "nameserver" {print $2}' "$tmp/resolv.conf" | sort -u)" == "$DIRECT_DNS" ]]
+}
+
+_vpnkit_host_paths() {  # _vpnkit_host_paths <user>: programs named in native-messaging manifests
+  # The system's manifests (root's) and the user's own, read with the user's
+  # rights: root never opens a file in the user's folder.
+  local home uid gid f
+  for f in /etc/opt/chrome/native-messaging-hosts/*.json; do
+    [[ -f "$f" ]] && head -c 65536 -- "$f" | jq -r 'if type == "object" and (.path | type) == "string" then .path else empty end' 2>/dev/null
+  done
+  [[ -n "$1" ]] || return 0
+  home=$(getent passwd "$1" | cut -d: -f6); uid=$(id -u "$1" 2>/dev/null); gid=$(id -g "$1" 2>/dev/null)
+  [[ -n "$home" && -n "$uid" && -n "$gid" ]] || return 0
+  setpriv --reuid="$uid" --regid="$gid" --init-groups -- timeout 3 bash -c '
+    for f in "$1"/*.json; do
+      [[ -f "$f" ]] && head -c 65536 -- "$f" | jq -r "if type == \"object\" and (.path | type) == \"string\" then .path else empty end" 2>/dev/null
+    done; true' _ "$home/.config/google-chrome/NativeMessagingHosts" 2>/dev/null | head -c 262144
+  return 0
+}
+
+_vpnkit_prog_name() {  # _vpnkit_prog_name <path or name>: a printable program name
+  local n="${1##*/}"
+  n=$(printf '%s' "$n" | tr -cd 'A-Za-z0-9._+-' | head -c 64)
+  printf '%s\n' "${n:-unknown}"
+}
+
+vpnkit_direct_scan() {  # vpnkit_direct_scan <user>: what runs in Chrome direct's slice (root)
+  # One line each:
+  #   chrome <pid> ok|bad|-  a Chrome process (its binary is under
+  #                          /opt/google/chrome) in the slice, and whether its
+  #                          resolver override holds; "-" when DIRECT_DNS is
+  #                          empty or the process sees no file system
+  #   outside <pid>          a Chrome of <user> outside the slice (on the VPN)
+  #   helper <name>          not Chrome, but a program a native-messaging
+  #                          manifest names: Chrome started it for an extension
+  #   other <name>           anything else in the slice
+  # The leak check's own probe (vpnkit-direct-probe-*.service, which only root
+  # can start in the system's slice) is left out.
+  local cg="/sys/fs/cgroup/$DIRECT_SLICE" pid exe st tmp="" r key hosts="" name
+  local -a others=() argv=()
+  local -A seen=()
+  if [[ -d "$cg" ]]; then
+    for pid in $(find "$cg" -path "$cg/vpnkit-direct-probe-*" -prune -o -name cgroup.procs -print0 2>/dev/null \
+                 | xargs -0r cat 2>/dev/null); do
+      [[ "$pid" =~ ^[0-9]+$ ]] || continue
+      st=$(sed -n 's/^.*) \(.\) .*$/\1/p' "/proc/$pid/stat" 2>/dev/null) || continue
+      [[ -n "$st" && "$st" != Z ]] || continue        # gone, or a zombie: sends nothing
+      exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || exe=""
+      exe="${exe% (deleted)}"
+      if [[ "$exe" != /opt/google/chrome/* ]]; then others+=("$pid"); continue; fi
+      r="-"
+      if [[ -n "$DIRECT_DNS" ]]; then
+        # Processes that share a mount namespace and a root see the same files.
+        key="$(stat -Lc %i "/proc/$pid/ns/mnt" 2>/dev/null):$(stat -Lc %d:%i "/proc/$pid/root" 2>/dev/null)"
+        if [[ -n "${seen[$key]:-}" ]]; then r="${seen[$key]}"
+        else
+          [[ -n "$tmp" ]] || tmp=$(mktemp -d) || return 1
+          _vpnkit_override_ok "$pid" "$tmp"
+          case $? in 0) r=ok ;; 2) r="-" ;; *) r=bad ;; esac
+          seen[$key]="$r"
+        fi
+      fi
+      printf 'chrome %s %s\n' "$pid" "$r"
+    done
+  fi
+  [[ -n "$tmp" ]] && rm -rf "$tmp"
+  if [[ -n "$1" ]]; then
+    for pid in $(vpnkit_chrome_outside_pids "$1"); do printf 'outside %s\n' "$pid"; done
+  fi
+  (( ${#others[@]} )) || return 0
+  hosts=$(_vpnkit_host_paths "$1")
+  for pid in "${others[@]}"; do
+    exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || exe=""
+    exe="${exe% (deleted)}"
+    argv=(); { mapfile -d '' -n 3 -t argv < "/proc/$pid/cmdline"; } 2>/dev/null || true
+    name=""
+    # The program itself, or a script its interpreter runs (argv[1] or [2]).
+    for r in "$exe" "${argv[1]:-}" "${argv[2]:-}"; do
+      [[ -n "$r" && "$r" == /* ]] && grep -qxF -- "$r" <<<"$hosts" && { name="$r"; break; }
+    done
+    if [[ -n "$name" ]]; then printf 'helper %s\n' "$(_vpnkit_prog_name "$name")"
+    elif [[ -n "$exe" ]]; then printf 'other %s\n' "$(_vpnkit_prog_name "$exe")"
+    else printf 'other %s\n' "$(_vpnkit_prog_name "$(cat "/proc/$pid/comm" 2>/dev/null)")"
+    fi
+  done
+  return 0
+}
+
 # Where vpn-check saves the leak-check reports of the user running it: a
 # folder in Documents ("VPN leak checks"), easy to find in the file manager.
 # REPORT_DIR in vpnkit.conf overrides it.

@@ -22,13 +22,13 @@ outside its namespace.
 
 | Helper | Arguments | What it can do |
 |---|---|---|
-| `qbt-netns-status` | none allowed | read the namespace and kill switch state |
+| `qbt-netns-status` | none allowed | read the namespace and kill switch state, and Chrome direct's: its unit and rules, which programs run in its slice (it reads Chrome's native-messaging manifests in `/etc/opt/chrome` as root and the ones in your home folder with your permissions), and whether Chrome's resolver files still name `DIRECT_DNS` only (read through `/proc/<pid>/root`, nothing is run there); it writes only its own caches in `/run`, including whether `DIRECT_DNS` answered (asked at most every 30 s) |
 | `qbt-launch` | passed to qBittorrent only | start `/usr/bin/qbittorrent` inside the namespace, as the desktop user; refuses while the tunnel is down or a qBittorrent (GUI or `qbittorrent-nox`) of that user runs outside the namespace |
 | `vpnkit-killswitch` | `on <profile>`, `off`, `status`; validated | load or remove one nftables table |
 | `vpnkit-sync` | `sync`, `torrent <name>`, `remove <name>`; validated | import configs from the fixed drop folder, choose the torrent server, delete a server |
 | `vpnkit-direct` | exactly `on`, `off` or `status` | turn Chrome direct on or off (start or stop `vpnkit-direct.service`, write or delete `/etc/vpnkit/direct-apps`, re-arm the kill switch for the same server), or read its state; `on` refuses a `DIRECT_DNS` outside 127.0.0.0/8 or one that does not answer, `off` refuses while anything runs in its slice |
 | `direct-launch` | passed to Chrome only; refuses `--*-cmd-prefix`, `--*-launcher` and `--browser-subprocess-path` (also in `~/.config/chrome-flags.conf`) | start `/usr/bin/google-chrome-stable` as the desktop user in `vpnkitdirect.slice` (the normal connection), in a private mount namespace whose resolver files name `DIRECT_DNS` only; refuses while Chrome direct is off or its unit is not active, and while a Chrome of that user runs outside the slice |
-| `vpn-verify` | none allowed | the read-only leak check |
+| `vpn-verify` | none allowed | the read-only leak check; with Chrome direct on it also starts one `curl` in `vpnkitdirect.slice` as the desktop user, to see where it exits |
 
 None of them takes a path from the caller. Files in the drop folder are read with the desktop
 user's permissions, not root's. The helpers are installed root-owned in `/usr/local/bin`.

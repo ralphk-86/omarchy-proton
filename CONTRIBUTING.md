@@ -92,7 +92,8 @@ omarchy bar set $ID demoStatusFile ""    # back to real data
 ```
 
 `tests/preview/status-torrents.json` is the same state with the Torrents tab open
-(`demo_tab`), and `status-normal.json` shows the normal connection, for the bar-states image.
+(`demo_tab`), `status-normal.json` shows the normal connection, for the bar-states image, and
+`status-direct.json` is the first state with Chrome direct on (the "Chrome: direct" line).
 
 The README shows both tabs in full (`screenshots/regular.png`, `screenshots/torrents.png`,
 cropped to 1144x1340 at the top right of a 2560x1440 screen) and the bar in four states

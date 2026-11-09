@@ -9,8 +9,13 @@
 #  against the inode of the VPN namespace. A process is only reported as
 #  protected if those inodes match - that is kernel ground truth, not a guess.
 #
+#  It also reports Chrome direct (opt-in, "direct" below): its unit and rules,
+#  whether DIRECT_DNS answers, which processes run in its slice, and whether
+#  Chrome's private resolver files are still in place.
+#
 #  Allowed passwordless via /etc/sudoers.d/99-vpnkit.
-#  Takes no arguments, only reads state, cannot modify anything.
+#  Takes no arguments and only reads state. The only files it writes are its
+#  own caches in /run (the torrent exit IP, and whether DIRECT_DNS answered).
 # ============================================================================
 set -uo pipefail
 . /usr/local/lib/vpnkit/common.sh   # NS, WG_IF, QBT_CONF, HANDSHAKE_MAX_AGE, ...
@@ -89,6 +94,59 @@ else
   rm -f "$IPCACHE" 2>/dev/null
 fi
 
-printf '{"exists":%s,"route":%s,"tunnel_up":%s,"last_handshake":%s,"endpoint":"%s","server":"%s","exit_ip":"%s","qbt_running":%s,"qbt_protected":%s,"qbt_unprotected":%s,"qbt_pids":"%s","killswitch":%s,"wanted":"%s","configured":%s,"conn":"%s","other_clients":"%s"}\n' \
+# --- Chrome direct (opt-in) ---------------------------------------------------
+# Does DIRECT_DNS answer? The bar polls this every few seconds and a resolver
+# that is down makes the question wait up to 3 s, so the answer is kept for
+# DNSCACHE_TTL seconds, for the address it was asked of. (vpn-verify always
+# asks afresh.)
+DNSCACHE=/run/vpnkit/direct-dns
+DNSCACHE_TTL=30
+direct_dns_ok() {
+  [[ -n "$DIRECT_DNS" ]] || { echo true; return; }
+  vpnkit_loopback_ip "$DIRECT_DNS" || { echo false; return; }
+  local line="" age r=false
+  if [[ -f "$DNSCACHE" && ! -L "$DNSCACHE" ]]; then
+    age=$(( now - $(stat -c %Y "$DNSCACHE" 2>/dev/null || echo 0) ))
+    read -r line < "$DNSCACHE" 2>/dev/null || line=""
+    if (( age >= 0 && age < DNSCACHE_TTL )) && [[ "$line" == "$DIRECT_DNS true" || "$line" == "$DIRECT_DNS false" ]]; then
+      echo "${line##* }"; return
+    fi
+  fi
+  vpnkit_dns_answers "$DIRECT_DNS" && r=true
+  install -d -m 755 /run/vpnkit 2>/dev/null \
+    && printf '%s %s\n' "$DIRECT_DNS" "$r" > "$DNSCACHE.$$" 2>/dev/null \
+    && mv -f "$DNSCACHE.$$" "$DNSCACHE" 2>/dev/null
+  echo "$r"
+}
+
+# The checks run only while it is on; while off they are null ("not checked").
+d_enabled=false; d_unit=false; d_rules=false; d_dns_ok=null; d_override=null
+d_inside=false; d_outside=false; d_helpers=""; d_others=""
+d_dns=$(printf '%s' "$DIRECT_DNS" | tr -cd '0-9A-Za-z.:' | head -c 64)
+systemctl is-active --quiet vpnkit-direct.service 2>/dev/null && d_unit=true
+vpnkit_direct_rules_loaded && d_rules=true
+if vpnkit_direct_on; then
+  d_enabled=true
+  d_dns_ok=$(direct_dns_ok)
+  scan=$(vpnkit_direct_scan "$TARGET_USER")
+  grep -q '^chrome ' <<<"$scan" && d_inside=true
+  grep -q '^outside ' <<<"$scan" && d_outside=true
+  # The override applies only with DIRECT_DNS set and Chrome running; every
+  # Chrome process that sees a file system must have it, and at least one must.
+  if [[ -n "$DIRECT_DNS" && "$d_inside" == true ]]; then
+    if grep -q '^chrome [0-9]* bad$' <<<"$scan" || ! grep -q '^chrome [0-9]* ok$' <<<"$scan"; then d_override=false
+    else d_override=true; fi
+  fi
+  d_helpers=$(awk '$1 == "helper" {print $2}' <<<"$scan" | sort -u | paste -sd, -)
+  d_others=$(awk '$1 == "other" {print $2}' <<<"$scan" | sort -u | paste -sd, -)
+fi
+direct=$(jq -cn --argjson enabled "$d_enabled" --argjson unit "$d_unit" --argjson rules "$d_rules" \
+  --arg dns "$d_dns" --argjson dns_ok "$d_dns_ok" --argjson inside "$d_inside" --argjson outside "$d_outside" \
+  --argjson override_ok "$d_override" --arg helpers "$d_helpers" --arg others "$d_others" \
+  '{enabled: $enabled, unit: $unit, rules: $rules, dns: $dns, dns_ok: $dns_ok, chrome_inside: $inside,
+    chrome_outside: $outside, override_ok: $override_ok, helpers: $helpers, others: $others}') \
+  || direct='{"enabled":null}'
+
+printf '{"exists":%s,"route":%s,"tunnel_up":%s,"last_handshake":%s,"endpoint":"%s","server":"%s","exit_ip":"%s","qbt_running":%s,"qbt_protected":%s,"qbt_unprotected":%s,"qbt_pids":"%s","killswitch":%s,"wanted":"%s","configured":%s,"conn":"%s","other_clients":"%s","direct":%s}\n' \
   "$exists" "$route" "$tunnel_up" "$handshake" "$endpoint" "$server" "$exit_ip" \
-  "$qbt_running" "$qbt_protected" "$qbt_unprotected" "$qbt_pids" "$killswitch" "$wanted" "$configured" "$conn" "$other_clients"
+  "$qbt_running" "$qbt_protected" "$qbt_unprotected" "$qbt_pids" "$killswitch" "$wanted" "$configured" "$conn" "$other_clients" "$direct"

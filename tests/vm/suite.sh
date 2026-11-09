@@ -133,8 +133,12 @@ ip netns exec provider dnsmasq --no-daemon --no-resolv --no-hosts --bind-interfa
 # ad-blocking resolver (Chrome direct's DIRECT_DNS), knowing one name nobody
 # else knows; and the "what is my IP" service on loopback, which shows
 # whether loopback traffic keeps its 127.0.0.1 source.
-dnsmasq --no-daemon --no-resolv --no-hosts --bind-interfaces --listen-address=127.0.0.1 \
-  --address=/direct-only.test/192.0.2.9 </dev/null >/dev/null 2>&1 &
+lo_dns_start() {
+  dnsmasq --no-daemon --no-resolv --no-hosts --bind-interfaces --listen-address=127.0.0.1 \
+    --address=/direct-only.test/192.0.2.9 </dev/null >/dev/null 2>&1 &
+  LO_DNS_PID=$!
+}
+lo_dns_start
 python3 /tmp/whoami.py 127.0.0.1 </dev/null >/dev/null 2>&1 &
 sleep 1
 
@@ -540,7 +544,7 @@ cat > /usr/bin/google-chrome-stable <<EOF
 echo \$\$ > /tmp/chrome-probe.pid
 echo "HOME=\$HOME XDG_CONFIG_HOME=\${XDG_CONFIG_HOME:-} ARGS=\$*" > /tmp/chrome-probe.env
 echo "\$(curl -4 -s --max-time 4 $LOOKUP) \$(getent hosts direct-only.test | awk '{print \$1}') \$(getent hosts only-in-tunnel.test >/dev/null && echo leak || echo noleak) \$(id -un)" > /tmp/chrome-probe
-exec sleep 600
+exec /opt/google/chrome/chrome 600
 EOF
 chmod 755 /usr/bin/google-chrome-stable
 install -d /opt/google/chrome; cp /usr/bin/sleep /opt/google/chrome/chrome
@@ -550,6 +554,10 @@ chrome_start() {  # start "Chrome" as the user through the wrapper; wait for its
   as_user /usr/local/bin/google-chrome-stable "$@" </dev/null >/dev/null 2>&1 &
   local i; for i in $(seq 1 40); do [[ -s /tmp/chrome-probe ]] && break; sleep 0.5; done
   CHROME_PID=$(cat /tmp/chrome-probe.pid 2>/dev/null)
+  # Until the script has become "Chrome", it is a shell in the slice.
+  for i in $(seq 1 20); do
+    [[ "$(readlink "/proc/${CHROME_PID:-none}/exe" 2>/dev/null)" == /opt/google/chrome/chrome ]] && break; sleep 0.25
+  done
 }
 chrome_stop() { [[ -n "$CHROME_PID" ]] && kill "$CHROME_PID" 2>/dev/null; CHROME_PID=""; sleep 1; }
 in_ns() { [[ -n "$CHROME_PID" ]] && nsenter -t "$CHROME_PID" -m "$@"; }
@@ -598,6 +606,92 @@ cp /run/systemd/resolve/stub-resolv.conf /run/systemd/resolve/.suite-new
 mv /run/systemd/resolve/.suite-new /run/systemd/resolve/stub-resolv.conf
 is "resolver override survives a host-side rename" "$(in_ns grep '^nameserver' /etc/resolv.conf 2>/dev/null | paste -sd, -)" "nameserver 127.0.0.1"
 yes "and the host's own resolver settings are untouched" grep -q '^nameserver 127.0.0.53' /etc/resolv.conf
+
+# --- What the status and the leak check say about it ------------------------
+# The Chrome started straight into the slice above skipped the launcher, so it
+# has no resolver override of its own; only Chrome from the launcher runs now.
+systemctl stop suite-chrome-inside.service 2>/dev/null
+DNSCACHE=/run/vpnkit/direct-dns
+NMH=/etc/opt/chrome/native-messaging-hosts
+UNMH=$UHOME/.config/google-chrome/NativeMessagingHosts
+host_manifest() {  # host_manifest <file> <program>: a native-messaging manifest
+  printf '{"name":"com.example.suite","description":"suite","path":"%s","type":"stdio","allowed_origins":["chrome-extension://abcdefghijklmnopabcdefghijklmnop/"]}\n' "$2" > "$1"
+}
+is "status: direct on" "$(status .direct_enabled)" "true"
+is "status: chrome inside" "$(status .direct_chrome_inside)" "true"
+is "status: no Chrome outside the slice" "$(status .direct_chrome_outside)" "false"
+is "status: the unit, the rules and DIRECT_DNS" "$(status '[.direct_unit, .direct_rules, .direct_dns, .direct_dns_ok] | @json')" '[true,true,"127.0.0.1",true]'
+is "status: Chrome's resolver override holds" "$(status .direct_override_ok)" "true"
+is "status: nothing else in the slice" "$(status '[.direct_helpers, .direct_others] | @json')" '[[],[]]'
+yes "vpn-status says it in words" grep -q '^Chrome direct *: on · home IP · DNS 127.0.0.1$' <<<"$(as_user /usr/local/bin/vpn-status)"
+OUT=$(vpn-verify 2>&1); rc=$?
+is "the leak check passes with Chrome direct on" "$rc" "0"
+(( rc == 0 )) || grep -E "FAIL" <<<"$OUT" | sed 's/^/      /'
+yes "it proves a probe in the slice leaves from the normal connection" grep -q "PASS.*a probe in Chrome direct's slice exits from the normal connection" <<<"$OUT"
+yes "that only Chrome runs in the slice" grep -q "PASS.*only Chrome runs in Chrome direct's slice" <<<"$OUT"
+yes "that Chrome's resolver override holds" grep -q "PASS.*Chrome uses DIRECT_DNS (127.0.0.1) only" <<<"$OUT"
+yes "and that DIRECT_DNS answers" grep -q "PASS.*the resolver at DIRECT_DNS (127.0.0.1) answers" <<<"$OUT"
+
+# Anything else in the slice uses the home IP too: the check names it.
+systemd-run --scope --quiet --slice=vpnkitdirect.slice --unit=suite-other /usr/bin/sleep 300 </dev/null >/dev/null 2>&1 &
+sleep 1
+is "status: a program in the slice that is not Chrome is named" "$(status '.direct_others | join(",")')" "sleep"
+OUT=$(vpn-verify 2>&1); rc=$?
+is "the leak check fails on a non-Chrome process in the slice" "$rc" "1"
+yes "and names it" grep -q "FAIL.*sleep runs in Chrome direct's slice" <<<"$OUT"
+# A native-messaging host is Chrome's own helper: it is meant to go along.
+install -d "$NMH"; host_manifest "$NMH/com.example.suite.json" /usr/bin/sleep
+is "status: a registered native host is a helper" "$(status '[.direct_helpers, .direct_others] | @json')" '[["sleep"],[]]'
+OUT=$(vpn-verify 2>&1); rc=$?
+is "a registered native host is a warning, not a failure" "$rc" "0"
+yes "the warning names it" grep -q "WARN.*sleep is a Chrome native-messaging host" <<<"$OUT"
+rm -f "$NMH/com.example.suite.json"
+# The user's own manifests are read with the user's rights: one the user
+# cannot read registers nothing, one the user owns does.
+install -d -o $U -g $U "$UHOME/.config/google-chrome" "$UNMH"
+host_manifest "$UNMH/com.example.suite.json" /usr/bin/sleep; chown root:root "$UNMH/com.example.suite.json"; chmod 600 "$UNMH/com.example.suite.json"
+is "a manifest in the user's folder that the user cannot read counts for nothing" "$(status '[.direct_helpers, .direct_others] | @json')" '[[],["sleep"]]'
+chown $U:$U "$UNMH/com.example.suite.json"; chmod 644 "$UNMH/com.example.suite.json"
+is "the user's own manifest registers a helper" "$(status '[.direct_helpers, .direct_others] | @json')" '[["sleep"],[]]'
+rm -rf "$UHOME/.config/google-chrome"
+systemctl stop suite-other.scope 2>/dev/null; sleep 1
+is "status: and it is gone again" "$(status '[.direct_helpers, .direct_others] | @json')" '[[],[]]'
+
+# A resolver that stops answering. The bar polls the status every few
+# seconds, so the status asks at most every 30 s (cached in DNSCACHE); the
+# leak check always asks.
+kill "$LO_DNS_PID"; wait "$LO_DNS_PID" 2>/dev/null; rm -f "$DNSCACHE"
+is "dns_ok false" "$(status .direct_dns_ok)" "false"
+OUT=$(vpn-verify 2>&1); rc=$?
+is "the leak check fails on a dead DIRECT_DNS" "$rc" "1"
+yes "and says why" grep -q "FAIL.*the resolver at DIRECT_DNS (127.0.0.1) does not answer" <<<"$OUT"
+# Worse than a closed port: one that takes questions and never answers, so
+# each question waits for its timeout.
+python3 -c 'import socket, time; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("127.0.0.1", 53)); time.sleep(600)' </dev/null >/dev/null 2>&1 &
+MUTE_PID=$!; sleep 1; rm -f "$DNSCACHE"
+is "a resolver that never answers: dns_ok false" "$(status .direct_dns_ok)" "false"
+t0=$(date +%s%N); NSJ=$(as_user sudo -n /usr/local/bin/qbt-netns-status); t1=$(date +%s%N)
+is "and the next status answers from the cache" "$(jq -r .direct.dns_ok <<<"$NSJ")" "false"
+yes "without waiting for it ($(( (t1 - t0) / 1000000 )) ms)" test $(( (t1 - t0) / 1000000 )) -lt 2000
+kill "$MUTE_PID"; wait "$MUTE_PID" 2>/dev/null
+lo_dns_start; sleep 1
+OUT=$(vpn-verify 2>&1)
+yes "the leak check asks again at once" grep -q "PASS.*the resolver at DIRECT_DNS (127.0.0.1) answers" <<<"$OUT"
+rm -f "$DNSCACHE"
+is "status: dns_ok again after the cache runs out" "$(status .direct_dns_ok)" "true"
+
+# The override can come undone while Chrome runs (pacman replaces
+# /etc/nsswitch.conf by renaming over it): status and the leak check notice.
+in_ns umount /etc/nsswitch.conf
+is "status: an override without its nsswitch.conf is not ok" "$(status .direct_override_ok)" "false"
+OUT=$(vpn-verify 2>&1); rc=$?
+is "the leak check fails on it" "$rc" "1"
+yes "and names the process" grep -q "FAIL.*Chrome (pid $CHROME_PID) no longer uses DIRECT_DNS only" <<<"$OUT"
+chrome_stop; chrome_start
+is "a restarted Chrome has it again" "$(status .direct_override_ok)" "true"
+in_ns umount -l /run/systemd/resolve
+is "status: an override without its resolv.conf is not ok" "$(status .direct_override_ok)" "false"
+chrome_stop; chrome_start
 chrome_stop
 direct_dns ""
 chrome_start
@@ -646,6 +740,7 @@ as_user /opt/google/chrome/chrome 600 </dev/null >/dev/null 2>&1 &
 sleep 1
 OPID=$(pgrep -u $U -x chrome | head -1)
 rm -f /tmp/chrome-probe
+is "status: a Chrome outside the slice is seen" "$(status .direct_chrome_outside)" "true"
 refuses "with Chrome outside, the wrapper refuses" "pid ${OPID:-none}" /usr/local/bin/google-chrome-stable
 refuses "and direct-launch refuses" "pid ${OPID:-none}" sudo -n /usr/local/bin/direct-launch
 no "and no Chrome was started" test -e /tmp/chrome-probe
@@ -669,6 +764,8 @@ yes "the kill switch itself stays armed" nft list table inet vpnkit_kill
 no "off: the unit is not enabled" systemctl is-enabled --quiet vpnkit-direct.service
 no "off: no state file" test -e /etc/vpnkit/direct-apps
 is "off: status" "$(direct status | jq -c .)" '{"enabled":false,"unit":false,"rules":false,"dns_ok":true}'
+is "status: off" "$(status .direct_enabled)" "false"
+yes "vpn-status says off in words" grep -q '^Chrome direct *: off$' <<<"$(as_user /usr/local/bin/vpn-status)"
 is "off: a process in a slice of that name follows the bar" "$(slice_ip)" "10.2.0.2"
 systemctl start vpnkitdirect.slice
 OUT=$(/usr/local/bin/vpnkit-direct-rules up 2>&1); rc=$?
@@ -714,6 +811,7 @@ OUT=$(vpn-verify --fail-closed 2>&1); rc=$?
 is "vpn-verify --fail-closed passes with a VPN up" "$rc" "0"
 (( rc == 0 )) || grep -E "FAIL|Result" <<<"$OUT" | sed 's/^/      /'
 echo "      $(grep Result <<<"$OUT")"
+no "no direct lines in the leak check when off" grep -qi "chrome direct" <<<"$OUT"
 OUT=$(as_user sudo -n /usr/local/bin/vpn-verify 2>&1); rc=$?
 is "the panel's leak check runs without a password and passes" "$rc" "0"
 # The desktop VPN's own checks: handshake, where DNS really goes.

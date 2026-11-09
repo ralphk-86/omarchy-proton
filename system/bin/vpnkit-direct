@@ -60,11 +60,6 @@ exemption_down() {
   return "$rc"
 }
 
-rules_loaded() {
-  nft list table inet vpnkit_direct >/dev/null 2>&1 \
-    && [[ -n "$(ip -4 rule list priority 90 fwmark "$DIRECT_FWMARK" table main 2>/dev/null)" ]]
-}
-
 dns_ok() {
   [[ -z "$DIRECT_DNS" ]] || { vpnkit_loopback_ip "$DIRECT_DNS" && vpnkit_dns_answers "$DIRECT_DNS"; }
 }
@@ -112,7 +107,7 @@ case "$1" in
   status)
     jq -cn --argjson enabled "$(tf vpnkit_direct_on)" \
            --argjson unit "$(tf systemctl is-active --quiet "$UNIT")" \
-           --argjson rules "$(tf rules_loaded)" \
+           --argjson rules "$(tf vpnkit_direct_rules_loaded)" \
            --argjson dns_ok "$(tf dns_ok)" \
            '{enabled: $enabled, unit: $unit, rules: $rules, dns_ok: $dns_ok}'
     ;;

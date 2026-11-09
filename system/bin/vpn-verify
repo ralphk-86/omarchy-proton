@@ -371,6 +371,75 @@ if [[ -n "$ACTIVE" ]]; then
   fi
 fi
 
+# --- Chrome direct (only when it is turned on) -------------------------------
+# The one deliberate hole in the kill switch: whatever runs in its slice uses
+# the normal connection. Prove that the hole is where it should be, that only
+# Chrome (and Chrome's own registered helpers) is in it, and that Chrome looks
+# names up where it was told to.
+if vpnkit_direct_on; then
+  echo
+  echo "12b. Chrome direct (on: Chrome uses your own IP)"
+  if $SUDO systemctl is-active --quiet vpnkit-direct.service; then ok "vpnkit-direct.service is active"
+  else no "Chrome direct is on but vpnkit-direct.service is not active - Chrome cannot start in its slice (run: vpn-direct off, then vpn-direct on)"; fi
+  if $SUDO bash -c '. /usr/local/lib/vpnkit/common.sh; vpnkit_direct_rules_loaded'; then ok "its rules are loaded"
+  else no "Chrome direct is on but its rules are not loaded - Chrome's traffic goes into the VPN or nowhere (run: vpn-direct off, then vpn-direct on)"; fi
+
+  if [[ -n "$ACTIVE" ]]; then
+    # A probe of our own in the slice, as the desktop user. The status helper
+    # leaves vpnkit-direct-probe-* out of what it counts as "in the slice".
+    PIP=$($SUDO systemd-run --quiet --wait --pipe --collect --slice="$DIRECT_SLICE" \
+            --unit="vpnkit-direct-probe-$$" --uid="${TARGET_USER:-nobody}" -p RuntimeMaxSec=20 \
+            curl -4 -s --max-time 8 --max-filesize "$VPNKIT_MAX_BODY" "$IP_LOOKUP_URL" 2>/dev/null </dev/null) || PIP=""
+    PIP="${PIP//[[:space:]]/}"; [[ "$PIP" =~ ^[0-9.]+$ ]] || PIP=""
+    HIP=$(host_get 6 -4 "$IP_LOOKUP_URL")
+    if [[ -z "$PIP" ]]; then
+      no "a probe in Chrome direct's slice cannot reach the internet - Chrome will not load pages"
+    elif [[ -z "$HIP" ]]; then
+      meh "could not determine the VPN's exit IP to compare the probe in Chrome direct's slice against ($PIP)"
+    elif [[ "$PIP" == "$HIP" ]]; then
+      no "a probe in Chrome direct's slice exits through $ACTIVE ($PIP), not the normal connection"
+    else
+      ok "a probe in Chrome direct's slice exits from the normal connection ($PIP), not through $ACTIVE ($HIP)"
+    fi
+  else
+    meh "no server selected: Chrome uses the normal connection like everything else"
+  fi
+
+  if [[ -z "$DIRECT_DNS" ]]; then
+    ok "Chrome uses the system resolver (DIRECT_DNS is empty)"
+  elif vpnkit_loopback_ip "$DIRECT_DNS" && vpnkit_dns_answers "$DIRECT_DNS"; then
+    ok "the resolver at DIRECT_DNS ($DIRECT_DNS) answers"
+  else
+    no "the resolver at DIRECT_DNS ($DIRECT_DNS) does not answer - Chrome cannot look up names; start it, or empty DIRECT_DNS"
+  fi
+
+  SCAN=$($SUDO bash -c '. /usr/local/lib/vpnkit/common.sh; vpnkit_direct_scan "$1"' _ "$TARGET_USER" 2>/dev/null)
+  CHROMES=$(awk '$1 == "chrome"' <<<"$SCAN")
+  if [[ -z "$CHROMES" ]]; then
+    meh "Chrome is not running in Chrome direct's slice"
+  elif [[ -n "$DIRECT_DNS" ]]; then
+    BADP=$(awk '$1 == "chrome" && $3 == "bad" {print $2}' <<<"$SCAN")
+    for p in $BADP; do
+      no "Chrome (pid $p) no longer uses DIRECT_DNS only: its resolv.conf or nsswitch.conf is the system's again, so names may be looked up through the VPN's resolver; restart Chrome"
+    done
+    if [[ -z "$BADP" ]]; then
+      if grep -q ' ok$' <<<"$CHROMES"; then ok "Chrome uses DIRECT_DNS ($DIRECT_DNS) only: its resolv.conf names it alone, and its nsswitch.conf skips systemd-resolved"
+      else no "no Chrome process could be checked for its resolver settings"; fi
+    fi
+  fi
+  for p in $(awk '$1 == "outside" {print $2}' <<<"$SCAN"); do
+    printf '  [WARN] Chrome (pid %s) runs outside Chrome direct'"'"'s slice: it uses the VPN until you close Chrome and start it again\n' "$p"
+  done
+  OTHERS=$(awk '$1 == "other" {print $2}' <<<"$SCAN" | sort -u)
+  for n in $OTHERS; do
+    no "$n runs in Chrome direct's slice but is not Chrome - it uses your own IP, not the VPN. Close it (Chrome started it)"
+  done
+  [[ -n "$OTHERS" ]] || ok "only Chrome runs in Chrome direct's slice"
+  for n in $(awk '$1 == "helper" {print $2}' <<<"$SCAN" | sort -u); do
+    printf '  [WARN] %s is a Chrome native-messaging host: Chrome started it for an extension, and it uses your own IP too\n' "$n"
+  done
+fi
+
 # --- fail-closed proof ------------------------------------------------------
 if (( FAIL_CLOSED && NSOK )); then
   echo
