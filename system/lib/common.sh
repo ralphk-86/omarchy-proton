@@ -182,6 +182,63 @@ vpnkit_qbt_outside_pids() {  # vpnkit_qbt_outside_pids <namespace inode or ""> <
   return 0
 }
 
+vpnkit_ns_nsswitch() {  # vpnkit_ns_nsswitch: prints the nsswitch.conf for a private namespace
+  # The host's nsswitch uses the `resolve` NSS module, which talks to
+  # systemd-resolved over a UNIX SOCKET in /run. Unix sockets are NOT isolated
+  # by a network namespace (or a mount namespace), so resolved - running in the
+  # root namespace, with the VPN's resolver - would answer the lookups. Without
+  # `resolve` and `mdns`, glibc speaks plain DNS to the nameservers in the
+  # namespace's own resolv.conf. Used for the torrent namespace (qbt-netns-up)
+  # and for Chrome direct (direct-launch).
+  cat <<'NSS'
+# Namespace-local NSS config. Deliberately excludes the `resolve` (systemd-
+# resolved) and `mdns` modules - see vpnkit_ns_nsswitch in common.sh for why.
+passwd:     files systemd
+group:      files [SUCCESS=merge] systemd
+shadow:     files systemd
+gshadow:    files systemd
+publickey:  files
+hosts:      files myhostname dns
+networks:   files
+protocols:  files
+services:   files
+ethers:     files
+rpc:        files
+netgroup:   files
+NSS
+}
+
+vpnkit_gui_env() {  # vpnkit_gui_env <user> <uid>: sets the array VPNKIT_GUI_ENV
+  # The environment a GUI program started by a root launcher (qbt-launch,
+  # direct-launch) gets, as NAME=value words for env(1): the user's runtime
+  # dir, session bus, HOME, USER, LOGNAME, and the display variables sudo kept
+  # for the launcher (see the sudoers file). When WAYLAND_DISPLAY is missing
+  # or stale, the first compositor socket in the runtime dir is used; on
+  # Hyprland that is wayland-1, not wayland-0.
+  local user="$1" rundir="/run/user/$2" wl s v
+  wl="${WAYLAND_DISPLAY:-}"
+  if [[ -z "$wl" || ! -S "$rundir/$wl" ]]; then
+    wl=""
+    for s in "$rundir"/wayland-[0-9]*; do
+      [[ -S "$s" ]] && { wl=$(basename "$s"); break; }
+    done
+  fi
+  VPNKIT_GUI_ENV=(
+    XDG_RUNTIME_DIR="$rundir"
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$rundir/bus"
+    QT_QPA_PLATFORM="wayland;xcb"
+    HOME="$(getent passwd "$user" | cut -d: -f6)"
+    USER="$user"
+    LOGNAME="$user"
+  )
+  [[ -n "$wl" ]] && VPNKIT_GUI_ENV+=(WAYLAND_DISPLAY="$wl")
+  for v in DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE QT_QPA_PLATFORMTHEME QT_STYLE_OVERRIDE \
+           XCURSOR_THEME XCURSOR_SIZE GTK_THEME HYPRLAND_INSTANCE_SIGNATURE; do
+    [[ -n "${!v:-}" ]] && VPNKIT_GUI_ENV+=("$v=${!v}")
+  done
+  return 0
+}
+
 vpnkit_resolver_safe() {  # vpnkit_resolver_safe <dir holding resolv.conf + nsswitch.conf>
   # True when a process reading these files can only resolve names through the
   # tunnel: nsswitch.conf exists and its hosts line does not use `resolve` or

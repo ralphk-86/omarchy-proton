@@ -84,30 +84,11 @@ NSDNS_TMP=$(mktemp -d "/etc/netns/.vpnkit-$NS.XXXXXX")
 } > "$NSDNS_TMP/resolv.conf"
 
 # --- CRITICAL: namespace-local nsswitch.conf --------------------------------
-# The host's nsswitch uses the `resolve` NSS module, which talks to
-# systemd-resolved over a UNIX SOCKET in /run. Unix sockets are NOT isolated by
-# a network namespace, so resolved - running in the ROOT namespace - would
-# happily answer lookups over the real interface. That is a genuine DNS leak.
-#
-# Dropping `resolve` and `mdns` forces glibc to speak plain DNS to the
-# nameservers in the namespace's resolv.conf, which are only reachable through
-# the tunnel. No tunnel => no DNS.
-cat > "$NSDNS_TMP/nsswitch.conf" <<'NSS'
-# Namespace-local NSS config. Deliberately excludes the `resolve` (systemd-
-# resolved) and `mdns` modules - see qbt-netns-up for why.
-passwd:     files systemd
-group:      files [SUCCESS=merge] systemd
-shadow:     files systemd
-gshadow:    files systemd
-publickey:  files
-hosts:      files myhostname dns
-networks:   files
-protocols:  files
-services:   files
-ethers:     files
-rpc:        files
-netgroup:   files
-NSS
+# Without `resolve` and `mdns`: systemd-resolved answers over a Unix socket,
+# which a network namespace does not isolate (see vpnkit_ns_nsswitch). glibc
+# then speaks plain DNS to the nameservers in the namespace's resolv.conf,
+# which are only reachable through the tunnel. No tunnel => no DNS.
+vpnkit_ns_nsswitch > "$NSDNS_TMP/nsswitch.conf"
 chmod 644 "$NSDNS_TMP/resolv.conf" "$NSDNS_TMP/nsswitch.conf"
 mv -f "$NSDNS_TMP/nsswitch.conf" "/etc/netns/$NS/nsswitch.conf"
 mv -f "$NSDNS_TMP/resolv.conf" "/etc/netns/$NS/resolv.conf"

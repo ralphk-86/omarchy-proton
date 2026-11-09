@@ -50,20 +50,39 @@ THOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
 TGROUP=$(id -gn "$TARGET_USER")
 [[ -n "$THOME" && -n "$TGROUP" ]] || refuse "unknown desktop user '$TARGET_USER'"
 
-# /usr/bin/google-chrome-stable adds the flags in ~/.config/chrome-flags.conf
-# (Omarchy keeps its Wayland flags there). Read with the user's rights, never
-# root's, and only so far.
+# /usr/bin/google-chrome-stable adds every flag in ~/.config/chrome-flags.conf
+# (Omarchy keeps its Wayland flags there): `grep -v '^#'` over the whole file,
+# expanded unquoted, so split on whitespace AND globbed against Chrome's
+# working directory. The check fails closed: a file it cannot read whole (too
+# large, unreadable, too slow) or a word that would be globbed is refused.
+# Read with the user's rights, never root's: the test for the file too, so it
+# sees what the package script will see.
 FLAGS_CONF="$THOME/.config/chrome-flags.conf"
-# Split on whitespace like that script does (it drops lines starting with #).
-if [[ -f "$FLAGS_CONF" ]]; then
-  USER_FLAGS=$(setpriv --reuid="$TARGET_UID" --regid="$(id -g "$TARGET_USER")" --init-groups -- \
-                 timeout 2 head -c 65536 -- "$FLAGS_CONF" 2>/dev/null | grep -v '^#') || USER_FLAGS=""
-  read -ra USER_FLAGS <<<"$(tr '\n' ' ' <<<"$USER_FLAGS")"
-  for a in "${USER_FLAGS[@]}"; do
-    vpnkit_chrome_flag_refused "$a" \
-      && refuse "refusing: $FLAGS_CONF has the flag ${a%%=*}, which makes Chrome start another program"
-  done
-fi
+FLAGS_MAX=65536
+FLAGS_TMP=$(mktemp)
+trap 'rm -f "$FLAGS_TMP"' EXIT
+rc=0
+setpriv --reuid="$TARGET_UID" --regid="$(id -g "$TARGET_USER")" --init-groups -- \
+  timeout 2 bash -c '[[ -f $1 ]] || exit 10; exec head -c "$2" -- "$1"' _ "$FLAGS_CONF" "$((FLAGS_MAX + 1))" \
+  > "$FLAGS_TMP" 2>/dev/null || rc=$?
+case "$rc" in
+  10) ;;   # no such file: no flags
+  0)
+    (( $(stat -c %s "$FLAGS_TMP") <= FLAGS_MAX )) \
+      || refuse "refusing: $FLAGS_CONF is larger than $FLAGS_MAX bytes, too large to check"
+    # -a: every line any locale's grep would pass on, never "binary file matches".
+    USER_FLAGS=$(grep -av '^#' "$FLAGS_TMP") || USER_FLAGS=""
+    read -ra USER_FLAGS <<<"$(tr '\n' ' ' <<<"$USER_FLAGS")"
+    for a in "${USER_FLAGS[@]}"; do
+      [[ "$a" == *[\*\?\[]* ]] \
+        && refuse "refusing: $FLAGS_CONF has a wildcard word ($a), which the Chrome script would expand into file names"
+      vpnkit_chrome_flag_refused "$a" \
+        && refuse "refusing: $FLAGS_CONF has the flag ${a%%=*}, which makes Chrome start another program"
+    done
+    ;;
+  *) refuse "refusing: $FLAGS_CONF could not be read to check its flags (exit $rc)" ;;
+esac
+rm -f "$FLAGS_TMP"; trap - EXIT
 
 OUTSIDE=$(vpnkit_chrome_outside_pids "$TARGET_USER" | paste -sd' ' -)
 [[ -z "$OUTSIDE" ]] || refuse "Chrome is already running outside Chrome direct (pid $OUTSIDE) - refusing. It would open this window itself, on the VPN. Close it first."
@@ -77,32 +96,11 @@ if [[ -n "$DIRECT_DNS" ]]; then
   esac
 fi
 
-# The same environment qbt-launch builds, plus the user's HOME and
-# XDG_CONFIG_HOME (so chrome-flags.conf keeps working). sudo keeps
-# WAYLAND_DISPLAY and the rest for this command (see the sudoers file); when
-# it is missing or stale, use the first compositor socket in the runtime dir.
-RUNDIR="/run/user/$TARGET_UID"
-WL="${WAYLAND_DISPLAY:-}"
-if [[ -z "$WL" || ! -S "$RUNDIR/$WL" ]]; then
-  WL=""
-  for s in "$RUNDIR"/wayland-[0-9]*; do
-    [[ -S "$s" ]] && { WL=$(basename "$s"); break; }
-  done
-fi
-ENVV=(
-  XDG_RUNTIME_DIR="$RUNDIR"
-  DBUS_SESSION_BUS_ADDRESS="unix:path=$RUNDIR/bus"
-  QT_QPA_PLATFORM="wayland;xcb"
-  HOME="$THOME"
-  XDG_CONFIG_HOME="$THOME/.config"
-  USER="$TARGET_USER"
-  LOGNAME="$TARGET_USER"
-)
-[[ -n "$WL" ]] && ENVV+=(WAYLAND_DISPLAY="$WL")
-for v in DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE QT_QPA_PLATFORMTHEME QT_STYLE_OVERRIDE \
-         XCURSOR_THEME XCURSOR_SIZE GTK_THEME HYPRLAND_INSTANCE_SIGNATURE; do
-  [[ -n "${!v:-}" ]] && ENVV+=("$v=${!v}")
-done
+# The same environment qbt-launch gives qBittorrent (vpnkit_gui_env), plus
+# XDG_CONFIG_HOME, so the package script finds chrome-flags.conf where it was
+# checked above.
+vpnkit_gui_env "$TARGET_USER" "$TARGET_UID"
+ENVV=("${VPNKIT_GUI_ENV[@]}" XDG_CONFIG_HOME="$THOME/.config")
 
 # The scope is created in the slice while this is still root; systemd-run then
 # drops to the user (with the user's groups) and runs Chrome in it.
@@ -126,22 +124,8 @@ mount -t tmpfs -o mode=755,size=64k,nosuid,nodev,noexec vpnkit-direct "$d"
 printf "# Chrome direct (omarchy-proton): names are resolved by DIRECT_DNS only.\nnameserver %s\noptions edns0 trust-ad\n" "$dns" > "$d/stub-resolv.conf"
 cp "$d/stub-resolv.conf" "$d/resolv.conf"
 # Without resolve and mdns: those reach systemd-resolved, which would answer
-# with the VPN resolver. The same list as the torrent namespace.
-cat > "$d/nsswitch.conf" <<NSS
-# Chrome direct (omarchy-proton): plain DNS to DIRECT_DNS, no systemd-resolved.
-passwd:     files systemd
-group:      files [SUCCESS=merge] systemd
-shadow:     files systemd
-gshadow:    files systemd
-publickey:  files
-hosts:      files myhostname dns
-networks:   files
-protocols:  files
-services:   files
-ethers:     files
-rpc:        files
-netgroup:   files
-NSS
+# with the VPN resolver. The same file as the torrent namespace.
+vpnkit_ns_nsswitch > "$d/nsswitch.conf"
 chmod 644 "$d/stub-resolv.conf" "$d/resolv.conf" "$d/nsswitch.conf"
 mount --bind "$d/nsswitch.conf" /etc/nsswitch.conf
 # Fail closed: start Chrome only when what it will read is right.

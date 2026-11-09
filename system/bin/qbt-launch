@@ -60,32 +60,10 @@ if [[ -n "$OUTSIDE" ]]; then
 fi
 
 # The GUI still works normally: a network namespace isolates networking only,
-# and the Wayland socket is a filesystem socket, not a network one. sudo keeps
-# WAYLAND_DISPLAY for this command (see the sudoers file); when it is missing
-# or stale, use the first compositor socket in the user's runtime dir. On
-# Hyprland that is wayland-1, not wayland-0.
-RUNDIR="/run/user/$TARGET_UID"
-WL="${WAYLAND_DISPLAY:-}"
-if [[ -z "$WL" || ! -S "$RUNDIR/$WL" ]]; then
-  WL=""
-  for s in "$RUNDIR"/wayland-[0-9]*; do
-    [[ -S "$s" ]] && { WL=$(basename "$s"); break; }
-  done
-fi
-
-ENVV=(
-  XDG_RUNTIME_DIR="$RUNDIR"
-  DBUS_SESSION_BUS_ADDRESS="unix:path=$RUNDIR/bus"
-  QT_QPA_PLATFORM="wayland;xcb"
-  HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
-  USER="$TARGET_USER"
-  LOGNAME="$TARGET_USER"
-)
-[[ -n "$WL" ]] && ENVV+=(WAYLAND_DISPLAY="$WL")
-for v in DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE QT_QPA_PLATFORMTHEME QT_STYLE_OVERRIDE \
-         XCURSOR_THEME XCURSOR_SIZE GTK_THEME HYPRLAND_INSTANCE_SIGNATURE; do
-  [[ -n "${!v:-}" ]] && ENVV+=("$v=${!v}")
-done
+# and the Wayland socket is a filesystem socket, not a network one. The
+# environment (runtime dir, session bus, display) is vpnkit_gui_env's.
+vpnkit_gui_env "$TARGET_USER" "$TARGET_UID"
+ENVV=("${VPNKIT_GUI_ENV[@]}")
 
 cd "$(getent passwd "$TARGET_USER" | cut -d: -f6)" 2>/dev/null || cd /
 exec ip netns exec "$NS" \

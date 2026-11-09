@@ -616,8 +616,23 @@ refuses "and through the wrapper too" "refus" /usr/local/bin/google-chrome-stabl
 install -d -o $U -g $U "$UHOME/.config"
 printf -- '--ozone-platform=wayland\n--gpu-launcher=/bin/sh\n' > "$UHOME/.config/chrome-flags.conf"
 chown $U:$U "$UHOME/.config/chrome-flags.conf"
-refuses "and in the user's chrome-flags.conf" "chrome-flags.conf" sudo -n /usr/local/bin/direct-launch
-rm -f "$UHOME/.config/chrome-flags.conf"
+refuses "and in the user's chrome-flags.conf" "chrome-flags.conf has the flag" sudo -n /usr/local/bin/direct-launch
+# The package script reads the whole file and globs each word, so the check
+# fails closed on what it cannot see whole.
+FC="$UHOME/.config/chrome-flags.conf"
+{ for i in $(seq 1 1200); do printf '# %s\n' "$(printf 'x%.0s' $(seq 1 60))"; done
+  printf -- '--gpu-launcher=/bin/sh\n'; } > "$FC"; chown $U:$U "$FC"
+refuses "a chrome-flags.conf too large to check is refused" "larger than" sudo -n /usr/local/bin/direct-launch
+printf -- '--ozone-platform=wayland\n' > "$FC"; chmod 000 "$FC"
+refuses "one that cannot be read is refused" "could not be read" sudo -n /usr/local/bin/direct-launch
+chmod 644 "$FC"
+printf -- '--gpu-launche?=/bin/sh\n' > "$FC"
+refuses "a wildcard word in it is refused" "wildcard" sudo -n /usr/local/bin/direct-launch
+printf -- '# Omarchy\n--ozone-platform=wayland\n--enable-features=TouchpadOverscrollHistoryNavigation\n' > "$FC"
+chrome_start
+is "an ordinary chrome-flags.conf starts Chrome" "$(cut -d' ' -f1 /tmp/chrome-probe 2>/dev/null)" "$HOME_IP"
+chrome_stop
+rm -f "$FC"
 # The environment that reaches the launcher is what the sudoers file keeps.
 OUT=$(timeout 15 "${ASU[@]}" sudo -n -E /usr/local/bin/direct-launch 2>&1 </dev/null)
 yes "sudo does not hand direct-launch the caller's environment (-E)" grep -q "not allowed to preserve the environment" <<<"$OUT"
