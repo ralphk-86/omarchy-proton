@@ -9,6 +9,7 @@ system/install-root.sh         privileged install: packages, files, sudoers, IPv
 system/uninstall-root.sh       privileged removal
 system/bin/                    everything that lands in /usr/local/bin
 system/lib/common.sh           settings loader shared by all scripts
+system/lib/direct.sh           Chrome direct's settings and helpers (sourced after common.sh)
 system/vpnkit.settings         template for /etc/vpnkit/vpnkit.conf
 providers/                     naming presets per VPN provider
 tests/                         see below

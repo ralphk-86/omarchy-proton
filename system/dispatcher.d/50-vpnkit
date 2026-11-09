@@ -17,6 +17,7 @@
 ACTION="${2:-}"
 [ "$ACTION" = "up" ] || exit 0
 . /usr/local/lib/vpnkit/common.sh 2>/dev/null || exit 0
+. /usr/local/lib/vpnkit/direct.sh 2>/dev/null || exit 0
 
 NMCLI=/usr/bin/nmcli
 WANTED_FILE=/run/vpnkit/wanted

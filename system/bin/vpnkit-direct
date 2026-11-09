@@ -25,6 +25,7 @@
 # ============================================================================
 set -euo pipefail
 . /usr/local/lib/vpnkit/common.sh
+. /usr/local/lib/vpnkit/direct.sh
 
 UNIT="vpnkit-direct.service"
 CG="/sys/fs/cgroup/$DIRECT_SLICE"

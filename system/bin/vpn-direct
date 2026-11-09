@@ -56,7 +56,7 @@ launcher_off() {
   refresh_db
 }
 
-direct_is_on() { ( . /usr/local/lib/vpnkit/common.sh && vpnkit_direct_on ); }
+direct_is_on() { ( . /usr/local/lib/vpnkit/common.sh && . /usr/local/lib/vpnkit/direct.sh && vpnkit_direct_on ); }
 
 chrome_running() { pgrep -u "$(id -u)" -f '^/opt/google/chrome/' >/dev/null 2>&1; }
 

@@ -18,7 +18,7 @@ set -uo pipefail
 REAL="/usr/bin/google-chrome-stable"
 
 # Without the kit's library Chrome direct cannot be on: plain Chrome.
-. /usr/local/lib/vpnkit/common.sh 2>/dev/null || exec "$REAL" "$@"
+{ . /usr/local/lib/vpnkit/common.sh && . /usr/local/lib/vpnkit/direct.sh; } 2>/dev/null || exec "$REAL" "$@"
 vpnkit_direct_on || exec "$REAL" "$@"
 
 OUTSIDE=$(vpnkit_chrome_outside_pids "$(id -un)" | paste -sd' ' -)

@@ -15,6 +15,7 @@
 set -uo pipefail
 
 . /usr/local/lib/vpnkit/common.sh
+. /usr/local/lib/vpnkit/direct.sh
 CACHE="${XDG_RUNTIME_DIR:-/tmp}/vpnkit-external-ip"
 
 MODE="text"; FORCE=0

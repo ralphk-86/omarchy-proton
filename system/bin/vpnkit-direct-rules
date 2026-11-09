@@ -29,6 +29,7 @@
 # ============================================================================
 set -euo pipefail
 . /usr/local/lib/vpnkit/common.sh
+. /usr/local/lib/vpnkit/direct.sh
 
 TABLE="vpnkit_direct"
 TAILNET="100.64.0.0/10"

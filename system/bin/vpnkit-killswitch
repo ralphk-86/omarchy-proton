@@ -26,6 +26,7 @@
 # ============================================================================
 set -euo pipefail
 . /usr/local/lib/vpnkit/common.sh
+. /usr/local/lib/vpnkit/direct.sh
 
 TABLE="vpnkit_kill"
 STATE_DIR="/run/vpnkit"

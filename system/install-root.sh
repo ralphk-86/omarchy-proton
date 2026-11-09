@@ -99,6 +99,7 @@ fi
 say "Installing helpers to /usr/local/bin"
 install -d -m 755 /usr/local/lib/vpnkit
 install -m 644 "$SYS/lib/common.sh" /usr/local/lib/vpnkit/common.sh
+install -m 644 "$SYS/lib/direct.sh" /usr/local/lib/vpnkit/direct.sh
 install -m 644 "$SRC/VERSION" /usr/local/lib/vpnkit/VERSION
 install -m 755 "$SYS/uninstall-root.sh" /usr/local/lib/vpnkit/uninstall-root.sh
 # What an AI agent follows when the user picks "Troubleshoot with AI" (vpn-diagnose).
@@ -110,6 +111,8 @@ done
 
 # shellcheck disable=SC1091
 . /usr/local/lib/vpnkit/common.sh
+# shellcheck disable=SC1091
+. /usr/local/lib/vpnkit/direct.sh
 
 # --------------------------------------------------------------- sudoers ---
 say "Installing the sudoers rules (validated before install)"

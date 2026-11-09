@@ -30,7 +30,8 @@
 #  Called by /usr/local/bin/google-chrome-stable (the PATH wrapper).
 # ============================================================================
 set -euo pipefail
-. /usr/local/lib/vpnkit/common.sh   # DIRECT_*, TARGET_USER, TARGET_UID, ...
+. /usr/local/lib/vpnkit/common.sh   # TARGET_USER, TARGET_UID, DIRECT_DNS, ...
+. /usr/local/lib/vpnkit/direct.sh   # DIRECT_*, the Chrome direct helpers
 
 [[ $EUID -eq 0 ]] || { echo "direct-launch: must run as root" >&2; exit 2; }
 

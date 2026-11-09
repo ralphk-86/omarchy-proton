@@ -19,6 +19,7 @@
 # ============================================================================
 set -uo pipefail
 . /usr/local/lib/vpnkit/common.sh   # NS, WG_IF, QBT_CONF, HANDSHAKE_MAX_AGE, ...
+. /usr/local/lib/vpnkit/direct.sh   # Chrome direct
 IPCACHE="/run/qbt-netns-exit-ip"
 IPCACHE_TTL=60
 
@@ -120,35 +121,39 @@ direct_dns_ok() {
 }
 
 # The checks run only while it is on; while off they are null ("not checked").
-d_enabled=false; d_unit=false; d_rules=false; d_dns_ok=null; d_override=null
-d_inside=false; d_outside=false; d_helpers=""; d_others=""; scan_failed=false
-d_dns=$(printf '%s' "$DIRECT_DNS" | tr -cd '0-9A-Za-z.:' | head -c 64)
-systemctl is-active --quiet vpnkit-direct.service 2>/dev/null && d_unit=true
-vpnkit_direct_rules_loaded && d_rules=true
-if vpnkit_direct_on; then
-  d_enabled=true
-  d_dns_ok=$(direct_dns_ok)
+# Every value is computed in one step (tf), not set by a chain of conditions.
+tf() { if "$@"; then echo true; else echo false; fi; }
+direct_json() {  # the "direct" object; {"enabled":null} when the scan did not finish
+  local d_unit d_rules d_dns scan
+  d_unit=$(tf systemctl is-active --quiet vpnkit-direct.service)
+  d_rules=$(tf vpnkit_direct_rules_loaded)
+  d_dns=$(printf '%s' "$DIRECT_DNS" | tr -cd '0-9A-Za-z.:' | head -c 64)
+  if ! vpnkit_direct_on; then
+    jq -cn --argjson unit "$d_unit" --argjson rules "$d_rules" --arg dns "$d_dns" \
+      '{enabled: false, unit: $unit, rules: $rules, dns: $dns, dns_ok: null, chrome_inside: false,
+        chrome_outside: false, override_ok: null, helpers: "", others: ""}'
+    return
+  fi
   # Only a scan that ran to its end ("done") counts; otherwise the whole
-  # object says unknown below, never "nothing else in the slice".
-  scan=$(vpnkit_direct_scan "$TARGET_USER" 2>/dev/null) && [[ "$(tail -n 1 <<<"$scan")" == done ]] || scan_failed=true
-  grep -q '^chrome ' <<<"$scan" && d_inside=true
-  grep -q '^outside ' <<<"$scan" && d_outside=true
+  # object says unknown, never "nothing else in the slice".
+  scan=$(vpnkit_direct_scan "$TARGET_USER" 2>/dev/null) || scan=""
+  [[ "$(tail -n 1 <<<"$scan")" == done ]] || { echo '{"enabled":null}'; return; }
   # The override applies only with DIRECT_DNS set and Chrome running; every
   # Chrome process that sees a file system must have it, and at least one must.
-  if [[ -n "$DIRECT_DNS" && "$d_inside" == true ]]; then
-    if grep -q '^chrome [0-9]* bad$' <<<"$scan" || ! grep -q '^chrome [0-9]* ok$' <<<"$scan"; then d_override=false
-    else d_override=true; fi
-  fi
-  d_helpers=$(awk '$1 == "helper" {print $2}' <<<"$scan" | sort -u | paste -sd, -)
-  d_others=$(awk '$1 == "other" {print $2}' <<<"$scan" | sort -u | paste -sd, -)
-fi
-direct=$(jq -cn --argjson enabled "$d_enabled" --argjson unit "$d_unit" --argjson rules "$d_rules" \
-  --arg dns "$d_dns" --argjson dns_ok "$d_dns_ok" --argjson inside "$d_inside" --argjson outside "$d_outside" \
-  --argjson override_ok "$d_override" --arg helpers "$d_helpers" --arg others "$d_others" \
-  '{enabled: $enabled, unit: $unit, rules: $rules, dns: $dns, dns_ok: $dns_ok, chrome_inside: $inside,
-    chrome_outside: $outside, override_ok: $override_ok, helpers: $helpers, others: $others}') \
-  || direct='{"enabled":null}'
-[[ "$scan_failed" == true ]] && direct='{"enabled":null}'
+  jq -Rsc --argjson unit "$d_unit" --argjson rules "$d_rules" --arg dns "$d_dns" \
+          --argjson dns_set "$(tf test -n "$DIRECT_DNS")" --argjson dns_ok "$(direct_dns_ok)" '
+    split("\n") | map(select(. != "") | split(" ")) as $l
+    | ($l | map(select(.[0] == "chrome"))) as $c
+    | def names(k): $l | map(select(.[0] == k) | .[1]) | unique | join(",");
+    {enabled: true, unit: $unit, rules: $rules, dns: $dns, dns_ok: $dns_ok,
+     chrome_inside: ($c | length > 0),
+     chrome_outside: ($l | any(.[0] == "outside")),
+     override_ok: (if ($dns_set | not) or ($c | length) == 0 then null
+                   else (($c | all(.[2] != "bad")) and ($c | any(.[2] == "ok"))) end),
+     helpers: names("helper"), others: names("other")}' <<<"$scan"
+}
+direct=$(direct_json) || direct='{"enabled":null}'
+jq -e 'type == "object"' >/dev/null 2>&1 <<<"$direct" || direct='{"enabled":null}'
 
 printf '{"exists":%s,"route":%s,"tunnel_up":%s,"last_handshake":%s,"endpoint":"%s","server":"%s","exit_ip":"%s","qbt_running":%s,"qbt_protected":%s,"qbt_unprotected":%s,"qbt_pids":"%s","killswitch":%s,"wanted":"%s","configured":%s,"conn":"%s","other_clients":"%s","direct":%s}\n' \
   "$exists" "$route" "$tunnel_up" "$handshake" "$endpoint" "$server" "$exit_ip" \

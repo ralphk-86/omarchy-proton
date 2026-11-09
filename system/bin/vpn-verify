@@ -19,7 +19,7 @@ set -uo pipefail
 
 [ "$(uname -s)" = "Linux" ] || { echo "Linux only"; exit 1; }
 # shellcheck disable=SC1091
-. /usr/local/lib/vpnkit/common.sh 2>/dev/null || { echo "vpnkit not installed"; exit 1; }
+{ . /usr/local/lib/vpnkit/common.sh && . /usr/local/lib/vpnkit/direct.sh; } 2>/dev/null || { echo "vpnkit not installed"; exit 1; }
 
 FAIL_CLOSED=0
 [[ "${1:-}" == "--fail-closed" ]] && FAIL_CLOSED=1
@@ -381,7 +381,7 @@ if vpnkit_direct_on; then
   echo "12b. Chrome direct (on: Chrome uses your own IP)"
   if $SUDO systemctl is-active --quiet vpnkit-direct.service; then ok "vpnkit-direct.service is active"
   else no "Chrome direct is on but vpnkit-direct.service is not active - Chrome cannot start in its slice (run: vpn-direct off, then vpn-direct on)"; fi
-  if $SUDO bash -c '. /usr/local/lib/vpnkit/common.sh; vpnkit_direct_rules_loaded'; then ok "its rules are loaded"
+  if $SUDO bash -c '. /usr/local/lib/vpnkit/common.sh; . /usr/local/lib/vpnkit/direct.sh; vpnkit_direct_rules_loaded'; then ok "its rules are loaded"
   else no "Chrome direct is on but its rules are not loaded - Chrome's traffic goes into the VPN or nowhere (run: vpn-direct off, then vpn-direct on)"; fi
 
   if [[ -n "$ACTIVE" ]]; then
@@ -415,7 +415,7 @@ if vpnkit_direct_on; then
 
   # Only a scan that ran to its end ("done") says anything; a partial one
   # could leave out exactly what matters.
-  SCAN=$($SUDO bash -c '. /usr/local/lib/vpnkit/common.sh; vpnkit_direct_scan "$1"' _ "$TARGET_USER" 2>/dev/null) \
+  SCAN=$($SUDO bash -c '. /usr/local/lib/vpnkit/common.sh; . /usr/local/lib/vpnkit/direct.sh; vpnkit_direct_scan "$1"' _ "$TARGET_USER" 2>/dev/null) \
     && [[ "$(tail -n 1 <<<"$SCAN")" == done ]] || SCAN=""
   CHROMES=$(awk '$1 == "chrome"' <<<"$SCAN")
   if [[ -z "$SCAN" ]]; then
