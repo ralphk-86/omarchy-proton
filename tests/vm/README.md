@@ -36,6 +36,11 @@ answers with the address a request came from. Every path therefore has a known a
 "home" address, server A, server B, or the torrent tunnel. A leak is a request that arrives
 from the home address when it should not. See the header of `suite.sh`.
 
+For Chrome direct the suite installs real Google Chrome (from the `[omarchy]` repository) and
+`Xvfb`, and runs Chrome headed on a virtual display, started the way a user starts it, besides
+the stand-in Chrome it uses for most of those checks. That needs the internet during section 1,
+like the installer's own packages.
+
 ## Reusing it for another plugin
 
 `vm.sh` and `user-data.yaml` know nothing about VPNs. Copy `tests/vm/` into another plugin

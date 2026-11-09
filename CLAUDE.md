@@ -37,7 +37,9 @@ The repository is meant to be public. Treat every file and every commit as publi
    nftables table `inet vpnkit_direct` marking its packets 51821 for the main table, and
    `meta mark 51821 accept` in the kill switch (after its DNS reject) only while on.
    `vpnkit-direct on|off|status` switches it; `direct-launch`, behind the
-   `google-chrome-stable` wrapper, starts Chrome in the slice.
+   `google-chrome-stable` wrapper, starts Chrome in the slice with a filtered session bus
+   (no `org.freedesktop.systemd1`, else Chrome moves itself out) and the kit's `xdg-open`
+   first in its PATH. Its helpers live in `system/lib/direct.sh`.
 
 ## Non-negotiable rules
 

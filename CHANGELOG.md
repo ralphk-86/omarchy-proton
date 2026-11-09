@@ -12,33 +12,52 @@
   outside a tunnel. Every normal way to open Chrome lands there: the launcher entry, Omarchy's
   browser shortcut and links from other apps when Chrome is your default browser, and
   `google-chrome-stable` in a terminal. README: "Chrome direct".
+- **Chrome stays in its slice.** Chrome asks your user's service manager for a place of its own
+  on every start, which would move it out of the slice and onto the VPN. It therefore gets a
+  filtered session bus (`xdg-dbus-proxy`, a new prerequisite from the official repositories,
+  installed by setup) without that service manager; portals, saved passwords, notifications
+  and media keys keep working, Chrome's tray icon is not shown. If the filter cannot start,
+  Chrome is not started.
+- **Apps Chrome opens follow the bar.** Links handed to other apps, downloads opened from
+  Chrome and `mailto:` go through the kit's own `xdg-open`, which starts the app outside
+  Chrome's slice.
 - **`DIRECT_DNS`, a resolver for Chrome alone.** Empty by default: Chrome uses the system
   resolver, which follows the bar. Set to a loopback address (for example a local ad-blocking
   resolver on `127.0.0.1`), Chrome asks that one only, with a server selected or not. Other
   addresses are refused, and so is a resolver that does not answer when you turn Chrome direct
-  on.
+  on. While the bar says blocked, such a resolver can only answer from its cache if its own
+  lookups follow the bar.
 - **The status, the panel and the leak check know about it.** While it is on, the panel shows a
   Chrome line and `vpn-status` a `Chrome direct` line; the bar turns the urgent colour when
   something is wrong with it. The leak check proves Chrome leaves from your own address while a
   server is selected, that `DIRECT_DNS` answers and is the only resolver Chrome sees, and names
   every program in Chrome's slice that is not Chrome: a Chrome native-messaging helper is a
   warning, anything else a failure (it uses your own IP too, because Chrome started it).
-- What you should know before turning it on: sites see your home IP in Chrome; anything Chrome
-  starts shares the exemption; Omarchy web apps go direct too when Chrome is your default
-  browser; Tailscale hosts stay reachable from Chrome. Like the kill switch, it protects
-  against accidents, not against software running as you. Two new passwordless helpers,
-  `vpnkit-direct` (exactly `on`, `off` or `status`) and `direct-launch`, are listed in
-  SECURITY.md.
+  Chrome's own start-up processes (the `cat`s its start script keeps) count as Chrome, and the
+  bar waits for two polls in a row before it alerts on anything else.
+- What you should know before turning it on: sites see your home IP in Chrome; what Chrome
+  starts by itself (an extension's helper) shares the exemption; Omarchy web apps go direct too
+  when Chrome is your default browser; Tailscale hosts stay reachable from Chrome (the tailnet
+  rule is always in place while it is on); do not run a second `wg-quick` tunnel alongside it
+  (mark 51821). Like the kill switch, it protects against accidents, not against software
+  running as you. Two new passwordless helpers, `vpnkit-direct` (exactly `on`, `off` or
+  `status`) and `direct-launch`, are listed in SECURITY.md.
+- Also: qBittorrent and Chrome started by the kit get your language, `XDG_DATA_DIRS` and
+  input-method settings; the helpers that run through sudo name `/usr/bin/bash` directly;
+  `uninstall.sh` finishes your part when the system part reports a failed step.
 - **Upgrading:** nothing changes until you turn Chrome direct on; after "Update the system
   part" Chrome follows the bar as before. If you want Chrome on a local resolver, set
   `DIRECT_DNS` in `/etc/vpnkit/vpnkit.conf` first, then turn it on.
-- Tests: static checks pass. VM suite: 365 passed, 0 failed. The 158 new VM tests cover the
-  slice and its rules, the kill switch's exception (present only while on), DNS from the slice,
-  Tailscale's addresses, the launcher's refusals (child-program flags, also in
-  `chrome-flags.conf`, Chrome already running outside the slice), Chrome's private resolver
-  files surviving a host-side rewrite, the status, the leak check's findings, turning it off
-  while Chrome runs, and a clean uninstall. The VM uses a stand-in Chrome, and the panel's new
-  row and switch have not been checked on screen.
+- Tests: static checks pass; the marketplace scan is review-required with no findings. VM
+  suite: 436 passed, 0 failed. The VM tests cover the slice and its rules, the kill switch's exception
+  (present only while on), DNS from the slice, Tailscale's addresses, the launcher's refusals
+  (child-program flags, also in `chrome-flags.conf`, Chrome already running outside the slice,
+  rules missing, no bus filter), Chrome's private resolver files surviving a host-side rewrite,
+  the filtered bus, the kit's `xdg-open`, the status, the leak check's findings, turning it
+  off while Chrome runs, and a clean uninstall; most with a stand-in Chrome, and the
+  containment with real Google Chrome on a virtual display (still in the slice after a minute,
+  a restarted network service too, pages from the home IP, an app it opens on the VPN). The
+  panel's new row and switch have not been checked on screen.
 
 ## 0.3.7 (2026-11-08)
 

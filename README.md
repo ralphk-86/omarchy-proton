@@ -393,21 +393,41 @@ Chrome's plain DNS still cannot leave that way. With `DIRECT_DNS` set, Chrome ru
 copy of the resolver files, naming `DIRECT_DNS` alone. Turned off, the slice, the rules and the
 kill switch's exception are gone, and `google-chrome-stable` starts Chrome unchanged.
 
+Chrome would move itself out of the slice: on every start it asks your user's service manager
+for a place of its own. So Chrome gets a **filtered session bus** (`xdg-dbus-proxy`, from the
+official repositories, running as you next to Chrome) on which that service manager does not
+exist; the portals (file chooser, screen sharing), your saved passwords, notifications and media
+keys keep working. If the filter cannot start, Chrome is not started. A program can still leave
+the slice, but only towards the VPN, never the other way, and the panel then says Chrome needs
+a restart.
+
+**Apps Chrome opens follow the bar.** A link Chrome hands to another app, a download you open
+from Chrome, `mailto:` and the like go through `xdg-open`, and Chrome's comes from the kit: it
+starts the app outside the slice, so the app uses the VPN while a server is selected, like it
+would if you had started it yourself. If that cannot be arranged, nothing is opened.
+
 **What you should know:**
 
 - **Sites see your home IP in Chrome**, also with a server selected. That is the point; use
   another browser for anything that should go through the VPN.
-- **Anything Chrome itself starts gets the same exemption:** a downloaded file opened from
-  Chrome, an extension's native-messaging helper. The leak check names each one. A program
-  registered as a Chrome native-messaging helper (a manifest in
-  `/etc/opt/chrome/native-messaging-hosts` or `~/.config/google-chrome/NativeMessagingHosts`)
-  is a warning; anything else is a failure, and the bar turns the urgent colour. Close it, or
-  open the file from outside Chrome.
+- **What Chrome starts by itself, not through `xdg-open`, gets the same exemption:** above all
+  an extension's native-messaging helper. The leak check names each one. A program registered
+  as a Chrome native-messaging helper (a manifest in `/etc/opt/chrome/native-messaging-hosts`
+  or `~/.config/google-chrome/NativeMessagingHosts`) is a warning; anything else is a failure,
+  and the bar turns the urgent colour once it has seen it twice in a row. Close it.
+- **No tray icon.** Chrome's icon for apps that keep running in the background is not shown:
+  the filtered bus cannot grant the name it needs.
+- **While the bar says blocked** (a server is selected but down), Chrome still gets out. With
+  `DIRECT_DNS` set to a local resolver whose own lookups follow the bar, that resolver cannot
+  reach its upstream then, so only names it already has cached resolve.
 - **Omarchy web apps go direct too** when Chrome is your default browser: Omarchy opens them in
   it, so they run inside the same Chrome.
 - **Tailscale hosts stay reachable from Chrome.** Tailnet addresses (`100.64.0.0/10`) keep
   Tailscale's routes; the rest of Chrome's traffic takes the normal connection, even with a
   Tailscale exit node.
+- **Do not run a second `wg-quick` tunnel alongside it.** Chrome direct marks its packets with
+  `51821`, which is also the mark `wg-quick` picks for a second tunnel of its own (the first
+  takes 51820). The desktop VPN here goes through NetworkManager and is not affected.
 - **It protects against accidents, not against software running as you**, like the kill
   switch. See [Limits](#limits) and [SECURITY.md](SECURITY.md).
 
@@ -596,8 +616,9 @@ If you removed the plugin folder first, the system part can still be removed:
 - WireGuard through NetworkManager only. No OpenVPN.
 - [Chrome direct](#chrome-direct) is a deliberate hole in the kill switch for one app, Google
   Chrome, and only while you have it on. Like the kill switch, it protects against accidents,
-  not against software running as you: such software can ask Chrome to start a program, which
-  then shares Chrome's exemption. The leak check names what it finds in Chrome's slice.
+  not against software running as you: such software can ask Chrome to start a program (an
+  extension's helper, say), which then shares Chrome's exemption. The leak check names what it
+  finds in Chrome's slice. Apps Chrome opens through `xdg-open` do not share it.
 - Switching servers uses NetworkManager's normal permissions: fine from your desktop session;
   from an SSH session NetworkManager (polkit) may refuse, and then the kill switch keeps you
   blocked until you switch from the desktop or run `vpn-toggle off`.
