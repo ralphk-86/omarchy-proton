@@ -67,7 +67,9 @@ boot() {  # boot <disk> [extra qemu args...]
   qemu-system-x86_64 "${QEMU_DATA[@]}" "${accel[@]}" -m 2048 -smp 2 \
     -drive "file=$disk,if=virtio,format=qcow2" \
     -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$PORT-:22" \
-    -display none -serial "file:$CACHE/console.log" -pidfile "$PIDFILE" -daemonize "$@"
+    -display none -serial "file:$CACHE/console.log" -pidfile "$PIDFILE" -daemonize "$@" 9>&-
+  # 9>&-: QEMU must not inherit the lock (fd 9). It outlives this script, and
+  # while it held the lock `vm.sh stop` after `vm.sh up` saw "another vm.sh".
 }
 
 wait_ssh() {
@@ -135,9 +137,10 @@ case "${1:-}" in
   test)
     start_fresh
     say "Running the suite"
+    # The suite's own exit status (it fails when any check failed): with
+    # pipefail the pipeline returns ssh's status unless tee itself failed.
     rc=0
     vssh "sudo bash /home/tester/.config/omarchy/plugins/$PLUGIN_ID/tests/vm/suite.sh" 2>&1 | tee "$CACHE/last-run.log" || rc=$?
-    rc=${PIPESTATUS[0]}
     stop
     say "Log: $CACHE/last-run.log"
     exit "$rc"
