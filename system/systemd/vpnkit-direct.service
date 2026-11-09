@@ -1,0 +1,19 @@
+[Unit]
+Description=Chrome direct: keep its cgroup and its rules loaded (omarchy-proton)
+Documentation=https://github.com/ralphk-86/omarchy-proton
+# The rules match the slice's cgroup by an id nftables looks up when they are
+# loaded, so the slice must exist first and for as long as this unit is
+# active. An active slice keeps its cgroup even while nothing runs in it.
+Requires=vpnkitdirect.slice
+After=vpnkitdirect.slice
+# nftables.service replaces the whole ruleset when it starts.
+After=nftables.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/vpnkit-direct-rules up
+ExecStop=/usr/local/bin/vpnkit-direct-rules down
+
+[Install]
+WantedBy=multi-user.target

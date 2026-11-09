@@ -223,9 +223,22 @@ install -d -m 755 /etc/NetworkManager/dispatcher.d
 install -m 755 -o root -g root "$SYS/dispatcher.d/50-vpnkit" /etc/NetworkManager/dispatcher.d/50-vpnkit
 
 # --------------------------------------------------------------- systemd ---
-say "Installing qbt-netns.service"
+say "Installing qbt-netns.service and the Chrome direct units"
 install -m 644 "$SYS/systemd/qbt-netns.service" /etc/systemd/system/qbt-netns.service
+# Chrome direct is opt-in: its units are installed, but only `vpnkit-direct on`
+# enables them. When it is already on, the rules are loaded again in place
+# (a restart would recreate the slice and end a Chrome running in it).
+install -m 644 "$SYS/systemd/vpnkitdirect.slice" /etc/systemd/system/vpnkitdirect.slice
+install -m 644 "$SYS/systemd/vpnkit-direct.service" /etc/systemd/system/vpnkit-direct.service
 systemctl daemon-reload
+if vpnkit_direct_on; then
+  systemctl enable vpnkit-direct.service >/dev/null 2>&1 || true
+  if systemctl is-active --quiet vpnkit-direct.service; then
+    /usr/local/bin/vpnkit-direct-rules up || warn "Chrome direct: reloading its rules failed"
+  else
+    systemctl start vpnkit-direct.service || warn "vpnkit-direct.service failed to start: journalctl -u vpnkit-direct.service"
+  fi
+fi
 
 # ------------------------------------------------------------ drop folder --
 say "Reading the drop folder: $CONFIG_DIR"

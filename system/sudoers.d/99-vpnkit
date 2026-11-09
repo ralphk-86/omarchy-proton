@@ -17,6 +17,13 @@ Defaults!/usr/local/bin/qbt-launch env_keep += "WAYLAND_DISPLAY DISPLAY XDG_CURR
 # script validates its own arguments.
 @USER@ ALL=(root) NOPASSWD: /usr/local/bin/vpnkit-killswitch
 
+# Chrome direct on/off and its status, with exactly these arguments. Turning it
+# on keeps Chrome on the normal connection while a server is selected, which
+# is a choice the desktop user makes, like choosing "Normal connection".
+@USER@ ALL=(root) NOPASSWD: /usr/local/bin/vpnkit-direct on
+@USER@ ALL=(root) NOPASSWD: /usr/local/bin/vpnkit-direct off
+@USER@ ALL=(root) NOPASSWD: /usr/local/bin/vpnkit-direct status
+
 # Import configs from the drop folder / delete a server. Takes no paths: the
 # folder is fixed in /etc/vpnkit/vpnkit.conf and names are validated.
 @USER@ ALL=(root) NOPASSWD: /usr/local/bin/vpnkit-sync

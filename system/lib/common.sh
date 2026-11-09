@@ -32,6 +32,8 @@ HANDSHAKE_MAX_AGE=240
 DISABLE_IPV6=1
 BYPASS_CIDRS=""
 VPN_FWMARK=51820
+DIRECT_FWMARK=51821
+DIRECT_DNS=""
 KILLSWITCH_ALLOW_LAN=1
 REPORT_DIR=""
 LAN_CIDRS="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 224.0.0.0/4 255.255.255.255/32"
@@ -81,6 +83,13 @@ TARGET_HOME=$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6) || true
 [ -z "$CONFIG_DIR" ] && CONFIG_DIR="${TARGET_HOME:-/nonexistent}/Documents/WireGuard"
 
 VPNKIT_VERSION=$(cat /usr/local/lib/vpnkit/VERSION 2>/dev/null || echo unknown)
+
+# Chrome direct (opt-in): the one app that keeps the normal connection while a
+# desktop server is selected. Fixed names, not settings: the slice is a unit
+# file of that name, and the state file is written only by vpnkit-direct.
+DIRECT_SLICE="vpnkitdirect.slice"
+DIRECT_STATE="/etc/vpnkit/direct-apps"
+DIRECT_BIN="/usr/bin/google-chrome-stable"
 
 # ------------------------------------------------------------- helpers ------
 # First desktop VPN interface currently present (named <prefix>-...), or empty.
@@ -201,6 +210,33 @@ vpnkit_outside_clients() {  # vpnkit_outside_clients <namespace inode or "">
     (( found )) && printf '%s\n' "$c"
   done
   return 0
+}
+
+# Is Chrome direct turned on? Only `vpnkit-direct on` writes the state file.
+vpnkit_direct_on() {
+  grep -qx chrome "$DIRECT_STATE" 2>/dev/null
+}
+
+vpnkit_loopback_ip() {  # vpnkit_loopback_ip <addr>: a well-formed IPv4 address in 127.0.0.0/8
+  # No leading zeros: some parsers read 010 as octal.
+  local o='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+  [[ "$1" =~ ^127\.$o\.$o\.$o$ ]]
+}
+
+vpnkit_dns_answers() {  # vpnkit_dns_answers <IPv4 address>: true when a DNS server there answers
+  # One question (the root zone's name servers) over UDP port 53, sent by bash
+  # itself: a stock Omarchy has no DNS query tool. Any reply to it counts, even
+  # a refusal: this asks whether a resolver is there, not what it knows.
+  local fd reply
+  # In braces: a redirection written on exec itself would stay for the caller.
+  { exec {fd}<>"/dev/udp/$1/53"; } 2>/dev/null || return 1
+  reply=""
+  if printf '\x76\x6b\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x01' >&"$fd" 2>/dev/null; then
+    reply=$(timeout 3 head -c 3 <&"$fd" 2>/dev/null | od -An -tx1 | tr -d ' \n') || reply=""
+  fi
+  exec {fd}>&-
+  # Same id (766b), and the "this is a response" bit set in the flags.
+  [[ "$reply" =~ ^766b[89a-f] ]]
 }
 
 # Where vpn-check saves the leak-check reports of the user running it: a

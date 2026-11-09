@@ -107,7 +107,7 @@ mk_server wgA 51820 "$WG/srvA.key" 10.2.0.1/24 "$(cat $WG/deskA.pub)@10.2.0.2/32
 mk_server wgB 51821 "$WG/srvB.key" 10.3.0.1/24 "$(cat $WG/deskB.pub)@10.3.0.2/32"
 
 cat > /tmp/whoami.py <<'PY'
-import http.server, socketserver
+import http.server, socketserver, sys
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -123,12 +123,19 @@ class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 class S(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True; allow_reuse_address = True
-S(("0.0.0.0", 8080), H).serve_forever()
+S((sys.argv[1] if len(sys.argv) > 1 else "0.0.0.0", 8080), H).serve_forever()
 PY
 # Detached from this shell's output, or ssh would wait for them to exit.
 ip netns exec provider python3 /tmp/whoami.py </dev/null >/dev/null 2>&1 &
 ip netns exec provider dnsmasq --no-daemon --no-resolv --no-hosts --bind-interfaces \
   --listen-address=10.2.0.1 --listen-address=10.3.0.1 --address=/#/192.0.2.7 </dev/null >/dev/null 2>&1 &
+# On the machine itself: a resolver on loopback, the stand-in for a local
+# ad-blocking resolver (Chrome direct's DIRECT_DNS), knowing one name nobody
+# else knows; and the "what is my IP" service on loopback, which shows
+# whether loopback traffic keeps its 127.0.0.1 source.
+dnsmasq --no-daemon --no-resolv --no-hosts --bind-interfaces --listen-address=127.0.0.1 \
+  --address=/direct-only.test/192.0.2.9 </dev/null >/dev/null 2>&1 &
+python3 /tmp/whoami.py 127.0.0.1 </dev/null >/dev/null 2>&1 &
 sleep 1
 
 conf() {  # conf <file> <key> <addr> <dns> <comment> <server-pub> <port>
@@ -177,9 +184,11 @@ is "install.sh exits 0" "$rc" "0"
 (( rc == 0 )) || sed 's/^/      /' /tmp/install.log | tail -25
 yes "missing dependency was installed (wg)" command -v wg
 yes "missing dependency was installed (nft)" command -v nft
-for f in vpn-status vpn-toggle vpn-import vpn-verify vpn-check vpn-rescue vpn-diagnose vpnkit-pick vpnkit-sync vpnkit-import vpnkit-killswitch qbt-netns-up qbt-launch qbittorrent; do
+for f in vpn-status vpn-toggle vpn-import vpn-verify vpn-check vpn-rescue vpn-diagnose vpnkit-pick vpnkit-sync vpnkit-import vpnkit-killswitch vpnkit-direct vpnkit-direct-rules qbt-netns-up qbt-launch qbittorrent; do
   yes "installed /usr/local/bin/$f" test -x /usr/local/bin/$f
 done
+yes "the Chrome direct units are installed" test -f /etc/systemd/system/vpnkit-direct.service -a -f /etc/systemd/system/vpnkitdirect.slice
+no "and Chrome direct is not enabled: it is opt-in" systemctl is-enabled --quiet vpnkit-direct.service
 yes "sudoers file is valid" visudo -c -f /etc/sudoers.d/99-vpnkit
 yes "the AI troubleshooting skill is installed" test -r /usr/local/lib/vpnkit/skills/diagnose-vpn/SKILL.md
 
@@ -413,6 +422,111 @@ is "a VPN started with plain nmcli is armed by the hook" "$(status .killswitch)"
 as_user /usr/local/bin/vpn-toggle off >/dev/null 2>&1
 
 # ---------------------------------------------------------------------------
+section "4b. Chrome direct: rules"
+# Opt-in: one app keeps the normal connection while a server is selected.
+# Whatever root starts in the system's vpnkitdirect.slice is that app here;
+# the launcher that puts Chrome there is tested on its own.
+DSLICE=/sys/fs/cgroup/vpnkitdirect.slice
+VCONF=/etc/vpnkit/vpnkit.conf
+direct()      { as_user sudo -n /usr/local/bin/vpnkit-direct "$@"; }
+direct_dns()  { sed -i '/^DIRECT_DNS=/d' "$VCONF"; printf 'DIRECT_DNS="%s"\n' "$1" >> "$VCONF"; }
+direct_rule() { ip -4 rule | grep -q 0xca6d; }
+tailnet_rule() { ip -4 rule list priority 89 | grep -q 'to 100.64.0.0/10 fwmark 0xca6d lookup 52'; }
+ks_line()     { nft list table inet vpnkit_kill 2>/dev/null | grep -q 'meta mark 0x0000ca6d accept'; }
+in_slice()    { systemd-run --quiet --wait --pipe --slice=vpnkitdirect.slice --uid=$U "$@" 2>/dev/null; }
+slice_ip()    { local a; a=$(in_slice curl -4 -s --max-time 4 "$LOOKUP") || a=""; printf '%s' "${a:-none}"; }
+user_slice()  { as_user systemd-run --user --quiet --wait --pipe --slice=vpnkitdirect.slice "$@" 2>/dev/null; }
+
+as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
+is "server A is selected" "$(myip)" "10.2.0.2"
+no "off: nothing installed" nft list table inet vpnkit_direct
+no "off: no fwmark rule" direct_rule
+no "off: no slice" test -d "$DSLICE"
+no "off: the kill switch has no direct line" ks_line
+is "off: status" "$(direct status | jq -c .)" '{"enabled":false,"unit":false,"rules":false,"dns_ok":true}'
+no "the passwordless rule allows only on, off and status" direct bogus
+no "and nothing after them" direct on now
+/usr/local/bin/vpnkit-direct bogus >/dev/null 2>&1; rc=$?
+is "the helper itself refuses anything else" "$rc" "2"
+
+direct_dns 127.0.0.1
+is "on" "$(direct on 2>&1)" "direct: on"
+yes "the slice's cgroup exists" test -d "$DSLICE"
+is "status: on" "$(direct status | jq -c .)" '{"enabled":true,"unit":true,"rules":true,"dns_ok":true}'
+is "a probe in the slice exits from the home address" "$(slice_ip)" "$HOME_IP"
+is "the host still exits through the server" "$(myip)" "10.2.0.2"
+is "loopback traffic from the slice keeps its 127.0.0.1 source" \
+  "$(in_slice curl -4 -s --max-time 4 http://127.0.0.1:8080/)" "127.0.0.1"
+# A user can make a slice of the same name under their own service manager;
+# it is not the system's, so it gets nothing.
+yes "a user's own vpnkitdirect.slice lives under the user's manager" \
+  grep -q '^0::/user.slice/.*/vpnkitdirect.slice/' <<<"$(user_slice cat /proc/self/cgroup)"
+is "and a probe started there exits through the server" "$(user_slice curl -4 -s --max-time 4 "$LOOKUP")" "10.2.0.2"
+no "a user cannot move itself into the slice" as_user sh -c 'echo $$ > /sys/fs/cgroup/vpnkitdirect.slice/cgroup.procs'
+yes "the kill switch has the direct line after the DNS reject" bash -c \
+  "nft list table inet vpnkit_kill | awk '/dport \{ 53, 853 \}.*reject/ && !r {r=NR} /meta mark 0x0000ca6d accept/ && !m {m=NR} END {exit !(r && m && r < m)}'"
+# 10.0.2.3 is QEMU's resolver, on the physical link the DNS counter watches.
+before=$(dns_leaks)
+in_slice bash -c 'printf x > /dev/udp/10.0.2.3/53'
+is "plain DNS from the slice still cannot leave outside a tunnel" "$(( $(dns_leaks) - before ))" "0"
+
+nmcli connection down proton-ca-1 >/dev/null 2>&1; sleep 1
+is "blocked: the host does not get out" "$(myip)" "none"
+is "blocked: the slice still gets out" "$(slice_ip)" "$HOME_IP"
+as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
+is "server A again" "$(myip)" "10.2.0.2"
+yes "the re-armed kill switch keeps the direct line" ks_line
+
+# nftables resolves the slice's path to a cgroup id when the rules load, so a
+# recreated cgroup needs the rules loaded again.
+ino=$(stat -c %i "$DSLICE")
+systemctl restart vpnkit-direct.service
+ino2=$(stat -c %i "$DSLICE" 2>/dev/null)
+yes "restarting the unit recreates the cgroup" test -n "$ino2" -a "$ino2" != "$ino"
+is "rules follow a recreated cgroup" "$(slice_ip)" "$HOME_IP"
+
+# Tailnet addresses stay on Tailscale's table, only when that table exists.
+no "no tailnet rule without Tailscale's table" tailnet_rule
+ip route add 100.100.100.100/32 dev lo table 52
+/etc/NetworkManager/dispatcher.d/50-vpnkit "$PHYS" up
+yes "after a link comes up with Tailscale's table there, tailnet addresses use it" tailnet_rule
+ip route flush table 52
+/usr/local/bin/vpnkit-direct-rules up
+no "the tailnet rule goes when the table does" tailnet_rule
+
+systemd-run --quiet --slice=vpnkitdirect.slice --uid=$U --unit=suite-in-slice sleep 120
+no "off is refused while something runs in the slice" direct off
+yes "and the exemption stays" nft list table inet vpnkit_direct
+systemctl stop suite-in-slice.service
+
+direct_dns 192.0.2.53
+OUT=$(direct on 2>&1); rc=$?
+is "a DIRECT_DNS outside loopback is refused" "$rc" "1"
+yes "and the reason is given" grep -q "127.0.0.0/8" <<<"$OUT"
+direct_dns 127.0.0.9
+OUT=$(direct on 2>&1); rc=$?
+is "a DIRECT_DNS that does not answer is refused" "$rc" "1"
+yes "and the reason is given" grep -q "does not answer" <<<"$OUT"
+is "status flags the resolver" "$(direct status | jq -r .dns_ok)" "false"
+direct_dns 127.0.0.1
+
+is "off" "$(direct off 2>&1)" "direct: off"
+no "off: nothing installed" nft list table inet vpnkit_direct
+no "off: no fwmark rule" direct_rule
+no "off: no slice" test -d "$DSLICE"
+no "kill switch line gone" ks_line
+yes "the kill switch itself stays armed" nft list table inet vpnkit_kill
+no "off: the unit is not enabled" systemctl is-enabled --quiet vpnkit-direct.service
+no "off: no state file" test -e /etc/vpnkit/direct-apps
+is "off: status" "$(direct status | jq -c .)" '{"enabled":false,"unit":false,"rules":false,"dns_ok":true}'
+is "off: a process in a slice of that name follows the bar" "$(slice_ip)" "10.2.0.2"
+systemctl stop vpnkitdirect.slice
+as_user /usr/local/bin/vpn-toggle off >/dev/null 2>&1
+before=$(dns_leaks)
+bash -c 'printf x > /dev/udp/10.0.2.3/53'
+yes "(the DNS counter does count a packet that leaves)" test "$(( $(dns_leaks) - before ))" -ge 1
+
+# ---------------------------------------------------------------------------
 section "5. The leak check, the rescue, and deleting a server"
 as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
 OUT=$(vpn-verify --fail-closed 2>&1); rc=$?
@@ -520,18 +634,28 @@ is "home address after the rescue" "$(myip)" "$HOME_IP"
 
 # ---------------------------------------------------------------------------
 section "6. Reinstall keeps settings; uninstall removes the kit"
+direct on >/dev/null 2>&1
 in_terminal "$PLUGIN/install.sh" > /tmp/install2.log 2>&1; rc=$?
 is "install.sh can be run again" "$rc" "0"
 is "settings survive a reinstall" "$(. /etc/vpnkit/vpnkit.conf; echo "$BYPASS_CIDRS")" "198.51.100.80/32"
 is "the running torrent tunnel was left alone" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "10.2.0.3"
+yes "Chrome direct stays on through a reinstall" systemctl is-active --quiet vpnkit-direct.service
+yes "with its rules" nft list table inet vpnkit_direct
 as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
+is "and a probe in the slice still exits from the home address" "$(slice_ip)" "$HOME_IP"
 in_terminal "$PLUGIN/uninstall.sh" --restore-ipv6 > /tmp/uninstall.log 2>&1; rc=$?
 is "uninstall.sh exits 0" "$rc" "0"
 (( rc == 0 )) || sed 's/^/      /' /tmp/uninstall.log | tail -15
 is "home address after uninstall" "$(myip)" "$HOME_IP"
 no "kill switch gone" nft list table inet vpnkit_kill
+no "Chrome direct rules gone" nft list table inet vpnkit_direct
+no "Chrome direct fwmark rules gone" direct_rule
+no "Chrome direct slice gone" test -d "$DSLICE"
+no "Chrome direct units gone" bash -c 'ls /etc/systemd/system/vpnkit-direct.service /etc/systemd/system/vpnkitdirect.slice 2>/dev/null | grep -q .'
+no "Chrome direct state gone" test -e /etc/vpnkit/direct-apps
 no "namespace gone" bash -c "ip netns list | grep -qw qbtvpn"
 no "helpers gone" test -e /usr/local/bin/vpn-status
+no "Chrome direct helpers gone" bash -c 'ls /usr/local/bin/vpnkit-direct /usr/local/bin/vpnkit-direct-rules 2>/dev/null | grep -q .'
 no "sudoers rule gone" test -e /etc/sudoers.d/99-vpnkit
 no "dispatcher hook gone" test -e /etc/NetworkManager/dispatcher.d/50-vpnkit
 no "service gone" test -e /etc/systemd/system/qbt-netns.service

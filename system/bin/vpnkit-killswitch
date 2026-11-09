@@ -66,6 +66,10 @@ case "${1:-}" in
       # DNS never leaves outside a tunnel, not even to a resolver on the LAN
       # (a home router would forward the question to the ISP).
       echo "    meta l4proto { tcp, udp } th dport { 53, 853 } counter reject with icmpx type admin-prohibited"
+      # Chrome direct, when turned on: packets vpnkit_direct marked (sockets
+      # in its slice) may leave directly. After the DNS reject, so its plain
+      # DNS still cannot.
+      vpnkit_direct_on && [[ "$DIRECT_FWMARK" =~ ^[1-9][0-9]{0,9}$ ]] && echo "    meta mark ${DIRECT_FWMARK} accept"
       (( ${#bypass[@]} )) && echo "    ip daddr { $(csv "${bypass[@]}") } accept"
       (( ${#lan[@]} ))    && echo "    ip daddr { $(csv "${lan[@]}") } accept"
       echo "    udp sport 68 udp dport 67 accept"

@@ -1,0 +1,8 @@
+[Unit]
+Description=Chrome direct: apps that keep the normal connection (omarchy-proton)
+Documentation=https://github.com/ralphk-86/omarchy-proton
+# A system slice at the top level: /sys/fs/cgroup/vpnkitdirect.slice, which
+# only root can put a process into. It lives and dies with
+# vpnkit-direct.service; a restart of that unit recreates the cgroup, and the
+# unit then loads the rules again for the new one.
+PartOf=vpnkit-direct.service

@@ -54,6 +54,15 @@ IP_CACHE_TTL=30
 # for leaks"). Empty: a "VPN leak checks" folder in your Documents.
 #REPORT_DIR=""
 
+# ---- Chrome direct (off until you turn it on) ------------------------------
+# The resolver Chrome asks while it keeps the normal connection. Empty (the
+# default): the system resolver, which follows the bar. Otherwise it must be a
+# loopback address (127.x.x.x), such as a local ad-blocking resolver
+# (AdGuard Home on 127.0.0.1): a resolver anywhere else would be asked in
+# plain text outside the tunnel, which the kill switch never allows. Turning
+# Chrome direct on is refused while this resolver does not answer.
+#DIRECT_DNS="127.0.0.1"
+
 # ---- torrent tunnel (rarely changed) ---------------------------------------
 #NS="qbtvpn"                 # network namespace name
 #WG_IF="pqbt0"               # WireGuard interface inside it

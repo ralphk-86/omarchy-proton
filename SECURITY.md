@@ -17,7 +17,7 @@ outside its namespace.
 
 - `system/install-root.sh` and `system/uninstall-root.sh`, once each, when you run setup or
   the uninstaller and enter your password.
-- Five helpers the desktop user may run through `sudo` without a password
+- Six helpers the desktop user may run through `sudo` without a password
   (`/etc/sudoers.d/99-vpnkit`):
 
 | Helper | Arguments | What it can do |
@@ -26,6 +26,7 @@ outside its namespace.
 | `qbt-launch` | passed to qBittorrent only | start `/usr/bin/qbittorrent` inside the namespace, as the desktop user; refuses while the tunnel is down or a qBittorrent (GUI or `qbittorrent-nox`) of that user runs outside the namespace |
 | `vpnkit-killswitch` | `on <profile>`, `off`, `status`; validated | load or remove one nftables table |
 | `vpnkit-sync` | `sync`, `torrent <name>`, `remove <name>`; validated | import configs from the fixed drop folder, choose the torrent server, delete a server |
+| `vpnkit-direct` | exactly `on`, `off` or `status` | turn Chrome direct on or off (start or stop `vpnkit-direct.service`, write or delete `/etc/vpnkit/direct-apps`, re-arm the kill switch for the same server), or read its state; `on` refuses a `DIRECT_DNS` outside 127.0.0.0/8 or one that does not answer, `off` refuses while anything runs in its slice |
 | `vpn-verify` | none allowed | the read-only leak check |
 
 None of them takes a path from the caller. Files in the drop folder are read with the desktop

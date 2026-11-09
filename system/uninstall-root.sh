@@ -19,7 +19,7 @@ for a in "$@"; do
   esac
 done
 
-PREFIX="vpn"; QBT_CONF=""
+PREFIX="vpn"; QBT_CONF=""; DIRECT_FWMARK=51821; DIRECT_STATE=/etc/vpnkit/direct-apps
 if [[ -r /usr/local/lib/vpnkit/common.sh ]]; then
   # shellcheck disable=SC1091
   . /usr/local/lib/vpnkit/common.sh
@@ -31,6 +31,13 @@ rm -rf /run/vpnkit /run/qbt-netns-exit-ip
 rm -f /etc/NetworkManager/dispatcher.d/50-vpnkit
 systemctl disable --now qbt-netns.service 2>/dev/null || true
 rm -f /etc/systemd/system/qbt-netns.service
+# Chrome direct: stopping the slice ends what still runs in it.
+systemctl disable --now vpnkit-direct.service 2>/dev/null || true
+systemctl stop vpnkitdirect.slice 2>/dev/null || true
+nft delete table inet vpnkit_direct 2>/dev/null || true
+while ip -4 rule del priority 90 fwmark "$DIRECT_FWMARK" table main 2>/dev/null; do :; done
+while ip -4 rule del priority 89 fwmark "$DIRECT_FWMARK" to 100.64.0.0/10 table 52 2>/dev/null; do :; done
+rm -f /etc/systemd/system/vpnkit-direct.service /etc/systemd/system/vpnkitdirect.slice "$DIRECT_STATE"
 systemctl daemon-reload
 
 if (( PURGE )); then
@@ -44,7 +51,7 @@ if (( PURGE )); then
 fi
 
 for f in qbt-netns-up qbt-netns-down qbt-netns-status qbt-launch qbittorrent \
-         vpnkit-import vpnkit-killswitch vpnkit-sync vpnkit-pick \
+         vpnkit-import vpnkit-killswitch vpnkit-sync vpnkit-pick vpnkit-direct vpnkit-direct-rules \
          vpn-status vpn-toggle vpn-import vpn-verify vpn-check vpn-rescue vpn-diagnose; do
   rm -f "/usr/local/bin/$f"
 done

@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  vpnkit-direct-rules - load or remove Chrome direct's rules.
+#
+#  Run by vpnkit-direct.service (and, while it is active, by the
+#  NetworkManager hook after a link comes up). Not callable through sudo.
+#
+#    up    Load the nftables table inet vpnkit_direct, replacing it atomically:
+#            * a route hook marks every packet from a socket in the system
+#              cgroup vpnkitdirect.slice with DIRECT_FWMARK; the mark makes
+#              the kernel route the packet again,
+#          and add the policy rules for that mark:
+#            * priority 90: the main table, i.e. the normal connection, ahead
+#              of NetworkManager's WireGuard rules
+#            * priority 89: tailnet addresses to Tailscale's table 52, only
+#              while that table exists (so an exit node never captures the
+#              rest), and removed again when it no longer does
+#          plus NAT: a marked packet leaving a non-tunnel interface took the
+#          tunnel's source address when its route was first chosen, so it is
+#          masqueraded. Loopback is left alone: local services see 127.0.0.1.
+#          The table names the cgroup by path, and nftables turns that into the
+#          cgroup's id at load time, so `up` is run again whenever the cgroup
+#          is recreated (the unit does that on every start). Idempotent.
+#    down  Remove the table and both rules. Idempotent.
+#
+#  The kill switch's own line for the mark lives in vpnkit-killswitch.
+# ============================================================================
+set -euo pipefail
+. /usr/local/lib/vpnkit/common.sh
+
+TABLE="vpnkit_direct"
+TAILNET="100.64.0.0/10"
+TS_TABLE=52
+
+[[ $EUID -eq 0 ]] || { echo "vpnkit-direct-rules: must run as root" >&2; exit 2; }
+# Both end up in a ruleset: only plain values from the config are accepted.
+[[ "$DIRECT_FWMARK" =~ ^[1-9][0-9]{0,9}$ ]] || { echo "vpnkit-direct-rules: bad DIRECT_FWMARK" >&2; exit 1; }
+[[ "$PROFILE_PREFIX" =~ ^[A-Za-z0-9._-]{1,12}$ ]] || { echo "vpnkit-direct-rules: bad PROFILE_PREFIX" >&2; exit 1; }
+
+# rule_present <ip rule selector...>: such a rule exists.
+rule_present() { [[ -n "$(ip -4 rule list "$@" 2>/dev/null)" ]]; }
+main_rule=(priority 90 fwmark "$DIRECT_FWMARK" table main)
+tail_rule=(priority 89 fwmark "$DIRECT_FWMARK" to "$TAILNET" table "$TS_TABLE")
+
+case "$#:${1:-}" in
+  1:up)
+    [[ -d "/sys/fs/cgroup/$DIRECT_SLICE" ]] || { echo "vpnkit-direct-rules: /sys/fs/cgroup/$DIRECT_SLICE does not exist" >&2; exit 1; }
+    {
+      echo "table inet $TABLE"
+      echo "delete table inet $TABLE"
+      echo "table inet $TABLE {"
+      echo "  chain output {"
+      echo "    type route hook output priority mangle; policy accept;"
+      echo "    socket cgroupv2 level 1 \"$DIRECT_SLICE\" meta mark set $DIRECT_FWMARK"
+      echo "  }"
+      echo "  chain postrouting {"
+      echo "    type nat hook postrouting priority srcnat; policy accept;"
+      echo "    meta mark $DIRECT_FWMARK oifname != \"lo\" oifname != \"${PROFILE_PREFIX}-*\" masquerade"
+      echo "  }"
+      echo "}"
+    } | nft -f -
+    # Added only when missing: deleting first would leave a moment in which
+    # marked packets follow the VPN instead.
+    rule_present "${main_rule[@]}" || ip -4 rule add "${main_rule[@]}"
+    if ip -4 route show table "$TS_TABLE" 2>/dev/null | grep -q .; then
+      rule_present "${tail_rule[@]}" || ip -4 rule add "${tail_rule[@]}"
+    else
+      while ip -4 rule del "${tail_rule[@]}" 2>/dev/null; do :; done
+    fi
+    ;;
+  1:down)
+    nft delete table inet "$TABLE" 2>/dev/null || true
+    while ip -4 rule del "${main_rule[@]}" 2>/dev/null; do :; done
+    while ip -4 rule del "${tail_rule[@]}" 2>/dev/null; do :; done
+    ;;
+  *)
+    echo "usage: vpnkit-direct-rules up | down" >&2
+    exit 2
+    ;;
+esac

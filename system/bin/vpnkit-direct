@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  vpnkit-direct - turn Chrome direct on or off.
+#
+#  Chrome direct keeps Google Chrome on the normal connection while a desktop
+#  server is selected. It is off until turned on here, and while off nothing of
+#  it is loaded.
+#
+#    on      Refused unless DIRECT_DNS (vpnkit.conf) is empty, or a loopback
+#            address whose resolver answers. Then: enable and start
+#            vpnkit-direct.service (the slice's cgroup and the rules), write
+#            /etc/vpnkit/direct-apps, and re-arm the kill switch if it is
+#            armed, so it lets the slice's packets out. Prints "direct: on".
+#    off     Refused while anything runs in the slice (close Chrome first).
+#            Then the reverse of on. Prints "direct: off".
+#    status  JSON: {"enabled","unit","rules","dns_ok"}, all true or false.
+#
+#  Allowed passwordless via /etc/sudoers.d/99-vpnkit, with exactly these
+#  arguments. Takes no paths; anything else exits 2.
+# ============================================================================
+set -euo pipefail
+. /usr/local/lib/vpnkit/common.sh
+
+UNIT="vpnkit-direct.service"
+CG="/sys/fs/cgroup/$DIRECT_SLICE"
+
+[[ $EUID -eq 0 ]] || { echo "vpnkit-direct: must run as root" >&2; exit 2; }
+[[ $# -eq 1 ]] || { echo "usage: vpnkit-direct on | off | status" >&2; exit 2; }
+
+# The kill switch reads the state file when it is armed: arm it again, for the
+# same server, so it gains or loses the line for the mark.
+rearm_killswitch() {
+  local st profile
+  st=$(/usr/local/bin/vpnkit-killswitch status 2>/dev/null) || return 0
+  [[ "$st" == on* ]] || return 0
+  profile=${st#on}; profile=${profile# }
+  if [[ -n "$profile" ]]; then
+    /usr/local/bin/vpnkit-killswitch on "$profile" >/dev/null
+  else
+    echo "vpnkit-direct: the kill switch is armed for an unknown server; choose the server again" >&2
+  fi
+}
+
+rules_loaded() {
+  nft list table inet vpnkit_direct >/dev/null 2>&1 \
+    && [[ -n "$(ip -4 rule list priority 90 fwmark "$DIRECT_FWMARK" table main 2>/dev/null)" ]]
+}
+
+dns_ok() {
+  [[ -z "$DIRECT_DNS" ]] || { vpnkit_loopback_ip "$DIRECT_DNS" && vpnkit_dns_answers "$DIRECT_DNS"; }
+}
+
+tf() { if "$@"; then echo true; else echo false; fi; }
+
+case "$1" in
+  on)
+    if [[ -n "$DIRECT_DNS" ]]; then
+      vpnkit_loopback_ip "$DIRECT_DNS" || {
+        echo "vpnkit-direct: DIRECT_DNS must be empty or an address in 127.0.0.0/8 (got $DIRECT_DNS)" >&2; exit 1; }
+      vpnkit_dns_answers "$DIRECT_DNS" || {
+        echo "vpnkit-direct: the resolver at DIRECT_DNS ($DIRECT_DNS) does not answer; start it, or empty DIRECT_DNS" >&2; exit 1; }
+    fi
+    if ! systemctl enable --now "$UNIT" >/dev/null 2>&1; then
+      systemctl disable --now "$UNIT" >/dev/null 2>&1 || true
+      /usr/local/bin/vpnkit-direct-rules down || true
+      rm -f "$DIRECT_STATE"
+      rearm_killswitch
+      echo "vpnkit-direct: $UNIT did not start: journalctl -u $UNIT" >&2
+      exit 1
+    fi
+    printf 'chrome\n' > "$DIRECT_STATE"
+    chmod 644 "$DIRECT_STATE"
+    rearm_killswitch
+    echo "direct: on"
+    ;;
+  off)
+    if grep -qx 'populated 1' "$CG/cgroup.events" 2>/dev/null; then
+      names=$(find "$CG" -name cgroup.procs -exec cat {} + 2>/dev/null \
+              | while read -r pid; do cat "/proc/$pid/comm" 2>/dev/null || true; done | sort -u | paste -sd, -) || true
+      echo "vpnkit-direct: still running with the normal connection: ${names:-unknown}. Close Chrome first." >&2
+      exit 1
+    fi
+    rm -f "$DIRECT_STATE"
+    rearm_killswitch
+    systemctl disable --now "$UNIT" >/dev/null 2>&1 || true
+    systemctl stop "$DIRECT_SLICE" >/dev/null 2>&1 || true
+    /usr/local/bin/vpnkit-direct-rules down
+    echo "direct: off"
+    ;;
+  status)
+    jq -cn --argjson enabled "$(tf vpnkit_direct_on)" \
+           --argjson unit "$(tf systemctl is-active --quiet "$UNIT")" \
+           --argjson rules "$(tf rules_loaded)" \
+           --argjson dns_ok "$(tf dns_ok)" \
+           '{enabled: $enabled, unit: $unit, rules: $rules, dns_ok: $dns_ok}'
+    ;;
+  *)
+    echo "usage: vpnkit-direct on | off | status" >&2
+    exit 2
+    ;;
+esac
