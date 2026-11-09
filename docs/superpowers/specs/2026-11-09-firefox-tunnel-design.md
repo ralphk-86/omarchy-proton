@@ -1,6 +1,6 @@
 # Firefox tunnel: design
 
-Status: draft for approval, 2026-11-09.
+Status: approved by the owner, 2026-11-09.
 
 ## Intent
 
