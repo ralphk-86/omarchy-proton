@@ -24,15 +24,15 @@
 
 ## Review Focus
 
-1. **Feature off after an update:** Chrome starts exactly as before, through the bar's VPN when one is selected; no `vpnkit_direct` table, no fwmark rules, no kill-switch line. Test in Task C1 (`off: nothing installed`) and Task C2 (`off: wrapper passes through`).
-2. **Chrome already open outside the slice when the owner turns it on:** turning on works, launches are refused with "close Chrome first", status shows `chrome_outside`, leak check names it. Tests in C2 and C3.
-3. **systemd-resolved rewrites its stub file while Chrome runs:** Chrome keeps resolving through `DIRECT_DNS`. Test in C2 (`resolver override survives a host-side rename`).
-4. **A desktop server selected, then the VPN drops (kill switch blocking):** Chrome still reaches the internet directly, everything else stays blocked. Test in C1 (`blocked: the slice still gets out, the host does not`).
-5. **`DIRECT_DNS` set but nothing answers:** `vpnkit-direct on` refuses with a message; a resolver that dies later shows in status. Tests in C1 and C3.
+1. **Feature off after an update:** Chrome starts exactly as before, through the bar's VPN when one is selected; no `vpnkit_direct` table, no fwmark rules, no kill-switch line. Test in Task 1 (`off: nothing installed`) and Task 2 (`off: wrapper passes through`).
+2. **Chrome already open outside the slice when the owner turns it on:** turning on works, launches are refused with "close Chrome first", status shows `chrome_outside`, leak check names it. Tests in 2 and 3.
+3. **systemd-resolved rewrites its stub file while Chrome runs:** Chrome keeps resolving through `DIRECT_DNS`. Test in 2 (`resolver override survives a host-side rename`).
+4. **A desktop server selected, then the VPN drops (kill switch blocking):** Chrome still reaches the internet directly, everything else stays blocked. Test in 1 (`blocked: the slice still gets out, the host does not`).
+5. **`DIRECT_DNS` set but nothing answers:** `vpnkit-direct on` refuses with a message; a resolver that dies later shows in status. Tests in 1 and 3.
 
 ---
 
-### Task C1: Slice, rules and the on/off helper
+### Task 1: Slice, rules and the on/off helper
 
 **Files:**
 - Modify: `system/lib/common.sh` (`DIRECT_FWMARK=51821`, `DIRECT_DNS=""`, `DIRECT_SLICE=vpnkitdirect.slice`, `DIRECT_STATE=/etc/vpnkit/direct-apps`, `DIRECT_BIN=/usr/bin/google-chrome-stable`; helper `vpnkit_direct_on` = state file says `chrome`), `system/vpnkit.settings` (commented `DIRECT_DNS` block explaining loopback-only), `system/bin/vpnkit-killswitch` (the accept line, only when `vpnkit_direct_on`)
@@ -50,7 +50,7 @@
 - [ ] **Step 4: Run `tests/check.sh` and `tests/vm/vm.sh test`** — all pass.
 - [ ] **Step 5: Commit** `feat: Chrome direct rules and on/off helper (inert until on)`.
 
-### Task C2: Starting Chrome in the slice with the private resolver
+### Task 2: Starting Chrome in the slice with the private resolver
 
 **Files:**
 - Create: `system/bin/google-chrome-stable` (PATH wrapper, installed to `/usr/local/bin`), `system/bin/direct-launch` (root launcher), `system/bin/vpn-direct` (user command: `on|off` → `sudo -n vpnkit-direct`, then the launcher-override step)
@@ -68,7 +68,7 @@
 - [ ] **Step 4: Run `tests/check.sh` (sudoers validates) and `tests/vm/vm.sh test`** — all pass.
 - [ ] **Step 5: Commit** `feat: Chrome starts in the direct slice with its own resolver`.
 
-### Task C3: Status, leak check and the panel switch
+### Task 3: Status, leak check and the panel switch
 
 **Files:**
 - Modify: `system/bin/qbt-netns-status` (key `"direct": {"enabled","unit","rules","dns","dns_ok","chrome_inside","chrome_outside","override_ok","helpers","others"}`; `helpers`/`others` are comma-separated program names of non-Chrome processes in the slice, split by whether their exe is named in a native-messaging manifest under `/etc/opt/chrome/native-messaging-hosts` or the user's `~/.config/google-chrome/NativeMessagingHosts`), `system/bin/vpn-status` (`direct_*` fields; a text line "Chrome direct: on · home IP · DNS 127.0.0.1" / "off"), `system/bin/vpn-verify` (when on: PASS/FAIL that a slice probe exits from the normal connection while a server is selected; FAIL `others`; WARN `helpers`; FAIL `override_ok=false` for any Chrome process; FAIL rules or unit missing; FAIL `dns_ok=false`), `VpnWidget.qml` (a switch "Chrome uses your own IP" in the panel calling `vpn-direct on|off`, error text from stderr like the torrent switch; a "Chrome: direct" line under "Torrents:"), `tests/preview/status*.json`
