@@ -383,7 +383,7 @@ _vpnkit_prog_name() {  # _vpnkit_prog_name <path or name>: a printable program n
   printf '%s\n' "${n:-unknown}"
 }
 
-vpnkit_direct_scan() {  # vpnkit_direct_scan <user>: what runs in Chrome direct's slice (root)
+vpnkit_direct_scan() {  # vpnkit_direct_scan <user>: what runs in Chrome direct's slice (root), ending in "done"
   # One line each:
   #   chrome <pid> ok|bad|-  a Chrome process (its binary is under
   #                          /opt/google/chrome) in the slice, and whether its
@@ -395,7 +395,9 @@ vpnkit_direct_scan() {  # vpnkit_direct_scan <user>: what runs in Chrome direct'
   #   other <name>           anything else in the slice
   # The leak check's own probe (vpnkit-direct-probe-*.service, which only root
   # can start in the system's slice) is left out.
-  local cg="/sys/fs/cgroup/$DIRECT_SLICE" pid exe st tmp="" r key hosts="" name
+  # All or nothing: the lines come out only once the whole scan has run, and
+  # the last one is "done". A caller that does not see "done" knows nothing.
+  local cg="/sys/fs/cgroup/$DIRECT_SLICE" pid exe st tmp="" r key hosts="" name out=""
   local -a others=() argv=()
   local -A seen=()
   if [[ -d "$cg" ]]; then
@@ -413,20 +415,20 @@ vpnkit_direct_scan() {  # vpnkit_direct_scan <user>: what runs in Chrome direct'
         key="$(stat -Lc %i "/proc/$pid/ns/mnt" 2>/dev/null):$(stat -Lc %d:%i "/proc/$pid/root" 2>/dev/null)"
         if [[ -n "${seen[$key]:-}" ]]; then r="${seen[$key]}"
         else
-          [[ -n "$tmp" ]] || tmp=$(mktemp -d) || return 1
+          [[ -n "$tmp" ]] || tmp=$(mktemp -d 2>/dev/null) || return 1
           _vpnkit_override_ok "$pid" "$tmp"
           case $? in 0) r=ok ;; 2) r="-" ;; *) r=bad ;; esac
           seen[$key]="$r"
         fi
       fi
-      printf 'chrome %s %s\n' "$pid" "$r"
+      out+="chrome $pid $r"$'\n'
     done
   fi
   [[ -n "$tmp" ]] && rm -rf "$tmp"
   if [[ -n "$1" ]]; then
-    for pid in $(vpnkit_chrome_outside_pids "$1"); do printf 'outside %s\n' "$pid"; done
+    for pid in $(vpnkit_chrome_outside_pids "$1"); do out+="outside $pid"$'\n'; done
   fi
-  (( ${#others[@]} )) || return 0
+  if (( ${#others[@]} == 0 )); then printf '%sdone\n' "$out"; return 0; fi
   hosts=$(_vpnkit_host_paths "$1")
   for pid in "${others[@]}"; do
     exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || exe=""
@@ -437,12 +439,12 @@ vpnkit_direct_scan() {  # vpnkit_direct_scan <user>: what runs in Chrome direct'
     for r in "$exe" "${argv[1]:-}" "${argv[2]:-}"; do
       [[ -n "$r" && "$r" == /* ]] && grep -qxF -- "$r" <<<"$hosts" && { name="$r"; break; }
     done
-    if [[ -n "$name" ]]; then printf 'helper %s\n' "$(_vpnkit_prog_name "$name")"
-    elif [[ -n "$exe" ]]; then printf 'other %s\n' "$(_vpnkit_prog_name "$exe")"
-    else printf 'other %s\n' "$(_vpnkit_prog_name "$(cat "/proc/$pid/comm" 2>/dev/null)")"
+    if [[ -n "$name" ]]; then out+="helper $(_vpnkit_prog_name "$name")"$'\n'
+    elif [[ -n "$exe" ]]; then out+="other $(_vpnkit_prog_name "$exe")"$'\n'
+    else out+="other $(_vpnkit_prog_name "$(cat "/proc/$pid/comm" 2>/dev/null)")"$'\n'
     fi
   done
-  return 0
+  printf '%sdone\n' "$out"
 }
 
 # Where vpn-check saves the leak-check reports of the user running it: a

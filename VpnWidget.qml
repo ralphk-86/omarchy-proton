@@ -223,7 +223,7 @@ Panel {
     return "qBittorrent is not running"
   }
   readonly property string directDetail: {
-    if (!directKnown) return "State unknown: the status helper did not answer"
+    if (!directKnown) return "State unknown: it could not be checked"
     if (!directWorking) return "Not working: its service or rules are missing. Turn it off and on again"
     if (directOthers.length > 0) return directOthers.join(", ") + " is not Chrome but uses your own IP too. Close it"
     if (!directDnsOk) return "DIRECT_DNS (" + directDns + ") does not answer: Chrome cannot look up names"

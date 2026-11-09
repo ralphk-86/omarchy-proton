@@ -413,9 +413,14 @@ if vpnkit_direct_on; then
     no "the resolver at DIRECT_DNS ($DIRECT_DNS) does not answer - Chrome cannot look up names; start it, or empty DIRECT_DNS"
   fi
 
-  SCAN=$($SUDO bash -c '. /usr/local/lib/vpnkit/common.sh; vpnkit_direct_scan "$1"' _ "$TARGET_USER" 2>/dev/null)
+  # Only a scan that ran to its end ("done") says anything; a partial one
+  # could leave out exactly what matters.
+  SCAN=$($SUDO bash -c '. /usr/local/lib/vpnkit/common.sh; vpnkit_direct_scan "$1"' _ "$TARGET_USER" 2>/dev/null) \
+    && [[ "$(tail -n 1 <<<"$SCAN")" == done ]] || SCAN=""
   CHROMES=$(awk '$1 == "chrome"' <<<"$SCAN")
-  if [[ -z "$CHROMES" ]]; then
+  if [[ -z "$SCAN" ]]; then
+    no "could not look into Chrome direct's slice - what runs in it, and Chrome's resolver settings, are unknown"
+  elif [[ -z "$CHROMES" ]]; then
     meh "Chrome is not running in Chrome direct's slice"
   elif [[ -n "$DIRECT_DNS" ]]; then
     BADP=$(awk '$1 == "chrome" && $3 == "bad" {print $2}' <<<"$SCAN")
@@ -434,7 +439,7 @@ if vpnkit_direct_on; then
   for n in $OTHERS; do
     no "$n runs in Chrome direct's slice but is not Chrome - it uses your own IP, not the VPN. Close it (Chrome started it)"
   done
-  [[ -n "$OTHERS" ]] || ok "only Chrome runs in Chrome direct's slice"
+  [[ -z "$SCAN" || -n "$OTHERS" ]] || ok "only Chrome runs in Chrome direct's slice"
   for n in $(awk '$1 == "helper" {print $2}' <<<"$SCAN" | sort -u); do
     printf '  [WARN] %s is a Chrome native-messaging host: Chrome started it for an extension, and it uses your own IP too\n' "$n"
   done

@@ -180,7 +180,7 @@ case "$MODE" in
       (if .direct_enabled then
          "Chrome direct      : on · home IP · \(if .direct_dns != "" then "DNS " + .direct_dns else "system DNS" end)",
          (if .direct_known | not then
-            "                     state unknown: the status helper did not answer"
+            "                     state unknown: the status helper did not answer, or could not look into the slice"
           else
             (if .direct_unit != true or .direct_rules != true then
                "                     *** NOT WORKING: vpnkit-direct.service or its rules are missing (vpn-direct off, then on) ***" else empty end),

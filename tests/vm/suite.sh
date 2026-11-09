@@ -631,6 +631,17 @@ yes "it proves a probe in the slice leaves from the normal connection" grep -q "
 yes "that only Chrome runs in the slice" grep -q "PASS.*only Chrome runs in Chrome direct's slice" <<<"$OUT"
 yes "that Chrome's resolver override holds" grep -q "PASS.*Chrome uses DIRECT_DNS (127.0.0.1) only" <<<"$OUT"
 yes "and that DIRECT_DNS answers" grep -q "PASS.*the resolver at DIRECT_DNS (127.0.0.1) answers" <<<"$OUT"
+# A scan of the slice that cannot finish says nothing, not "only Chrome": with
+# no writable /tmp the resolver check cannot stage Chrome's files.
+mount -t tmpfs -o ro,size=64k tmpfs /tmp
+is "status: a scan that could not finish reads as unknown" "$(status '[.direct_known, .direct_enabled, .direct_others, .direct_chrome_inside] | @json')" '[false,true,[],null]'
+yes "vpn-status says unknown in words" grep -q 'state unknown' <<<"$(as_user /usr/local/bin/vpn-status)"
+OUT=$(vpn-verify 2>&1); rc=$?
+umount /tmp
+is "the leak check fails when it cannot look into the slice" "$rc" "1"
+yes "and says so" grep -q "FAIL.*could not look into Chrome direct's slice" <<<"$OUT"
+no "and does not claim that only Chrome runs there" grep -q "PASS.*only Chrome runs in Chrome direct's slice" <<<"$OUT"
+is "status: known again once the scan can run" "$(status '[.direct_known, .direct_others] | @json')" '[true,[]]'
 
 # Anything else in the slice uses the home IP too: the check names it.
 systemd-run --scope --quiet --slice=vpnkitdirect.slice --unit=suite-other /usr/bin/sleep 300 </dev/null >/dev/null 2>&1 &
