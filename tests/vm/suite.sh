@@ -678,9 +678,10 @@ handler_out() {  # wait for the handler's report
   cat /tmp/handler.out 2>/dev/null
 }
 open_in_slice() {  # open_in_slice <xdg-open> <url>: as the user, from a scope in the slice
+  # xdg-open uses scheme handlers only with a display set (none is needed).
   rm -f /tmp/handler.out
   systemd-run --scope --quiet --slice=vpnkitdirect.slice --uid=$U -- \
-    env HOME=$UHOME XDG_RUNTIME_DIR=/run/user/$UID_T "$1" "$2" </dev/null >/dev/null 2>&1
+    env HOME=$UHOME XDG_RUNTIME_DIR=/run/user/$UID_T DISPLAY=:99 "$1" "$2" </dev/null >/dev/null 2>&1
   handler_out
 }
 H=$(open_in_slice /usr/bin/xdg-open vpntest://plain)
