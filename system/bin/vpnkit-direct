@@ -7,12 +7,17 @@
 #  it is loaded.
 #
 #    on      Refused unless DIRECT_DNS (vpnkit.conf) is empty, or a loopback
-#            address whose resolver answers. Then: enable and start
-#            vpnkit-direct.service (the slice's cgroup and the rules), write
-#            /etc/vpnkit/direct-apps, and re-arm the kill switch if it is
-#            armed, so it lets the slice's packets out. Prints "direct: on".
+#            address whose resolver answers. Then: write /etc/vpnkit/direct-apps
+#            (the rules helper loads nothing without it), enable and start
+#            vpnkit-direct.service (the slice's cgroup and the rules), and
+#            re-arm the kill switch if it is armed, so it lets the slice's
+#            packets out. If the unit does not start, all of it is undone.
+#            Prints "direct: on".
 #    off     Refused while anything runs in the slice (close Chrome first).
-#            Then the reverse of on. Prints "direct: off".
+#            Then the reverse of on, the exemption first: stop the unit and
+#            remove the rules, and only then the state file. A step that
+#            fails stops it there, so status never says off while the rules
+#            are still loaded. Prints "direct: off".
 #    status  JSON: {"enabled","unit","rules","dns_ok"}, all true or false.
 #
 #  Allowed passwordless via /etc/sudoers.d/99-vpnkit, with exactly these
@@ -41,6 +46,20 @@ rearm_killswitch() {
   fi
 }
 
+# The exemption itself: the unit, the slice, the table and the policy rules.
+# Each failure is reported; the caller decides what that means.
+exemption_down() {
+  local rc=0
+  # A unit that will not stop keeps its rules: nothing else is touched then.
+  systemctl stop "$UNIT" >/dev/null || { echo "vpnkit-direct: could not stop $UNIT" >&2; return 1; }
+  systemctl stop "$DIRECT_SLICE" >/dev/null || { echo "vpnkit-direct: could not stop $DIRECT_SLICE" >&2; rc=1; }
+  /usr/local/bin/vpnkit-direct-rules down || { echo "vpnkit-direct: could not remove the rules" >&2; rc=1; }
+  if systemctl is-enabled --quiet "$UNIT" 2>/dev/null; then
+    systemctl disable "$UNIT" >/dev/null 2>&1 || { echo "vpnkit-direct: could not disable $UNIT" >&2; rc=1; }
+  fi
+  return "$rc"
+}
+
 rules_loaded() {
   nft list table inet vpnkit_direct >/dev/null 2>&1 \
     && [[ -n "$(ip -4 rule list priority 90 fwmark "$DIRECT_FWMARK" table main 2>/dev/null)" ]]
@@ -60,16 +79,19 @@ case "$1" in
       vpnkit_dns_answers "$DIRECT_DNS" || {
         echo "vpnkit-direct: the resolver at DIRECT_DNS ($DIRECT_DNS) does not answer; start it, or empty DIRECT_DNS" >&2; exit 1; }
     fi
-    if ! systemctl enable --now "$UNIT" >/dev/null 2>&1; then
-      systemctl disable --now "$UNIT" >/dev/null 2>&1 || true
-      /usr/local/bin/vpnkit-direct-rules down || true
-      rm -f "$DIRECT_STATE"
-      rearm_killswitch
-      echo "vpnkit-direct: $UNIT did not start: journalctl -u $UNIT" >&2
-      exit 1
-    fi
     printf 'chrome\n' > "$DIRECT_STATE"
     chmod 644 "$DIRECT_STATE"
+    if ! systemctl enable --now "$UNIT" >/dev/null 2>&1; then
+      echo "vpnkit-direct: $UNIT did not start: journalctl -u $UNIT" >&2
+      # Undo it all. Without a state file the kill switch has no line for the mark.
+      if exemption_down; then
+        rm -f "$DIRECT_STATE"
+        rearm_killswitch
+      else
+        echo "vpnkit-direct: could not undo it; run: sudo vpnkit-direct off" >&2
+      fi
+      exit 1
+    fi
     rearm_killswitch
     echo "direct: on"
     ;;
@@ -80,11 +102,11 @@ case "$1" in
       echo "vpnkit-direct: still running with the normal connection: ${names:-unknown}. Close Chrome first." >&2
       exit 1
     fi
+    # The exemption first: once the rules are gone, the kill switch's line for
+    # the mark matches nothing. The state file goes only after that.
+    exemption_down || { echo "vpnkit-direct: Chrome direct is still on" >&2; exit 1; }
     rm -f "$DIRECT_STATE"
     rearm_killswitch
-    systemctl disable --now "$UNIT" >/dev/null 2>&1 || true
-    systemctl stop "$DIRECT_SLICE" >/dev/null 2>&1 || true
-    /usr/local/bin/vpnkit-direct-rules down
     echo "direct: off"
     ;;
   status)

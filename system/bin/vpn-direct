@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  vpn-direct - turn Chrome direct on or off.
+#
+#  Chrome direct keeps Google Chrome on the normal connection (and on the
+#  resolver in DIRECT_DNS) while a desktop server is selected. Everything else
+#  keeps following the bar.
+#
+#  USAGE
+#    vpn-direct on        turn it on (sudo -n vpnkit-direct on), then point the
+#                         Chrome launcher entry at the wrapper
+#    vpn-direct off       turn it off, then remove that launcher entry
+#    vpn-direct launcher  make the launcher entry follow the current state
+#                         (install.sh runs this); "launcher off" removes it
+#
+#  The launcher entry is ~/.local/share/applications/google-chrome.desktop, a
+#  copy of the packaged one with every Exec= pointing at
+#  /usr/local/bin/google-chrome-stable. Its first line marks it as ours; a file
+#  there without that line is yours: it is backed up before being replaced,
+#  and never removed.
+#
+#  Close Chrome once after turning it on or off, so its next start lands in
+#  the right place.
+# ============================================================================
+set -euo pipefail
+
+SRC_DESK="/usr/share/applications/google-chrome.desktop"
+APPS="$HOME/.local/share/applications"
+DESK="$APPS/google-chrome.desktop"
+MARKER="# Written by omarchy-proton (Chrome direct). Removed when it is turned off."
+WRAPPER="/usr/local/bin/google-chrome-stable"
+
+ours() { [[ -f "$DESK" && ! -L "$DESK" ]] && [[ "$(head -n 1 "$DESK" 2>/dev/null)" == "$MARKER" ]]; }
+refresh_db() { command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APPS" >/dev/null 2>&1 || true; }
+
+launcher_on() {
+  [[ -f "$SRC_DESK" ]] || return 0    # Chrome is not installed: nothing to point
+  install -d -m 755 "$APPS"
+  if { [[ -e "$DESK" || -L "$DESK" ]]; } && ! ours; then
+    local bak; bak="$DESK.bak.$(date +%Y%m%d-%H%M%S)"
+    cp -a "$DESK" "$bak"
+    echo "Your own $DESK is kept as $bak"
+  fi
+  local tmp; tmp=$(mktemp "$APPS/.google-chrome.desktop.XXXXXX")
+  { printf '%s\n' "$MARKER"
+    sed -E "s#^Exec=/usr/bin/google-chrome-stable([[:space:]]|\$)#Exec=$WRAPPER\\1#" "$SRC_DESK"
+  } > "$tmp"
+  chmod 644 "$tmp"
+  mv -f "$tmp" "$DESK"
+  refresh_db
+}
+
+launcher_off() {
+  ours || return 0
+  rm -f "$DESK"
+  refresh_db
+}
+
+direct_is_on() { ( . /usr/local/lib/vpnkit/common.sh && vpnkit_direct_on ); }
+
+chrome_running() { pgrep -u "$(id -u)" -f '^/opt/google/chrome/' >/dev/null 2>&1; }
+
+case "$#:${1:-}:${2:-}" in
+  1:on:)
+    sudo -n /usr/local/bin/vpnkit-direct on
+    launcher_on
+    if chrome_running; then
+      echo "Close Chrome and start it again: the running one still uses the VPN."
+    fi
+    ;;
+  1:off:)
+    sudo -n /usr/local/bin/vpnkit-direct off
+    launcher_off
+    ;;
+  1:launcher:)
+    if direct_is_on; then launcher_on; else launcher_off; fi
+    ;;
+  2:launcher:off)
+    launcher_off
+    ;;
+  *)
+    sed -n '2,24p' "$0" >&2
+    exit 2
+    ;;
+esac

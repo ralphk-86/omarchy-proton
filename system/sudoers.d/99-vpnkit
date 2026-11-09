@@ -8,6 +8,7 @@ Defaults!/usr/local/bin/qbt-netns-status !log_allowed, !pam_session
 # The launcher starts a GUI program as the desktop user, so it needs to know
 # which compositor socket and theme to use. Nothing here is read as root.
 Defaults!/usr/local/bin/qbt-launch env_keep += "WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE QT_QPA_PLATFORMTHEME QT_STYLE_OVERRIDE XCURSOR_THEME XCURSOR_SIZE GTK_THEME HYPRLAND_INSTANCE_SIGNATURE"
+Defaults!/usr/local/bin/direct-launch env_keep += "WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE QT_QPA_PLATFORMTHEME QT_STYLE_OVERRIDE XCURSOR_THEME XCURSOR_SIZE GTK_THEME HYPRLAND_INSTANCE_SIGNATURE"
 
 @USER@ ALL=(root) NOPASSWD: /usr/local/bin/qbt-netns-status ""
 @USER@ ALL=(root) NOPASSWD: /usr/local/bin/qbt-launch
@@ -23,6 +24,11 @@ Defaults!/usr/local/bin/qbt-launch env_keep += "WAYLAND_DISPLAY DISPLAY XDG_CURR
 @USER@ ALL=(root) NOPASSWD: /usr/local/bin/vpnkit-direct on
 @USER@ ALL=(root) NOPASSWD: /usr/local/bin/vpnkit-direct off
 @USER@ ALL=(root) NOPASSWD: /usr/local/bin/vpnkit-direct status
+
+# Start Chrome in Chrome direct's slice (only while it is on). The binary is
+# fixed; the arguments go to Chrome, minus the flags that would make it start
+# another program. The script validates them.
+@USER@ ALL=(root) NOPASSWD: /usr/local/bin/direct-launch
 
 # Import configs from the drop folder / delete a server. Takes no paths: the
 # folder is fixed in /etc/vpnkit/vpnkit.conf and names are validated.

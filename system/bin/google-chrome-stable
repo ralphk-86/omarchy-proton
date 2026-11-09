@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  /usr/local/bin/google-chrome-stable - Chrome direct's wrapper
+#
+#  /usr/local/bin precedes /usr/bin in PATH, so `google-chrome-stable` typed
+#  anywhere lands here, and so does the launcher entry while Chrome direct is
+#  on (vpn-direct points it here).
+#
+#    Chrome direct off -> the real /usr/bin/google-chrome-stable, unchanged
+#    Chrome direct on  -> Chrome in its slice, on the normal connection, through
+#                         the root launcher direct-launch; REFUSED while a
+#                         Chrome of yours runs outside the slice (it would be
+#                         handed this window, and open it on the VPN)
+#
+#  The package's binary is never touched.
+# ============================================================================
+set -uo pipefail
+REAL="/usr/bin/google-chrome-stable"
+
+# Without the kit's library Chrome direct cannot be on: plain Chrome.
+. /usr/local/lib/vpnkit/common.sh 2>/dev/null || exec "$REAL" "$@"
+vpnkit_direct_on || exec "$REAL" "$@"
+
+OUTSIDE=$(vpnkit_chrome_outside_pids "$(id -un)" | paste -sd' ' -)
+if [[ -n "$OUTSIDE" ]]; then
+  cat >&2 <<EOF
+Chrome was NOT started: a Chrome is already running outside Chrome direct
+(pid $OUTSIDE).
+
+A new Chrome hands its window to the running one, which would open it on the
+VPN instead of your normal connection. Close Chrome (or: kill $OUTSIDE), then
+start it again.
+EOF
+  # Started from the launcher, nobody sees stderr.
+  [[ -t 2 ]] || timeout 3 notify-send -a Chrome "Chrome was not started" \
+    "A Chrome is already running outside Chrome direct (pid $OUTSIDE). Close it, then start Chrome again." >/dev/null 2>&1 || true
+  exit 1
+fi
+
+exec sudo -n /usr/local/bin/direct-launch "$@"

@@ -232,7 +232,8 @@ install -m 644 "$SYS/systemd/vpnkitdirect.slice" /etc/systemd/system/vpnkitdirec
 install -m 644 "$SYS/systemd/vpnkit-direct.service" /etc/systemd/system/vpnkit-direct.service
 systemctl daemon-reload
 if vpnkit_direct_on; then
-  systemctl enable vpnkit-direct.service >/dev/null 2>&1 || true
+  systemctl enable vpnkit-direct.service >/dev/null \
+    || warn "Chrome direct: could not enable vpnkit-direct.service; it will not come back after a reboot"
   if systemctl is-active --quiet vpnkit-direct.service; then
     /usr/local/bin/vpnkit-direct-rules up || warn "Chrome direct: reloading its rules failed"
   else

@@ -44,8 +44,10 @@ for a in "$@"; do
   fi
 done
 
-echo "==> Removing the qBittorrent launcher override"
+echo "==> Removing the launcher overrides (qBittorrent, Chrome)"
 rm -f "$HOME/.local/share/applications/org.qbittorrent.qBittorrent.desktop"
+# Chrome's, only if it is ours (a file of your own there is left alone).
+[[ -x /usr/local/bin/vpn-direct ]] && /usr/local/bin/vpn-direct launcher off || true
 
 echo "==> Removing the system files (one password prompt)"
 if [[ -t 0 ]]; then sudo /usr/bin/bash "$ROOT" "$@"; else pkexec /usr/bin/bash "$ROOT" "$@"; fi

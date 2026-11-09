@@ -11,7 +11,7 @@ set -uo pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"
 [[ $EUID -eq 0 ]] || { echo "must run as root"; exit 1; }
 
-RESTORE_V6=0; PURGE=0
+RESTORE_V6=0; PURGE=0; RC=0
 for a in "$@"; do
   case "$a" in
     --restore-ipv6) RESTORE_V6=1 ;;
@@ -31,8 +31,12 @@ rm -rf /run/vpnkit /run/qbt-netns-exit-ip
 rm -f /etc/NetworkManager/dispatcher.d/50-vpnkit
 systemctl disable --now qbt-netns.service 2>/dev/null || true
 rm -f /etc/systemd/system/qbt-netns.service
-# Chrome direct: stopping the slice ends what still runs in it.
-systemctl disable --now vpnkit-direct.service 2>/dev/null || true
+# Chrome direct: stopping the slice ends what still runs in it. A unit that
+# will not go is reported (and the exit code says so); its rules are removed
+# below in any case.
+if systemctl cat vpnkit-direct.service >/dev/null 2>&1; then
+  systemctl disable --now vpnkit-direct.service >/dev/null || { echo "could not stop and disable vpnkit-direct.service"; RC=1; }
+fi
 systemctl stop vpnkitdirect.slice 2>/dev/null || true
 nft delete table inet vpnkit_direct 2>/dev/null || true
 while ip -4 rule del priority 90 fwmark "$DIRECT_FWMARK" table main 2>/dev/null; do :; done
@@ -52,6 +56,7 @@ fi
 
 for f in qbt-netns-up qbt-netns-down qbt-netns-status qbt-launch qbittorrent \
          vpnkit-import vpnkit-killswitch vpnkit-sync vpnkit-pick vpnkit-direct vpnkit-direct-rules \
+         vpn-direct direct-launch google-chrome-stable \
          vpn-status vpn-toggle vpn-import vpn-verify vpn-check vpn-rescue vpn-diagnose; do
   rm -f "/usr/local/bin/$f"
 done
@@ -86,3 +91,4 @@ rm -f /etc/sudoers.d/99-vpnkit /etc/sudoers.d/10-vpnkit
 
 rm -rf /usr/local/lib/vpnkit
 echo "vpnkit system part removed."
+exit "$RC"

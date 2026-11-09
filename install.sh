@@ -48,6 +48,10 @@ main() {
     pkexec /usr/bin/bash "$SRC/system/install-root.sh" "$SRC" "$USER" "${ROOT_ARGS[@]}"
   fi
 
+  # Chrome direct (off unless turned on with vpn-direct): the Chrome launcher
+  # entry follows it, so a reinstall rewrites it from the current package.
+  /usr/local/bin/vpn-direct launcher || warn "Chrome direct: could not update the Chrome launcher entry"
+
   if command -v qbittorrent >/dev/null 2>&1 || [[ -x /usr/bin/qbittorrent ]]; then
     say "Pointing the qBittorrent launcher at the namespace wrapper"
     local apps="$HOME/.local/share/applications" desk

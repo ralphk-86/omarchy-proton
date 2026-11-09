@@ -32,7 +32,6 @@ HANDSHAKE_MAX_AGE=240
 DISABLE_IPV6=1
 BYPASS_CIDRS=""
 VPN_FWMARK=51820
-DIRECT_FWMARK=51821
 DIRECT_DNS=""
 KILLSWITCH_ALLOW_LAN=1
 REPORT_DIR=""
@@ -85,8 +84,11 @@ TARGET_HOME=$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6) || true
 VPNKIT_VERSION=$(cat /usr/local/lib/vpnkit/VERSION 2>/dev/null || echo unknown)
 
 # Chrome direct (opt-in): the one app that keeps the normal connection while a
-# desktop server is selected. Fixed names, not settings: the slice is a unit
-# file of that name, and the state file is written only by vpnkit-direct.
+# desktop server is selected. Fixed values, not settings: the slice is a unit
+# file of that name, the state file is written only by vpnkit-direct, and the
+# mark must never equal VPN_FWMARK (WireGuard's own packets) nor change while
+# rules for it are loaded.
+DIRECT_FWMARK=51821
 DIRECT_SLICE="vpnkitdirect.slice"
 DIRECT_STATE="/etc/vpnkit/direct-apps"
 DIRECT_BIN="/usr/bin/google-chrome-stable"
@@ -215,6 +217,31 @@ vpnkit_outside_clients() {  # vpnkit_outside_clients <namespace inode or "">
 # Is Chrome direct turned on? Only `vpnkit-direct on` writes the state file.
 vpnkit_direct_on() {
   grep -qx chrome "$DIRECT_STATE" 2>/dev/null
+}
+
+vpnkit_chrome_outside_pids() {  # vpnkit_chrome_outside_pids <user>
+  # Prints each Chrome process of <user> (its binary is under /opt/google/chrome)
+  # that is NOT in Chrome direct's slice. A new Chrome hands its window to a
+  # running one over a socket in the profile, so while one of these runs, a
+  # Chrome started in the slice would open its window there instead. A process
+  # that vanished is skipped.
+  local pid cg
+  for pid in $(pgrep -u "$1" 2>/dev/null); do
+    [[ "$(readlink "/proc/$pid/exe" 2>/dev/null)" == /opt/google/chrome/* ]] || continue
+    cg=$(cat "/proc/$pid/cgroup" 2>/dev/null) || continue
+    [[ -n "$cg" ]] || continue
+    [[ "$cg" == *"0::/$DIRECT_SLICE/"* ]] || printf '%s\n' "$pid"
+  done
+  return 0
+}
+
+vpnkit_chrome_flag_refused() {  # vpnkit_chrome_flag_refused <argument>
+  # True for a Chrome switch that makes Chrome start another program as its
+  # child, which would inherit Chrome direct: --renderer-cmd-prefix,
+  # --utility-cmd-prefix, --gpu-launcher, --browser-subprocess-path, and any
+  # --*-cmd-prefix or --*-launcher, with or without a value. Chrome also reads
+  # switches written with one dash.
+  [[ "$1" =~ ^--?([A-Za-z0-9_-]*-cmd-prefix|[A-Za-z0-9_-]*-launcher|browser-subprocess-path)(=|$) ]]
 }
 
 vpnkit_loopback_ip() {  # vpnkit_loopback_ip <addr>: a well-formed IPv4 address in 127.0.0.0/8

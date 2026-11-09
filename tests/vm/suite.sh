@@ -184,7 +184,7 @@ is "install.sh exits 0" "$rc" "0"
 (( rc == 0 )) || sed 's/^/      /' /tmp/install.log | tail -25
 yes "missing dependency was installed (wg)" command -v wg
 yes "missing dependency was installed (nft)" command -v nft
-for f in vpn-status vpn-toggle vpn-import vpn-verify vpn-check vpn-rescue vpn-diagnose vpnkit-pick vpnkit-sync vpnkit-import vpnkit-killswitch vpnkit-direct vpnkit-direct-rules qbt-netns-up qbt-launch qbittorrent; do
+for f in vpn-status vpn-toggle vpn-import vpn-verify vpn-check vpn-rescue vpn-diagnose vpnkit-pick vpnkit-sync vpnkit-import vpnkit-killswitch vpnkit-direct vpnkit-direct-rules vpn-direct direct-launch google-chrome-stable qbt-netns-up qbt-launch qbittorrent; do
   yes "installed /usr/local/bin/$f" test -x /usr/local/bin/$f
 done
 yes "the Chrome direct units are installed" test -f /etc/systemd/system/vpnkit-direct.service -a -f /etc/systemd/system/vpnkitdirect.slice
@@ -436,6 +436,23 @@ ks_line()     { nft list table inet vpnkit_kill 2>/dev/null | grep -q 'meta mark
 in_slice()    { systemd-run --quiet --wait --pipe --slice=vpnkitdirect.slice --uid=$U "$@" 2>/dev/null; }
 slice_ip()    { local a; a=$(in_slice curl -4 -s --max-time 4 "$LOOKUP") || a=""; printf '%s' "${a:-none}"; }
 user_slice()  { as_user systemd-run --user --quiet --wait --pipe --slice=vpnkitdirect.slice "$@" 2>/dev/null; }
+# sudo_refuses <description> <command...>: sudo itself turns the command down
+# (the tester's wheel rule wants a password for anything not listed), so the
+# helper never runs. `sudo -l` cannot tell this apart: wheel allows everything.
+sudo_refuses() {
+  local d="$1" out rc; shift
+  out=$(as_user sudo -n "$@" 2>&1 </dev/null); rc=$?
+  if (( rc != 0 )) && grep -q "a password is required" <<<"$out"; then ok "$d"; else bad "$d (rc $rc: ${out:0:160})"; fi
+}
+# refuses <description> <pattern> <command...>: exits 1 within 15 s, saying
+# <pattern>. Run as the user. (A start that is not refused would hang on the
+# stand-in Chrome, so this times out rather than waiting.)
+ASU=(runuser -u $U -- env HOME=$UHOME USER=$U XDG_RUNTIME_DIR=/run/user/$UID_T PATH="$PATH")
+refuses() {
+  local d="$1" p="$2" out rc; shift 2
+  out=$(timeout 15 "${ASU[@]}" "$@" 2>&1 </dev/null); rc=$?
+  if (( rc == 1 )) && grep -q -- "$p" <<<"$out"; then ok "$d"; else bad "$d (rc $rc: $(head -c 200 <<<"$out" | tr '\n' ' '))"; fi
+}
 
 as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
 is "server A is selected" "$(myip)" "10.2.0.2"
@@ -444,8 +461,9 @@ no "off: no fwmark rule" direct_rule
 no "off: no slice" test -d "$DSLICE"
 no "off: the kill switch has no direct line" ks_line
 is "off: status" "$(direct status | jq -c .)" '{"enabled":false,"unit":false,"rules":false,"dns_ok":true}'
-no "the passwordless rule allows only on, off and status" direct bogus
-no "and nothing after them" direct on now
+sudo_refuses "the passwordless rule allows only on, off and status" /usr/local/bin/vpnkit-direct bogus
+sudo_refuses "and nothing after them" /usr/local/bin/vpnkit-direct on now
+sudo_refuses "the rules helper is not passwordless" /usr/local/bin/vpnkit-direct-rules up
 /usr/local/bin/vpnkit-direct bogus >/dev/null 2>&1; rc=$?
 is "the helper itself refuses anything else" "$rc" "2"
 
@@ -463,6 +481,9 @@ yes "a user's own vpnkitdirect.slice lives under the user's manager" \
   grep -q '^0::/user.slice/.*/vpnkitdirect.slice/' <<<"$(user_slice cat /proc/self/cgroup)"
 is "and a probe started there exits through the server" "$(user_slice curl -4 -s --max-time 4 "$LOOKUP")" "10.2.0.2"
 no "a user cannot move itself into the slice" as_user sh -c 'echo $$ > /sys/fs/cgroup/vpnkitdirect.slice/cgroup.procs'
+no "a user cannot have the system manager start a service in the slice" \
+  as_user systemd-run --no-ask-password --quiet --wait --slice=vpnkitdirect.slice true
+no "nor a scope" as_user systemd-run --no-ask-password --quiet --scope --slice=vpnkitdirect.slice true
 yes "the kill switch has the direct line after the DNS reject" bash -c \
   "nft list table inet vpnkit_kill | awk '/dport \{ 53, 853 \}.*reject/ && !r {r=NR} /meta mark 0x0000ca6d accept/ && !m {m=NR} END {exit !(r && m && r < m)}'"
 # 10.0.2.3 is QEMU's resolver, on the physical link the DNS counter watches.
@@ -510,6 +531,120 @@ yes "and the reason is given" grep -q "does not answer" <<<"$OUT"
 is "status flags the resolver" "$(direct status | jq -r .dns_ok)" "false"
 direct_dns 127.0.0.1
 
+# --- Chrome itself: the wrapper, the root launcher, the private resolver ----
+# Stand-ins: "Chrome" writes where it landed (exit address, what the loopback
+# resolver and the in-tunnel one answer, who it runs as) and stays; a copy of
+# sleep under /opt/google/chrome is a Chrome process for the "outside" checks.
+cat > /usr/bin/google-chrome-stable <<EOF
+#!/usr/bin/env bash
+echo \$\$ > /tmp/chrome-probe.pid
+echo "HOME=\$HOME XDG_CONFIG_HOME=\${XDG_CONFIG_HOME:-} ARGS=\$*" > /tmp/chrome-probe.env
+echo "\$(curl -4 -s --max-time 4 $LOOKUP) \$(getent hosts direct-only.test | awk '{print \$1}') \$(getent hosts only-in-tunnel.test >/dev/null && echo leak || echo noleak) \$(id -un)" > /tmp/chrome-probe
+exec sleep 600
+EOF
+chmod 755 /usr/bin/google-chrome-stable
+install -d /opt/google/chrome; cp /usr/bin/sleep /opt/google/chrome/chrome
+CHROME_PID=""
+chrome_start() {  # start "Chrome" as the user through the wrapper; wait for its probe
+  rm -f /tmp/chrome-probe /tmp/chrome-probe.pid /tmp/chrome-probe.env
+  as_user /usr/local/bin/google-chrome-stable "$@" </dev/null >/dev/null 2>&1 &
+  local i; for i in $(seq 1 40); do [[ -s /tmp/chrome-probe ]] && break; sleep 0.5; done
+  CHROME_PID=$(cat /tmp/chrome-probe.pid 2>/dev/null)
+}
+chrome_stop() { [[ -n "$CHROME_PID" ]] && kill "$CHROME_PID" 2>/dev/null; CHROME_PID=""; sleep 1; }
+in_ns() { [[ -n "$CHROME_PID" ]] && nsenter -t "$CHROME_PID" -m "$@"; }
+
+# The launcher entry follows the opt-in (vpn-direct writes it).
+DESK_SYS=/usr/share/applications/google-chrome.desktop
+DESK=$UHOME/.local/share/applications/google-chrome.desktop
+MARK='# Written by omarchy-proton (Chrome direct). Removed when it is turned off.'
+cat > "$DESK_SYS" <<'EOF'
+[Desktop Entry]
+Version=1.0
+Name=Google Chrome
+Exec=/usr/bin/google-chrome-stable %U
+Type=Application
+Actions=new-window;new-private-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=/usr/bin/google-chrome-stable
+
+[Desktop Action new-private-window]
+Name=New Incognito Window
+Exec=/usr/bin/google-chrome-stable --incognito
+EOF
+install -d -o $U -g $U "$UHOME/.local" "$UHOME/.local/share" "$UHOME/.local/share/applications"
+printf '[Desktop Entry]\nName=My own Chrome\nExec=/usr/bin/google-chrome-stable --my-flag\n' > "$DESK"
+chown $U:$U "$DESK"
+OUT=$(as_user /usr/local/bin/vpn-direct on 2>&1); rc=$?
+is "vpn-direct on (already on: same result)" "$rc" "0"
+is "the override carries the marker" "$(head -1 "$DESK" 2>/dev/null)" "$MARK"
+is "override points at the wrapper" "$(grep '^Exec=' "$DESK" 2>/dev/null | paste -sd'|' -)" \
+  "Exec=/usr/local/bin/google-chrome-stable %U|Exec=/usr/local/bin/google-chrome-stable|Exec=/usr/local/bin/google-chrome-stable --incognito"
+yes "a user's own file is backed up" bash -c "grep -l 'My own Chrome' $DESK.bak.* | grep -q ."
+
+# A Chrome already in the slice is fine: a new start only hands over to it.
+systemd-run --quiet --slice=vpnkitdirect.slice --uid=$U --unit=suite-chrome-inside /opt/google/chrome/chrome 600
+chrome_start https://example.test/
+is "Chrome direct: probe" "$(cat /tmp/chrome-probe 2>/dev/null)" "$HOME_IP 192.0.2.9 noleak $U"
+yes "and it runs in the slice" grep -q '^0::/vpnkitdirect.slice/' "/proc/${CHROME_PID:-none}/cgroup"
+is "with the user's HOME and XDG_CONFIG_HOME, and its arguments" "$(cat /tmp/chrome-probe.env 2>/dev/null)" \
+  "HOME=$UHOME XDG_CONFIG_HOME=$UHOME/.config ARGS=https://example.test/"
+is "its resolv.conf names DIRECT_DNS only" "$(in_ns grep '^nameserver' /etc/resolv.conf 2>/dev/null | paste -sd, -)" "nameserver 127.0.0.1"
+yes "its nsswitch.conf asks plain DNS, not resolved" in_ns grep -qE '^hosts:[[:space:]]+files myhostname dns$' /etc/nsswitch.conf
+# systemd-resolved replaces its files by renaming a new one over them.
+cp /run/systemd/resolve/stub-resolv.conf /run/systemd/resolve/.suite-new
+mv /run/systemd/resolve/.suite-new /run/systemd/resolve/stub-resolv.conf
+is "resolver override survives a host-side rename" "$(in_ns grep '^nameserver' /etc/resolv.conf 2>/dev/null | paste -sd, -)" "nameserver 127.0.0.1"
+yes "and the host's own resolver settings are untouched" grep -q '^nameserver 127.0.0.53' /etc/resolv.conf
+chrome_stop
+direct_dns ""
+chrome_start
+is "with DIRECT_DNS empty, Chrome still goes direct" "$(cut -d' ' -f1 /tmp/chrome-probe 2>/dev/null)" "$HOME_IP"
+is "and uses the system resolver" "$(in_ns grep '^nameserver' /etc/resolv.conf 2>/dev/null | paste -sd, -)" "nameserver 127.0.0.53"
+chrome_stop
+direct_dns 127.0.0.1
+
+# Flags that make Chrome run another program as its child are refused.
+for f in --renderer-cmd-prefix=/bin/sh "--gpu-launcher /bin/sh" --browser-subprocess-path=/bin/sh \
+         --foo-cmd-prefix=x --utility-cmd-prefix -ppapi-plugin-launcher=/bin/sh; do
+  # shellcheck disable=SC2086
+  refuses "${f%% *} is refused" "refus" sudo -n /usr/local/bin/direct-launch $f
+done
+refuses "and through the wrapper too" "refus" /usr/local/bin/google-chrome-stable --renderer-cmd-prefix=/bin/sh
+install -d -o $U -g $U "$UHOME/.config"
+printf -- '--ozone-platform=wayland\n--gpu-launcher=/bin/sh\n' > "$UHOME/.config/chrome-flags.conf"
+chown $U:$U "$UHOME/.config/chrome-flags.conf"
+refuses "and in the user's chrome-flags.conf" "chrome-flags.conf" sudo -n /usr/local/bin/direct-launch
+rm -f "$UHOME/.config/chrome-flags.conf"
+# The environment that reaches the launcher is what the sudoers file keeps.
+OUT=$(timeout 15 "${ASU[@]}" sudo -n -E /usr/local/bin/direct-launch 2>&1 </dev/null)
+yes "sudo does not hand direct-launch the caller's environment (-E)" grep -q "not allowed to preserve the environment" <<<"$OUT"
+OUT=$(timeout 15 "${ASU[@]}" sudo -n XDG_CONFIG_HOME=/tmp /usr/local/bin/direct-launch 2>&1 </dev/null)
+yes "nor variables set on its command line" grep -q "not allowed to set the following environment variables" <<<"$OUT"
+
+# Chrome hands new windows to a running instance, so one outside the slice
+# would get them: nothing starts then.
+systemctl stop suite-chrome-inside.service 2>/dev/null
+as_user /opt/google/chrome/chrome 600 </dev/null >/dev/null 2>&1 &
+sleep 1
+OPID=$(pgrep -u $U -x chrome | head -1)
+rm -f /tmp/chrome-probe
+refuses "with Chrome outside, the wrapper refuses" "pid ${OPID:-none}" /usr/local/bin/google-chrome-stable
+refuses "and direct-launch refuses" "pid ${OPID:-none}" sudo -n /usr/local/bin/direct-launch
+no "and no Chrome was started" test -e /tmp/chrome-probe
+[[ -n "$OPID" ]] && kill "$OPID"; sleep 1
+
+# Turning it off must never leave the exemption loaded while it says off.
+install -d /run/systemd/system/vpnkit-direct.service.d
+printf '[Unit]\nRefuseManualStop=yes\n' > /run/systemd/system/vpnkit-direct.service.d/suite.conf
+systemctl daemon-reload
+OUT=$(direct off 2>&1); rc=$?
+is "off fails when the unit cannot be stopped" "$rc" "1"
+is "and status then still says on, with the rules" "$(direct status | jq -c '[.enabled, .rules]')" "[true,true]"
+rm -rf /run/systemd/system/vpnkit-direct.service.d; systemctl daemon-reload
+
 is "off" "$(direct off 2>&1)" "direct: off"
 no "off: nothing installed" nft list table inet vpnkit_direct
 no "off: no fwmark rule" direct_rule
@@ -520,7 +655,38 @@ no "off: the unit is not enabled" systemctl is-enabled --quiet vpnkit-direct.ser
 no "off: no state file" test -e /etc/vpnkit/direct-apps
 is "off: status" "$(direct status | jq -c .)" '{"enabled":false,"unit":false,"rules":false,"dns_ok":true}'
 is "off: a process in a slice of that name follows the bar" "$(slice_ip)" "10.2.0.2"
+systemctl start vpnkitdirect.slice
+OUT=$(/usr/local/bin/vpnkit-direct-rules up 2>&1); rc=$?
+is "the rules helper refuses to load while Chrome direct is off" "$rc" "1"
+no "and loads nothing" nft list table inet vpnkit_direct
+/usr/local/bin/vpnkit-direct-rules down >/dev/null 2>&1
 systemctl stop vpnkitdirect.slice
+chrome_start
+is "off: wrapper passes through" "$(cut -d' ' -f1 /tmp/chrome-probe 2>/dev/null)" "10.2.0.2"
+yes "off: and Chrome is not in the slice" bash -c "[[ -n '$CHROME_PID' ]] && ! grep -q '^0::/vpnkitdirect.slice/' /proc/$CHROME_PID/cgroup"
+chrome_stop
+refuses "off: direct-launch refuses" "off" sudo -n /usr/local/bin/direct-launch
+as_user /usr/local/bin/vpn-direct off >/dev/null 2>&1
+no "override removed when off" test -e "$DESK"
+cp "$(ls "$DESK".bak.* 2>/dev/null | head -1)" "$DESK" 2>/dev/null; chown $U:$U "$DESK" 2>/dev/null
+as_user /usr/local/bin/vpn-direct launcher >/dev/null 2>&1
+yes "a launcher file without the marker is never removed" grep -q 'My own Chrome' "$DESK"
+rm -f "$DESK" "$DESK".bak.*
+
+# A unit that cannot start: on rolls everything back.
+install -d /run/systemd/system/vpnkit-direct.service.d
+printf '[Service]\nExecStartPre=/usr/bin/false\n' > /run/systemd/system/vpnkit-direct.service.d/suite.conf
+systemctl daemon-reload
+OUT=$(direct on 2>&1); rc=$?
+is "on fails when its unit cannot start" "$rc" "1"
+no "and leaves no state file" test -e /etc/vpnkit/direct-apps
+no "no table" nft list table inet vpnkit_direct
+no "no fwmark rule" direct_rule
+no "no slice" test -d "$DSLICE"
+no "no kill switch line" ks_line
+no "and the unit is not enabled" systemctl is-enabled --quiet vpnkit-direct.service
+rm -rf /run/systemd/system/vpnkit-direct.service.d; systemctl daemon-reload
+systemctl reset-failed vpnkit-direct.service 2>/dev/null
 as_user /usr/local/bin/vpn-toggle off >/dev/null 2>&1
 before=$(dns_leaks)
 bash -c 'printf x > /dev/udp/10.0.2.3/53'
@@ -641,6 +807,7 @@ is "settings survive a reinstall" "$(. /etc/vpnkit/vpnkit.conf; echo "$BYPASS_CI
 is "the running torrent tunnel was left alone" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "10.2.0.3"
 yes "Chrome direct stays on through a reinstall" systemctl is-active --quiet vpnkit-direct.service
 yes "with its rules" nft list table inet vpnkit_direct
+is "a reinstall writes the launcher override while it is on" "$(head -1 "$DESK" 2>/dev/null)" "$MARK"
 as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
 is "and a probe in the slice still exits from the home address" "$(slice_ip)" "$HOME_IP"
 in_terminal "$PLUGIN/uninstall.sh" --restore-ipv6 > /tmp/uninstall.log 2>&1; rc=$?
@@ -655,7 +822,8 @@ no "Chrome direct units gone" bash -c 'ls /etc/systemd/system/vpnkit-direct.serv
 no "Chrome direct state gone" test -e /etc/vpnkit/direct-apps
 no "namespace gone" bash -c "ip netns list | grep -qw qbtvpn"
 no "helpers gone" test -e /usr/local/bin/vpn-status
-no "Chrome direct helpers gone" bash -c 'ls /usr/local/bin/vpnkit-direct /usr/local/bin/vpnkit-direct-rules 2>/dev/null | grep -q .'
+no "Chrome direct helpers gone" bash -c 'ls /usr/local/bin/vpnkit-direct /usr/local/bin/vpnkit-direct-rules /usr/local/bin/vpn-direct /usr/local/bin/direct-launch /usr/local/bin/google-chrome-stable 2>/dev/null | grep -q .'
+no "uninstall removes the launcher override" test -e "$DESK"
 no "sudoers rule gone" test -e /etc/sudoers.d/99-vpnkit
 no "dispatcher hook gone" test -e /etc/NetworkManager/dispatcher.d/50-vpnkit
 no "service gone" test -e /etc/systemd/system/qbt-netns.service

@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  direct-launch - start Google Chrome in Chrome direct's slice, so it keeps
+#  the normal connection while a desktop server is selected.
+#
+#  Putting a process into the system cgroup vpnkitdirect.slice needs root, so
+#  this is permitted passwordless via /etc/sudoers.d/99-vpnkit. It is written
+#  to be safe to grant:
+#
+#    * the executed binary is HARDCODED (DIRECT_BIN, /usr/bin/google-chrome-stable)
+#    * Chrome runs as the desktop user, never as root: systemd-run drops
+#      privileges after placing the process in the slice
+#    * the arguments go to Chrome only, and the ones that make Chrome run
+#      another program as its child are refused (--*-cmd-prefix,
+#      --*-launcher, --browser-subprocess-path), on the command line and in
+#      the user's chrome-flags.conf
+#    * it refuses while Chrome direct is off or its rules are not loaded, and
+#      while a Chrome of the user runs outside the slice (a new Chrome hands
+#      its windows to the running one, which would open them there)
+#
+#  With DIRECT_DNS set, Chrome gets a private mount namespace in which
+#  /etc/resolv.conf names DIRECT_DNS only and /etc/nsswitch.conf has no
+#  `resolve` or `mdns`, so names are resolved by DIRECT_DNS and not by
+#  systemd-resolved (which would use the VPN's resolver). /etc/resolv.conf is
+#  a symlink into /run/systemd/resolve, and resolved replaces those files by
+#  renaming, which would undo a bind mount of a single file; so a tmpfs is
+#  mounted over the whole directory instead. Mount propagation is "slave":
+#  drives mounted later still show up in Chrome.
+#
+#  Called by /usr/local/bin/google-chrome-stable (the PATH wrapper).
+# ============================================================================
+set -euo pipefail
+. /usr/local/lib/vpnkit/common.sh   # DIRECT_*, TARGET_USER, TARGET_UID, ...
+
+[[ $EUID -eq 0 ]] || { echo "direct-launch: must run as root" >&2; exit 2; }
+
+refuse() { echo "direct-launch: $*" >&2; exit 1; }
+
+[[ -x "$DIRECT_BIN" ]] || refuse "$DIRECT_BIN not found"
+vpnkit_direct_on || refuse "Chrome direct is off - refusing. Start Chrome as usual: $DIRECT_BIN"
+systemctl is-active --quiet vpnkit-direct.service \
+  || refuse "Chrome direct is on but vpnkit-direct.service is not active - refusing. See: journalctl -u vpnkit-direct.service"
+[[ -d "/sys/fs/cgroup/$DIRECT_SLICE" ]] || refuse "the slice $DIRECT_SLICE does not exist - refusing"
+
+for a in "$@"; do
+  vpnkit_chrome_flag_refused "$a" && refuse "refusing the flag ${a%%=*}: it makes Chrome start another program, which would get the normal connection too"
+done
+
+THOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
+TGROUP=$(id -gn "$TARGET_USER")
+[[ -n "$THOME" && -n "$TGROUP" ]] || refuse "unknown desktop user '$TARGET_USER'"
+
+# /usr/bin/google-chrome-stable adds the flags in ~/.config/chrome-flags.conf
+# (Omarchy keeps its Wayland flags there). Read with the user's rights, never
+# root's, and only so far.
+FLAGS_CONF="$THOME/.config/chrome-flags.conf"
+# Split on whitespace like that script does (it drops lines starting with #).
+if [[ -f "$FLAGS_CONF" ]]; then
+  USER_FLAGS=$(setpriv --reuid="$TARGET_UID" --regid="$(id -g "$TARGET_USER")" --init-groups -- \
+                 timeout 2 head -c 65536 -- "$FLAGS_CONF" 2>/dev/null | grep -v '^#') || USER_FLAGS=""
+  read -ra USER_FLAGS <<<"$(tr '\n' ' ' <<<"$USER_FLAGS")"
+  for a in "${USER_FLAGS[@]}"; do
+    vpnkit_chrome_flag_refused "$a" \
+      && refuse "refusing: $FLAGS_CONF has the flag ${a%%=*}, which makes Chrome start another program"
+  done
+fi
+
+OUTSIDE=$(vpnkit_chrome_outside_pids "$TARGET_USER" | paste -sd' ' -)
+[[ -z "$OUTSIDE" ]] || refuse "Chrome is already running outside Chrome direct (pid $OUTSIDE) - refusing. It would open this window itself, on the VPN. Close it first."
+
+if [[ -n "$DIRECT_DNS" ]]; then
+  vpnkit_loopback_ip "$DIRECT_DNS" || refuse "DIRECT_DNS must be empty or an address in 127.0.0.0/8 (got $DIRECT_DNS)"
+  # The override replaces the directory /etc/resolv.conf points into.
+  case "$(readlink -f /etc/resolv.conf)" in
+    /run/systemd/resolve/*) ;;
+    *) refuse "/etc/resolv.conf does not point into /run/systemd/resolve (systemd-resolved), so DIRECT_DNS cannot be applied - refusing" ;;
+  esac
+fi
+
+# The same environment qbt-launch builds, plus the user's HOME and
+# XDG_CONFIG_HOME (so chrome-flags.conf keeps working). sudo keeps
+# WAYLAND_DISPLAY and the rest for this command (see the sudoers file); when
+# it is missing or stale, use the first compositor socket in the runtime dir.
+RUNDIR="/run/user/$TARGET_UID"
+WL="${WAYLAND_DISPLAY:-}"
+if [[ -z "$WL" || ! -S "$RUNDIR/$WL" ]]; then
+  WL=""
+  for s in "$RUNDIR"/wayland-[0-9]*; do
+    [[ -S "$s" ]] && { WL=$(basename "$s"); break; }
+  done
+fi
+ENVV=(
+  XDG_RUNTIME_DIR="$RUNDIR"
+  DBUS_SESSION_BUS_ADDRESS="unix:path=$RUNDIR/bus"
+  QT_QPA_PLATFORM="wayland;xcb"
+  HOME="$THOME"
+  XDG_CONFIG_HOME="$THOME/.config"
+  USER="$TARGET_USER"
+  LOGNAME="$TARGET_USER"
+)
+[[ -n "$WL" ]] && ENVV+=(WAYLAND_DISPLAY="$WL")
+for v in DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE QT_QPA_PLATFORMTHEME QT_STYLE_OVERRIDE \
+         XCURSOR_THEME XCURSOR_SIZE GTK_THEME HYPRLAND_INSTANCE_SIGNATURE; do
+  [[ -n "${!v:-}" ]] && ENVV+=("$v=${!v}")
+done
+
+# The scope is created in the slice while this is still root; systemd-run then
+# drops to the user (with the user's groups) and runs Chrome in it.
+RUN=(systemd-run --scope --quiet --slice="$DIRECT_SLICE" --uid="$TARGET_USER" --gid="$TGROUP"
+     -- env "${ENVV[@]}" "$DIRECT_BIN" "$@")
+
+cd "$THOME" 2>/dev/null || cd /
+if [[ -z "$DIRECT_DNS" ]]; then
+  exec "${RUN[@]}"     # no DIRECT_DNS: Chrome uses the system resolver
+fi
+
+# Inside the new mount namespace, as root: the resolver files, then Chrome.
+# $1 is DIRECT_DNS (checked above), the rest is the command.
+# shellcheck disable=SC2016
+INNER='
+set -euo pipefail
+. /usr/local/lib/vpnkit/common.sh
+dns=$1; shift
+d=/run/systemd/resolve
+mount -t tmpfs -o mode=755,size=64k,nosuid,nodev,noexec vpnkit-direct "$d"
+printf "# Chrome direct (omarchy-proton): names are resolved by DIRECT_DNS only.\nnameserver %s\noptions edns0 trust-ad\n" "$dns" > "$d/stub-resolv.conf"
+cp "$d/stub-resolv.conf" "$d/resolv.conf"
+# Without resolve and mdns: those reach systemd-resolved, which would answer
+# with the VPN resolver. The same list as the torrent namespace.
+cat > "$d/nsswitch.conf" <<NSS
+# Chrome direct (omarchy-proton): plain DNS to DIRECT_DNS, no systemd-resolved.
+passwd:     files systemd
+group:      files [SUCCESS=merge] systemd
+shadow:     files systemd
+gshadow:    files systemd
+publickey:  files
+hosts:      files myhostname dns
+networks:   files
+protocols:  files
+services:   files
+ethers:     files
+rpc:        files
+netgroup:   files
+NSS
+chmod 644 "$d/stub-resolv.conf" "$d/resolv.conf" "$d/nsswitch.conf"
+mount --bind "$d/nsswitch.conf" /etc/nsswitch.conf
+# Fail closed: start Chrome only when what it will read is right.
+vpnkit_resolver_safe /etc || { echo "direct-launch: the private resolver files are not in place - refusing" >&2; exit 1; }
+[[ "$(grep "^nameserver" /etc/resolv.conf)" == "nameserver $dns" ]] \
+  || { echo "direct-launch: /etc/resolv.conf does not name DIRECT_DNS - refusing" >&2; exit 1; }
+exec "$@"
+'
+exec unshare --mount --propagation slave -- bash -c "$INNER" direct-launch "$DIRECT_DNS" "${RUN[@]}"
