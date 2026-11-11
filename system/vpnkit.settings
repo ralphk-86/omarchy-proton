@@ -66,6 +66,15 @@ IP_CACHE_TTL=30
 # Chrome direct on is refused while this resolver does not answer.
 #DIRECT_DNS="127.0.0.1"
 
+# ---- SSH direct (off until you turn it on) ---------------------------------
+# While SSH direct is on (vpn-direct ssh on, or the panel's switch), new TCP
+# connections to these ports leave through your normal connection (your own
+# IP), also while a server is selected: ssh, scp, sftp, rsync and git over
+# ssh. Up to 8 port numbers, separated by spaces; not 53 or 853 (DNS never
+# leaves outside a tunnel). After changing it while SSH direct is on, run
+# vpn-direct ssh on again.
+#DIRECT_SSH_PORTS="22"
+
 # ---- torrent tunnel (rarely changed) ---------------------------------------
 #NS="qbtvpn"                 # network namespace name
 #WG_IF="pqbt0"               # WireGuard interface inside it

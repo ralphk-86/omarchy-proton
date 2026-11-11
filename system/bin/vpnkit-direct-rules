@@ -1,17 +1,28 @@
 #!/usr/bin/bash
 # omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
 # ============================================================================
-#  vpnkit-direct-rules - load or remove Chrome direct's rules.
+#  vpnkit-direct-rules - load or remove the rules of Chrome direct and SSH
+#  direct.
 #
-#  Run by vpnkit-direct.service (and, while it is active, by the
-#  NetworkManager hook after a link comes up). Not callable through sudo.
+#  Run by vpnkit-direct.service (and, while it is active, by vpnkit-direct
+#  and the NetworkManager hook after a link comes up). Not callable through
+#  sudo.
 #
-#    up    Refused unless Chrome direct is on (/etc/vpnkit/direct-apps), so
-#          nothing outside `vpnkit-direct on` can load the exemption. Then
-#          load the nftables table inet vpnkit_direct, replacing it atomically:
-#            * a route hook marks every packet from a socket in the system
-#              cgroup vpnkitdirect.slice with DIRECT_FWMARK; the mark makes
-#              the kernel route the packet again,
+#    up    Refused unless Chrome direct or SSH direct is on (a line "chrome"
+#          or "ssh" in /etc/vpnkit/direct-apps), so nothing outside
+#          `vpnkit-direct` can load an exemption, and refused while SSH direct
+#          is on and DIRECT_SSH_PORTS is not valid (nothing is loaded then).
+#          Then load the nftables table inet vpnkit_direct, replacing it
+#          atomically:
+#            * Chrome direct, only while it is on: a route hook marks every
+#              packet from a socket in the system cgroup vpnkitdirect.slice
+#              with DIRECT_FWMARK; the mark makes the kernel route the packet
+#              again
+#            * SSH direct, only while it is on: a new TCP connection to one of
+#              DIRECT_SSH_PORTS gets DIRECT_FWMARK as its connection mark, and
+#              every packet of a connection with that mark gets it as its own.
+#              Connections already open keep their path; only new ones go
+#              direct
 #          and add the policy rules for that mark:
 #            * priority 90: the main table, i.e. the normal connection, ahead
 #              of NetworkManager's WireGuard rules
@@ -19,13 +30,17 @@
 #              never captures the rest) to Tailscale's table 52. Always
 #              there: while table 52 is empty or missing, the lookup finds
 #              nothing and falls through to priority 90, and once Tailscale
-#              comes up (after boot, say) Chrome reaches the tailnet
+#              comes up (after boot, say) the exempt traffic reaches the
+#              tailnet
 #          plus NAT: a marked packet leaving a non-tunnel interface took the
 #          tunnel's source address when its route was first chosen, so it is
 #          masqueraded. Loopback is left alone: local services see 127.0.0.1.
-#          The table names the cgroup by path, and nftables turns that into the
-#          cgroup's id at load time, so `up` is run again whenever the cgroup
-#          is recreated (the unit does that on every start). Idempotent.
+#          Each rule is named by a comment ("chrome", "ssh"), which the status
+#          checks read back. The table names the cgroup by path, and nftables
+#          turns that into the cgroup's id at load time, so `up` is run again
+#          whenever the cgroup is recreated (the unit does that on every
+#          start). Idempotent. The rules live in the host's network namespace
+#          only: the torrent and Firefox namespaces never match.
 #    down  Remove the table and both rules. Idempotent.
 #
 #  The kill switch's own line for the mark lives in vpnkit-killswitch.
@@ -55,15 +70,26 @@ tail_rule=(priority 89 fwmark "$DIRECT_FWMARK" to "$TAILNET" table "$TS_TABLE")
 
 case "$#:${1:-}" in
   1:up)
-    vpnkit_direct_on || { echo "vpnkit-direct-rules: Chrome direct is off (no $DIRECT_STATE) - not loading" >&2; exit 1; }
-    [[ -d "/sys/fs/cgroup/$DIRECT_SLICE" ]] || { echo "vpnkit-direct-rules: /sys/fs/cgroup/$DIRECT_SLICE does not exist" >&2; exit 1; }
+    vpnkit_direct_any_on || { echo "vpnkit-direct-rules: Chrome direct and SSH direct are off (nothing in $DIRECT_STATE) - not loading" >&2; exit 1; }
+    chrome_rule=""; ssh_rules=()
+    if vpnkit_direct_on; then
+      [[ -d "/sys/fs/cgroup/$DIRECT_SLICE" ]] || { echo "vpnkit-direct-rules: /sys/fs/cgroup/$DIRECT_SLICE does not exist" >&2; exit 1; }
+      chrome_rule="socket cgroupv2 level 1 \"$DIRECT_SLICE\" meta mark set $DIRECT_FWMARK comment \"chrome\""
+    fi
+    if vpnkit_ssh_direct_on; then
+      # Only checked port numbers reach the ruleset (vpnkit_ssh_ports).
+      ports=$(vpnkit_ssh_ports) || { echo "vpnkit-direct-rules: SSH direct is on, but its ports are not valid - not loading" >&2; exit 1; }
+      ssh_rules=("tcp dport { ${ports//,/, } } ct state new ct mark set $DIRECT_FWMARK comment \"ssh\""
+                 "ct mark $DIRECT_FWMARK meta mark set $DIRECT_FWMARK comment \"ssh\"")
+    fi
     {
       echo "table inet $TABLE"
       echo "delete table inet $TABLE"
       echo "table inet $TABLE {"
       echo "  chain output {"
       echo "    type route hook output priority mangle; policy accept;"
-      echo "    socket cgroupv2 level 1 \"$DIRECT_SLICE\" meta mark set $DIRECT_FWMARK"
+      [[ -z "$chrome_rule" ]] || echo "    $chrome_rule"
+      for r in "${ssh_rules[@]}"; do echo "    $r"; done
       echo "  }"
       echo "  chain postrouting {"
       echo "    type nat hook postrouting priority srcnat; policy accept;"

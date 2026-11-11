@@ -99,6 +99,7 @@ Panel {
   property string qbtConn: ""
   property string pendingTorrent: ""
   property string pendingDirect: ""
+  property string pendingSsh: ""
   // Which traffic the server list is choosing for: "regular" or "torrents".
   property string tab: "regular"
   property bool qbtRunning: false
@@ -135,6 +136,13 @@ Panel {
   // a row have seen them (directOthersSeen holds the last poll's).
   property var directOthers: []
   property var directOthersSeen: []
+  // SSH direct (opt-in): new connections to the SSH ports keep the normal
+  // connection while a server is selected. vpn-status's ssh_direct_* fields.
+  property bool sshEnabled: false
+  property bool sshKnown: false
+  property bool sshPortsOk: true
+  property bool sshWorking: true
+  property var sshPorts: []
 
   property string pendingTarget: ""
   property string armedRemove: ""
@@ -160,6 +168,7 @@ Panel {
   readonly property bool switchingTorrent: torrentProcess.running
   readonly property bool verifying: verifyProcess.running
   readonly property bool switchingDirect: directProcess.running
+  readonly property bool switchingSsh: sshProcess.running
   // Setup runs in a visible Omarchy terminal (sudo asks there), the same way
   // Omarchy's own installers do. The panel only knows it was started; it is
   // done when the installed version matches this widget's.
@@ -179,7 +188,9 @@ Panel {
   // not Chrome uses the home IP through it.
   readonly property bool directProblem: directEnabled
     && (!directKnown || !directWorking || !directDnsOk || !directOverrideOk || directOthers.length > 0)
-  readonly property bool alert: danger || ffDanger || torrentDown || ffDown || blocked || unguarded || directProblem
+  // SSH direct is on but its ports are not valid or its rules are missing.
+  readonly property bool sshProblem: sshEnabled && (!sshKnown || !sshPortsOk || !sshWorking)
+  readonly property bool alert: danger || ffDanger || torrentDown || ffDown || blocked || unguarded || directProblem || sshProblem
 
   // Two of those states come and go on their own while a command runs, so they
   // are not alarms until they have held still. Picking a server arms the kill
@@ -271,6 +282,14 @@ Panel {
     if (directOutside) parts.push("restart Chrome: it still uses the VPN")
     return parts.join(" \u00b7 ")
   }
+  // "port 22", "ports 22, 2222"
+  readonly property string sshPortsText: (sshPorts.length === 1 ? "port " : "ports ") + (sshPorts.length > 0 ? sshPorts.join(", ") : "?")
+  readonly property string sshDetail: {
+    if (!sshPortsOk) return "Not working: DIRECT_SSH_PORTS in /etc/vpnkit/vpnkit.conf is not valid"
+    if (!sshKnown) return "State unknown: it could not be checked"
+    if (!sshWorking) return "Not working: its rules are missing. Turn it off and on again"
+    return "Your own IP for new SSH connections \u00b7 everything else follows the bar"
+  }
   readonly property string folderShort: homeShort(folder)
   function homeShort(path) { return String(path || "").replace(/^\/home\/[^\/]+/, "~") }
 
@@ -293,8 +312,10 @@ Panel {
   // The Chrome direct switch, when Chrome is installed (or it is on).
   readonly property bool showDirect: installed && (directAvailable || directEnabled)
   readonly property int directIndex: showDirect ? (showAi ? aiIndex : verifyIndex) + 1 : -1
+  // The SSH direct switch, always (once installed).
+  readonly property int sshIndex: installed ? (showDirect ? directIndex : (showAi ? aiIndex : verifyIndex)) + 1 : -1
   // The bar display setting is the last row.
-  readonly property int ipsIndex: installed ? (showDirect ? directIndex : (showAi ? aiIndex : verifyIndex)) + 1 : -1
+  readonly property int ipsIndex: installed ? sshIndex + 1 : -1
   readonly property int rowCount: installed ? ipsIndex + 1 : 1
 
   // "proton-se-21" -> "Sweden 21", "vpn-us-ny-45" -> "USA NY 45"
@@ -385,6 +406,13 @@ Panel {
     var steady = others.filter(function (n) { return seen.indexOf(n) >= 0 })
     if (JSON.stringify(others) !== JSON.stringify(directOthersSeen)) directOthersSeen = others
     if (JSON.stringify(steady) !== JSON.stringify(directOthers)) directOthers = steady
+    sshEnabled = j.ssh_direct_enabled === true
+    sshKnown = j.ssh_direct_known === true
+    sshPortsOk = j.ssh_direct_ports_ok !== false
+    // Only a plain true counts as fine; null (unknown) does not.
+    sshWorking = j.ssh_direct_rules === true
+    var sp = j.ssh_direct_ports instanceof Array ? j.ssh_direct_ports : []
+    if (JSON.stringify(sp) !== JSON.stringify(sshPorts)) sshPorts = sp
     aiAgent = String(j.ai_agent || "")
     torrentIf = String(j.torrent_if || "pqbt0")
     torrentNs = String(j.torrent_ns || "qbtvpn")
@@ -509,6 +537,17 @@ Panel {
     pendingDirect = on ? "on" : "off"
     directProcess.command = [directCmd, pendingDirect]
     directProcess.running = true
+  }
+
+  // SSH direct on or off.
+  function setSsh(on) {
+    if (demo || switchingSsh || !installed) return
+    if ((on === true) === sshEnabled) return
+    lastError = ""
+    message = ""
+    pendingSsh = on ? "on" : "off"
+    sshProcess.command = [directCmd, "ssh", pendingSsh]
+    sshProcess.running = true
   }
 
   // First click arms, a second click within three seconds deletes.
@@ -696,6 +735,7 @@ Panel {
     else if (cursorIndex === verifyIndex) verify()
     else if (cursorIndex === aiIndex) troubleshoot()
     else if (cursorIndex === directIndex) setDirect(!directEnabled)
+    else if (cursorIndex === sshIndex) setSsh(!sshEnabled)
     else if (cursorIndex === ipsIndex) setShowIps(!showIps)
     else if (cursorIndex >= firstServerIndex && cursorIndex < refreshIndex) pickServer(profiles[cursorIndex - firstServerIndex])
   }
@@ -784,6 +824,25 @@ Panel {
         var said = String(directStdout.text || "").split("\n").filter(function(l) { return l.trim() !== "" && !/^direct: (on|off)$/.test(l.trim()) })
         vpn.message = said.length > 0 ? said.join(" ")
           : (on ? "Chrome now uses your own IP. Start it from the launcher." : "Chrome follows the bar again.")
+      }
+      vpn.refresh(true)
+    }
+  }
+
+  Process {
+    id: sshProcess
+    running: false
+    command: []
+    stdout: StdioCollector { id: sshStdout; waitForEnd: true }
+    stderr: StdioCollector { id: sshStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      var on = vpn.pendingSsh === "on"
+      vpn.pendingSsh = ""
+      if (exitCode !== 0) {
+        vpn.lastError = String(sshStderr.text || "").split("\n").map(function(l) { return l.replace(/^(vpnkit-direct|vpn-direct|sudo):\s*/, "").trim() })
+          .filter(function(l) { return l !== "" }).join("\n") || (on ? "Could not turn on SSH direct." : "Could not turn off SSH direct.")
+      } else {
+        vpn.message = on ? "New SSH connections now use your own IP. Reconnect open ones." : "SSH follows the bar again. Reconnect open SSH connections."
       }
       vpn.refresh(true)
     }
@@ -1156,6 +1215,50 @@ Panel {
             }
           }
 
+          // SSH direct, under the Chrome line, while it is on.
+          RowLayout {
+            visible: vpn.installed && vpn.sshEnabled
+            width: parent.width
+            spacing: Style.space(8)
+
+            Text {
+              textFormat: Text.PlainText
+              text: vpn.sshProblem ? vpn.gAlert : vpn.gDirect
+              color: vpn.sshProblem ? vpn.urgent : vpn.foreground
+              font.family: vpn.fontFamily
+              font.pixelSize: Style.font.body
+              horizontalAlignment: Text.AlignHCenter
+              Layout.preferredWidth: Style.space(22)
+              Layout.leftMargin: Style.space(6)
+              Layout.alignment: Qt.AlignVCenter
+            }
+
+            ColumnLayout {
+              Layout.fillWidth: true
+              spacing: Style.space(1)
+
+              Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                text: "SSH: direct (" + vpn.sshPortsText + ")"
+                color: vpn.sshProblem ? vpn.urgent : vpn.foreground
+                font.family: vpn.fontFamily
+                font.pixelSize: Style.font.body
+                elide: Text.ElideRight
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                text: vpn.sshDetail
+                color: vpn.sshProblem ? vpn.urgent : vpn.dim
+                font.family: vpn.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+            }
+          }
+
           PanelSeparator {
             visible: vpn.installed
             foreground: vpn.foreground
@@ -1378,6 +1481,20 @@ Panel {
               isPending: vpn.switchingDirect
               toggle: vpn.directEnabled ? 1 : 0
               onChosen: vpn.setDirect(!vpn.directEnabled)
+            }
+
+            ChoiceRow {
+              visible: vpn.installed
+              width: parent.width
+              rowIndex: vpn.sshIndex
+              glyph: vpn.gDirect
+              title: "SSH uses your own IP"
+              subtitle: vpn.switchingSsh ? "Switching"
+                : (vpn.sshEnabled ? "New connections to " + vpn.sshPortsText + " skip the VPN"
+                  : "Keeps ssh, scp and git over ssh off the VPN, everything else follows the bar")
+              isPending: vpn.switchingSsh
+              toggle: vpn.sshEnabled ? 1 : 0
+              onChosen: vpn.setSsh(!vpn.sshEnabled)
             }
 
             ChoiceRow {

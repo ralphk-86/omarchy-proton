@@ -7,7 +7,7 @@
 #    1. Desktop VPN  - the connection you switch between off and your servers
 #    2. qBittorrent  - the isolated always-on namespace tunnel (separate)
 #    3. Firefox      - its own always-on namespace tunnel, once opted in
-#    4. Chrome direct, when it is on
+#    4. Chrome direct and SSH direct, each when it is on
 #
 #  The external IP lookup is cached (default 30s) so the bar widget polling
 #  every few seconds doesn't hammer the network or the lookup service.
@@ -95,6 +95,12 @@ fi
 DIRECT_ON=false; vpnkit_direct_on && DIRECT_ON=true
 CHROME_THERE=false; [[ -x "$DIRECT_BIN" ]] && CHROME_THERE=true
 
+# --- SSH direct ----------------------------------------------------------------
+# On or off and its ports can be read here (vpnkit.conf and the state file
+# are 644); whether its rules are loaded only through the status helper.
+SSH_ON=$(if vpnkit_ssh_direct_on; then echo true; else echo false; fi)
+SSH_PORTS=$(vpnkit_ssh_ports 2>/dev/null) || SSH_PORTS=""
+
 # --- the Firefox tunnel ------------------------------------------------------
 # How it is doing comes from the status helper (null there: unknown). Whether
 # it is on, and its server, can also be read here (the record is 644), so the
@@ -114,10 +120,12 @@ STATUS=$(jq -cn \
   --arg conn "$ACTIVE" --arg iface "$IFACE" --arg ip "$EXT_IP" --arg profiles "$PROFILES" \
   --arg version "$VPNKIT_VERSION" --arg folder "$CONFIG_DIR" --arg prefix "$PROFILE_PREFIX" --arg agent "$AGENT" --arg torrent_if "$WG_IF" --arg torrent_ns "$NS" --arg regular_if "$REGULAR_IF" --arg report_dir "$(vpnkit_report_dir)" \
   --arg direct_dns "$DIRECT_DNS" --argjson direct_on "$DIRECT_ON" --argjson chrome "$CHROME_THERE" \
+  --argjson ssh_on "$SSH_ON" --arg ssh_ports "$SSH_PORTS" \
   --arg firefox_if "$FF_WG_IF" --arg firefox_ns "$FF_NS" --argjson ff_on "$FF_ON" --arg ff_record "$FF_RECORD" \
   --argjson inbox "$INBOX" --argjson blocked "$BLOCKED" --argjson known "$KNOWN" --argjson ns "$NS_JSON" '
   ($ns.direct | if type == "object" and (.enabled | type) == "boolean" then . else null end) as $d
   | ($ns.firefox | if type == "object" and (.configured | type) == "boolean" then . else null end) as $f
+  | ($ns.direct.ssh? | if type == "object" and (.enabled | type) == "boolean" then . else null end) as $s
   | def d(k): if $d == null or $direct_on == false then null else $d[k] end;
     def names(k): if $d == null then [] else ($d[k] // "") | split(",") | map(select(. != "")) end;
   {
@@ -174,6 +182,11 @@ STATUS=$(jq -cn \
     direct_override_ok: d("override_ok"),
     direct_helpers:     (if $direct_on then names("helpers") else [] end),
     direct_others:      (if $direct_on then names("others") else [] end),
+    ssh_direct_enabled: $ssh_on,
+    ssh_direct_known:   ($s != null),
+    ssh_direct_ports:   ($ssh_ports | split(",") | map(select(. != "") | tonumber)),
+    ssh_direct_ports_ok: ($ssh_ports != ""),
+    ssh_direct_rules:   (if $s == null or ($ssh_on | not) then null else $s.rules end),
     profiles:        ($profiles | split("\n") | map(select(. != "")))
   }')
 
@@ -247,6 +260,16 @@ case "$MODE" in
                "                     a Chrome started earlier still uses the VPN: close Chrome and start it again" else empty end)
           end)
        else "Chrome direct      : off" end),
+      (if .ssh_direct_enabled then
+         "SSH direct         : on (\(if (.ssh_direct_ports | length) == 1 then "port " else "ports " end)\(if .ssh_direct_ports_ok then (.ssh_direct_ports | map(tostring) | join(", ")) else "?" end))",
+         (if .ssh_direct_ports_ok | not then
+            "                     *** NOT WORKING: DIRECT_SSH_PORTS in /etc/vpnkit/vpnkit.conf is not valid (vpn-direct ssh on says why) ***"
+          elif .ssh_direct_known | not then
+            "                     state unknown: the status helper did not answer"
+          elif .ssh_direct_rules != true then
+            "                     *** NOT WORKING: its rules are missing (vpn-direct ssh off, then on) ***"
+          else empty end)
+       else "SSH direct         : off" end),
       (if .inbox > 0 then "Waiting in the folder: \(.inbox) config(s) - run vpn-import" else empty end)
     ' <<<"$STATUS"
     ;;

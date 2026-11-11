@@ -8,6 +8,7 @@
 #    * WireGuard's own encrypted packets (they carry VPN_FWMARK), which is what
 #      keeps the desktop tunnel and the torrent tunnel themselves alive
 #    * the BYPASS_CIDRS (servers that must see the home IP, e.g. SSH allowlists)
+#    * while Chrome direct or SSH direct is on, what they mark (DIRECT_FWMARK)
 #    * the local network and DHCP, so the link itself keeps working (but never
 #      DNS: that goes through a tunnel or nowhere)
 #    * loopback, and Tailscale if it is installed
@@ -71,10 +72,11 @@ case "${1:-}" in
       # DNS never leaves outside a tunnel, not even to a resolver on the LAN
       # (a home router would forward the question to the ISP).
       echo "    meta l4proto { tcp, udp } th dport { 53, 853 } counter reject with icmpx type admin-prohibited"
-      # Chrome direct, when turned on: packets vpnkit_direct marked (sockets
-      # in its slice) may leave directly. After the DNS reject, so its plain
-      # DNS still cannot.
-      vpnkit_direct_on && [[ "$DIRECT_FWMARK" =~ ^[1-9][0-9]{0,9}$ ]] && echo "    meta mark ${DIRECT_FWMARK} accept"
+      # Chrome direct or SSH direct, while either is turned on: packets
+      # vpnkit_direct marked (sockets in Chrome's slice, new connections to
+      # the SSH ports) may leave directly. After the DNS reject, so plain DNS
+      # still cannot.
+      vpnkit_direct_any_on && [[ "$DIRECT_FWMARK" =~ ^[1-9][0-9]{0,9}$ ]] && echo "    meta mark ${DIRECT_FWMARK} accept"
       (( ${#bypass[@]} )) && echo "    ip daddr { $(csv "${bypass[@]}") } accept"
       (( ${#lan[@]} ))    && echo "    ip daddr { $(csv "${lan[@]}") } accept"
       echo "    udp sport 68 udp dport 67 accept"

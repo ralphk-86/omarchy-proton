@@ -371,23 +371,24 @@ install -d -m 755 /etc/NetworkManager/dispatcher.d
 install -m 755 -o root -g root "$SYS/dispatcher.d/50-vpnkit" /etc/NetworkManager/dispatcher.d/50-vpnkit
 
 # --------------------------------------------------------------- systemd ---
-say "Installing qbt-netns.service, ff-netns.service and the Chrome direct units"
+say "Installing qbt-netns.service, ff-netns.service and the units of Chrome direct and SSH direct"
 install -m 644 "$SYS/systemd/qbt-netns.service" /etc/systemd/system/qbt-netns.service
 # The Firefox tunnel is opt-in: its unit is installed, but enabled only below
 # once a Firefox server has been chosen (FF_CONF exists).
 install -m 644 "$SYS/systemd/ff-netns.service" /etc/systemd/system/ff-netns.service
-# Chrome direct is opt-in: its units are installed, but only `vpnkit-direct on`
-# enables them. When it is already on, the rules are loaded again in place
-# (a restart would recreate the slice and end a Chrome running in it).
+# Chrome direct and SSH direct are opt-in: their units are installed, but only
+# `vpnkit-direct on` or `vpnkit-direct ssh on` enables them. When one is
+# already on, the rules are loaded again in place (a restart would recreate
+# the slice and end a Chrome running in it).
 install -m 644 "$SYS/systemd/vpnkitdirect.slice" /etc/systemd/system/vpnkitdirect.slice
 install -m 644 "$SYS/systemd/vpnkit-direct.service" /etc/systemd/system/vpnkit-direct.service
 systemctl daemon-reload
-if vpnkit_direct_on; then
+if vpnkit_direct_any_on; then
   systemctl enable vpnkit-direct.service >/dev/null \
-    || { warn "Chrome direct: could not enable vpnkit-direct.service; it will not come back after a reboot"
+    || { warn "Chrome direct / SSH direct: could not enable vpnkit-direct.service; it will not come back after a reboot"
          INCOMPLETE+=("enabling vpnkit-direct.service"); }
   if systemctl is-active --quiet vpnkit-direct.service; then
-    /usr/local/bin/vpnkit-direct-rules up || warn "Chrome direct: reloading its rules failed"
+    /usr/local/bin/vpnkit-direct-rules up || warn "Chrome direct / SSH direct: reloading their rules failed"
   else
     systemctl start vpnkit-direct.service || warn "vpnkit-direct.service failed to start: journalctl -u vpnkit-direct.service"
   fi

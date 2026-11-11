@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
 # ============================================================================
-#  vpn-direct - turn Chrome direct on or off.
+#  vpn-direct - turn Chrome direct or SSH direct on or off.
 #
 #  Chrome direct keeps Google Chrome on the normal connection (and on the
-#  resolver in DIRECT_DNS) while a desktop server is selected. Everything else
-#  keeps following the bar.
+#  resolver in DIRECT_DNS) while a desktop server is selected. SSH direct
+#  does that for new connections to the SSH ports (DIRECT_SSH_PORTS in
+#  /etc/vpnkit/vpnkit.conf, default 22): ssh, scp, sftp, rsync and git over
+#  ssh. Everything else keeps following the bar.
 #
 #  USAGE
-#    vpn-direct on        turn it on (sudo -n vpnkit-direct on), then point the
-#                         Chrome launcher entry at the wrapper
+#    vpn-direct on        turn Chrome direct on (sudo -n vpnkit-direct on),
+#                         then point the Chrome launcher entry at the wrapper
 #    vpn-direct off       turn it off, then remove that launcher entry
+#    vpn-direct ssh on    turn SSH direct on (sudo -n vpnkit-direct ssh on)
+#    vpn-direct ssh off   turn it off
 #    vpn-direct launcher  make the launcher entry follow the current state
 #                         (install.sh runs this); "launcher off" removes it
 #
@@ -62,8 +66,15 @@ case "$#:${1:-}:${2:-}" in
   2:launcher:off)
     launcher_off
     ;;
+  2:ssh:on)
+    sudo -n /usr/local/bin/vpnkit-direct ssh on
+    echo "Connections open before this keep their path; reconnect them to use your own IP."
+    ;;
+  2:ssh:off)
+    sudo -n /usr/local/bin/vpnkit-direct ssh off
+    ;;
   *)
-    sed -n '3,26p' "$0" >&2
+    sed -n '3,30p' "$0" >&2
     exit 2
     ;;
 esac

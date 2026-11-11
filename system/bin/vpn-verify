@@ -609,6 +609,36 @@ if vpnkit_direct_on; then
   done
 fi
 
+# --- SSH direct (only when it is turned on) ----------------------------------
+# A second deliberate hole: new TCP connections to DIRECT_SSH_PORTS leave on
+# the normal connection. Prove that its rules match the configured ports, and
+# that a packet with its mark is routed outside the tunnel.
+if vpnkit_ssh_direct_on; then
+  echo
+  echo "12c. SSH direct (on: SSH uses your own IP)"
+  if ! SSHP=$(vpnkit_ssh_ports 2>&1); then
+    no "SSH direct is on but $SSHP - its rules cannot be loaded (fix it in /etc/vpnkit/vpnkit.conf, then: vpn-direct ssh on)"
+  else
+    if $SUDO bash -c '. /usr/local/lib/vpnkit/common.sh; . /usr/local/lib/vpnkit/direct.sh; vpnkit_ssh_rules_loaded "$1"' _ "$SSHP"; then
+      ok "its rules are loaded: new connections to the SSH ports (${SSHP//,/, }) use your own IP"
+    else
+      no "SSH direct is on but its rules for the SSH ports (${SSHP//,/, }) are not loaded - SSH goes into the VPN or nowhere (run: vpn-direct ssh off, then vpn-direct ssh on)"
+    fi
+    if [[ -n "$ACTIVE" ]]; then
+      SDEV=$(ip -4 route get 1.1.1.1 mark "$DIRECT_FWMARK" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p')
+      if [[ -n "$SDEV" && "$SDEV" != "$PROFILE_PREFIX"-* ]]; then ok "a connection SSH direct marks leaves through $SDEV, not $ACTIVE"
+      else no "a connection SSH direct marks would leave through ${SDEV:-nowhere}, not the normal connection"; fi
+      if $SUDO bash -c '. /usr/local/lib/vpnkit/common.sh; . /usr/local/lib/vpnkit/direct.sh; vpnkit_kill_lets_direct_out'; then
+        ok "the kill switch lets the marked connections out"
+      else
+        no "the kill switch has no line for SSH direct's mark - SSH is blocked while a server is selected (choose the server again)"
+      fi
+    else
+      meh "no server selected: SSH uses the normal connection like everything else"
+    fi
+  fi
+fi
+
 # --- fail-closed proof ------------------------------------------------------
 if (( FAIL_CLOSED && NSOK )); then
   echo

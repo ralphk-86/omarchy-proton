@@ -42,7 +42,9 @@ Design notes, plans and agent working files are kept outside it (`docs/superpowe
    `vpnkit-direct on|off|status` switches it; `direct-launch`, behind the
    `google-chrome-stable` wrapper, starts Chrome in the slice with a filtered session bus
    (no `org.freedesktop.systemd1`, else Chrome moves itself out) and the kit's `xdg-open`
-   first in its PATH. Its helpers live in `system/lib/direct.sh`.
+   first in its PATH. Its helpers live in `system/lib/direct.sh`. SSH direct (opt-in, same
+   mark, rules, unit and kill-switch line, loaded while either is on) marks new TCP
+   connections to `DIRECT_SSH_PORTS` (default 22): `vpnkit-direct ssh on|off`.
 
 ## Non-negotiable rules
 

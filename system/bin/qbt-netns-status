@@ -14,7 +14,8 @@
 #  its namespace, handshake and exit IP, and whether each Firefox of the
 #  desktop user runs inside it; and Chrome direct (opt-in, "direct" below):
 #  its unit and rules, whether DIRECT_DNS answers, which processes run in its
-#  slice, and whether Chrome's private resolver files are still in place.
+#  slice, and whether Chrome's private resolver files are still in place; and
+#  SSH direct (opt-in, "direct.ssh"): on or off, its ports, its rules.
 #
 #  Allowed passwordless via /etc/sudoers.d/99-vpnkit.
 #  Takes no arguments and only reads state. The only files it writes are its
@@ -215,6 +216,20 @@ direct_json() {  # the "direct" object; {"enabled":null} when the scan did not f
 }
 direct=$(direct_json) || direct='{"enabled":null}'
 jq -e 'type == "object"' >/dev/null 2>&1 <<<"$direct" || direct='{"enabled":null}'
+
+# --- SSH direct (opt-in) ------------------------------------------------------
+# On or off, its ports ("22,2222"; empty when DIRECT_SSH_PORTS is not valid),
+# and whether its rules for exactly those ports are loaded. Part of "direct",
+# also when Chrome's scan did not finish.
+ssh_json() {
+  local ports
+  ports=$(vpnkit_ssh_ports 2>/dev/null) || ports=""
+  jq -cn --argjson enabled "$(tf vpnkit_ssh_direct_on)" --arg ports "$ports" \
+         --argjson rules "$(tf vpnkit_ssh_rules_loaded "$ports")" \
+    '{enabled: $enabled, ports: $ports, ports_ok: ($ports != ""), rules: $rules}'
+}
+ssh=$(ssh_json) || ssh='{"enabled":null}'
+direct=$(jq -c --argjson ssh "$ssh" '. + {ssh: $ssh}' <<<"$direct") || direct='{"enabled":null}'
 
 printf '{"exists":%s,"route":%s,"tunnel_up":%s,"last_handshake":%s,"endpoint":"%s","server":"%s","exit_ip":"%s","qbt_running":%s,"qbt_protected":%s,"qbt_unprotected":%s,"qbt_pids":"%s","killswitch":%s,"wanted":"%s","configured":%s,"conn":"%s","other_clients":"%s","firefox":%s,"direct":%s}\n' \
   "$exists" "$route" "$tunnel_up" "$handshake" "$endpoint" "$server" "$exit_ip" \

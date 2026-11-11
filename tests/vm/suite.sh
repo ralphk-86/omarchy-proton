@@ -140,7 +140,7 @@ class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 class S(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True; allow_reuse_address = True
-S((sys.argv[1] if len(sys.argv) > 1 else "0.0.0.0", 8080), H).serve_forever()
+S((sys.argv[1] if len(sys.argv) > 1 else "0.0.0.0", int(sys.argv[2]) if len(sys.argv) > 2 else 8080), H).serve_forever()
 PY
 # Detached from this shell's output, or ssh would wait for them to exit.
 ip netns exec provider python3 /tmp/whoami.py </dev/null >/dev/null 2>&1 &
@@ -1082,7 +1082,7 @@ no "off: nothing installed" nft list table inet vpnkit_direct
 no "off: no fwmark rule" direct_rule
 no "off: no slice" test -d "$DSLICE"
 no "off: the kill switch has no direct line" ks_line
-is "off: status" "$(direct status | jq -c .)" '{"enabled":false,"unit":false,"rules":false,"dns_ok":true}'
+is "off: status" "$(direct status | jq -c .)" '{"enabled":false,"unit":false,"rules":false,"dns_ok":true,"ssh":{"enabled":false,"ports":"22","rules":false}}'
 sudo_refuses "the passwordless rule allows only on, off and status" /usr/local/bin/vpnkit-direct bogus
 sudo_refuses "and nothing after them" /usr/local/bin/vpnkit-direct on now
 sudo_refuses "the rules helper is not passwordless" /usr/local/bin/vpnkit-direct-rules up
@@ -1092,7 +1092,7 @@ is "the helper itself refuses anything else" "$rc" "2"
 direct_dns 127.0.0.1
 is "on" "$(direct on 2>&1)" "direct: on"
 yes "the slice's cgroup exists" test -d "$DSLICE"
-is "status: on" "$(direct status | jq -c .)" '{"enabled":true,"unit":true,"rules":true,"dns_ok":true}'
+is "status: on" "$(direct status | jq -c .)" '{"enabled":true,"unit":true,"rules":true,"dns_ok":true,"ssh":{"enabled":false,"ports":"22","rules":false}}'
 is "a probe in the slice exits from the home address" "$(slice_ip)" "$HOME_IP"
 is "the host still exits through the server" "$(myip)" "10.2.0.2"
 is "loopback traffic from the slice keeps its 127.0.0.1 source" \
@@ -1502,7 +1502,7 @@ no "kill switch line gone" ks_line
 yes "the kill switch itself stays armed" nft list table inet vpnkit_kill
 no "off: the unit is not enabled" systemctl is-enabled --quiet vpnkit-direct.service
 no "off: no state file" test -e /etc/vpnkit/direct-apps
-is "off: status" "$(direct status | jq -c .)" '{"enabled":false,"unit":false,"rules":false,"dns_ok":true}'
+is "off: status" "$(direct status | jq -c .)" '{"enabled":false,"unit":false,"rules":false,"dns_ok":true,"ssh":{"enabled":false,"ports":"22","rules":false}}'
 is "status: off" "$(status .direct_enabled)" "false"
 yes "vpn-status says off in words" grep -q '^Chrome direct *: off$' <<<"$(as_user /usr/local/bin/vpn-status)"
 is "off: a process in a slice of that name follows the bar" "$(slice_ip)" "10.2.0.2"
@@ -1735,6 +1735,10 @@ fake_free "vpnkit-sync neither" 'jq -e ".imported | type == \"array\"" <<<"$OUT"
   /usr/local/bin/vpnkit-sync sync
 fake_free "vpnkit-direct neither" 'jq -e ".enabled == false" <<<"$OUT" >/dev/null' \
   /usr/local/bin/vpnkit-direct status
+fake_free "vpnkit-direct ssh on neither" '[[ $OUT == "ssh direct: on (port 22)" ]]' \
+  /usr/local/bin/vpnkit-direct ssh on
+fake_free "vpnkit-direct ssh off neither" '[[ $OUT == "ssh direct: off" ]]' \
+  /usr/local/bin/vpnkit-direct ssh off
 fake_free "direct-launch neither (it refuses: Chrome direct is off)" '(( rc == 1 )) && grep -q "Chrome direct is off" <<<"$OUT"' \
   /usr/local/bin/direct-launch
 fake_free "vpn-verify neither" 'grep -q "^Result: " <<<"$OUT"' \
@@ -1748,13 +1752,199 @@ rm -rf "$FAKE" /usr/local/sbin/suite-path-probe /run/suite-fake-ran
 # secure_path stays off until the reinstall in section 6, which must say so.
 
 # ---------------------------------------------------------------------------
+section "4e. SSH direct"
+# Opt-in: new TCP connections to the SSH ports (DIRECT_SSH_PORTS, default 22)
+# keep the normal connection while a server is selected; everything else
+# follows the bar. The "what is my IP" service also listens on ports 22, 2222
+# and 443 here, so where a connection to each port comes from can be seen.
+for p in 22 2222 443; do ip netns exec provider python3 /tmp/whoami.py 0.0.0.0 "$p" </dev/null >/dev/null 2>&1 & done
+for i in $(seq 1 60); do
+  for p in 22 2222 443; do ip netns exec provider curl -s --max-time 1 "http://192.0.2.80:$p/" >/dev/null 2>&1 || continue 2; done
+  break
+done
+portip()   { local a; a=$(curl -4 -s --max-time 3 "http://192.0.2.80:$1/" 2>/dev/null) || a=""; printf '%s' "${a:-none}"; }
+nsportip() { local a; a=$(ip netns exec "$1" curl -4 -s --max-time 4 "http://192.0.2.80:$2/" 2>/dev/null) || a=""; printf '%s' "${a:-none}"; }
+ssh_ports() { sed -i '/^DIRECT_SSH_PORTS=/d' "$VCONF"; [[ "$1" == "-" ]] || printf 'DIRECT_SSH_PORTS="%s"\n' "$1" >> "$VCONF"; }
+chrome_mark() { nft list chain inet vpnkit_direct output 2>/dev/null | grep -q cgroupv2; }
+ssh_mark()    { nft list chain inet vpnkit_direct output 2>/dev/null | grep -q 'comment "ssh"'; }
+sshst()       { as_user sudo -n /usr/local/bin/qbt-netns-status | jq -c .direct.ssh; }
+
+as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
+is "server A is selected" "$(myip)" "10.2.0.2"
+is "off: port 22 follows the bar" "$(portip 22)" "10.2.0.2"
+is "off: vpn-status" "$(status '[.ssh_direct_enabled, .ssh_direct_rules, .ssh_direct_ports] | @json')" '[false,null,[22]]'
+is "off: the status helper" "$(sshst)" '{"enabled":false,"ports":"22","ports_ok":true,"rules":false}'
+no "off: nothing loaded" nft list table inet vpnkit_direct
+no "off: no fwmark rule" direct_rule
+no "off: the kill switch has no direct line" ks_line
+yes "vpn-status says off in words" grep -q '^SSH direct *: off$' <<<"$(as_user /usr/local/bin/vpn-status)"
+OUT=$(vpn-verify 2>&1)
+no "off: the leak check has no SSH direct section" grep -q "SSH direct" <<<"$OUT"
+
+# Only the exact arguments are passwordless, and the helper refuses anything else.
+sudo_refuses "ssh alone is not passwordless" /usr/local/bin/vpnkit-direct ssh
+sudo_refuses "nor ssh with another word" /usr/local/bin/vpnkit-direct ssh status
+sudo_refuses "nor ssh ON" /usr/local/bin/vpnkit-direct ssh ON
+sudo_refuses "nor anything after ssh on" /usr/local/bin/vpnkit-direct ssh on 2222
+sudo_refuses "nor the words the other way round" /usr/local/bin/vpnkit-direct on ssh
+for a in "ssh" "ssh bogus" "ssh on extra" "on ssh" "ssh off off"; do
+  # shellcheck disable=SC2086
+  /usr/local/bin/vpnkit-direct $a >/dev/null 2>&1; rc=$?
+  is "the helper itself refuses '$a'" "$rc" "2"
+done
+no "and nothing was turned on" test -e /etc/vpnkit/direct-apps
+
+# DIRECT_SSH_PORTS: one to eight port numbers, never DNS; anything else is refused.
+for v in "" "0" "65536" "0022" "22 x" "22;id" "22-24" "53" "22 853" "1 2 3 4 5 6 7 8 9"; do
+  ssh_ports "$v"
+  OUT=$(direct ssh on 2>&1); rc=$?
+  is "DIRECT_SSH_PORTS=\"$v\" is refused" "$rc" "1"
+done
+yes "with the reason" grep -q "at most 8" <<<"$OUT"
+no "nothing was turned on" test -e /etc/vpnkit/direct-apps
+no "nor loaded" nft list table inet vpnkit_direct
+no "nor the unit enabled" systemctl is-enabled --quiet vpnkit-direct.service
+
+ssh_ports "22 2222"
+is "on, with two ports" "$(as_user /usr/local/bin/vpn-direct ssh on 2>&1 | head -1)" "ssh direct: on (ports 22, 2222)"
+yes "its unit is enabled, so it comes back after a reboot" systemctl is-enabled --quiet vpnkit-direct.service
+is "port 22 leaves from the home address" "$(portip 22)" "$HOME_IP"
+is "so does the second port" "$(portip 2222)" "$HOME_IP"
+is "port 443 still goes through server A" "$(portip 443)" "10.2.0.2"
+is "and so does everything else" "$(myip)" "10.2.0.2"
+is "the torrent namespace's port 22 still goes through its tunnel" "$(nsportip qbtvpn 22)" "10.2.0.3"
+is "and the Firefox namespace's through its own" "$(nsportip ffvpn 22)" "10.3.0.4"
+is "status: on, its rules, both ports" "$(status '[.ssh_direct_enabled, .ssh_direct_rules, .ssh_direct_ports] | @json')" '[true,true,[22,2222]]'
+is "the status helper" "$(sshst)" '{"enabled":true,"ports":"22,2222","ports_ok":true,"rules":true}'
+yes "vpn-status says it in words" grep -q '^SSH direct *: on (ports 22, 2222)$' <<<"$(as_user /usr/local/bin/vpn-status)"
+yes "the kill switch has the direct line" ks_line
+yes "the tailnet rule is there" tailnet_rule
+is "Chrome direct stays off" "$(direct status | jq -c '[.enabled, .rules]')" "[false,false]"
+no "and Chrome's slice gets no mark" chrome_mark
+is "a process in the slice follows the bar" "$(slice_ip)" "10.2.0.2"
+
+nmcli connection down proton-ca-1 >/dev/null 2>&1; sleep 1
+is "blocked: the host does not get out" "$(myip)" "none"
+is "blocked: port 443 does not either" "$(portip 443)" "none"
+is "blocked: port 22 still leaves from home" "$(portip 22)" "$HOME_IP"
+as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
+is "server A again" "$(myip)" "10.2.0.2"
+yes "the re-armed kill switch keeps the direct line" ks_line
+
+OUT=$(vpn-verify 2>&1); rc=$?
+is "the leak check passes with SSH direct on" "$rc" "0"
+(( rc == 0 )) || grep -E "FAIL" <<<"$OUT" | sed 's/^/      /'
+yes "it checks the rules for the configured ports" grep -q "PASS.*new connections to the SSH ports (22, 2222) use your own IP" <<<"$OUT"
+yes "that a marked connection leaves outside the tunnel" grep -q "PASS.*a connection SSH direct marks leaves through [^ ]*, not proton-ca-1" <<<"$OUT"
+yes "and that the kill switch lets it out" grep -q "PASS.*the kill switch lets the marked connections out" <<<"$OUT"
+
+# A rule that went missing: status, panel data and the leak check say so.
+ip -4 rule del priority 90 fwmark 51821 table main
+is "status: a missing rule shows" "$(status .ssh_direct_rules)" "false"
+yes "vpn-status says it does not work" grep -q "NOT WORKING: its rules are missing" <<<"$(as_user /usr/local/bin/vpn-status)"
+is "port 22 then goes into the VPN, never around it" "$(portip 22)" "10.2.0.2"
+OUT=$(vpn-verify 2>&1); rc=$?
+is "the leak check fails" "$rc" "1"
+yes "and says the rules are not loaded" grep -q "FAIL.*SSH direct is on but its rules for the SSH ports (22, 2222) are not loaded" <<<"$OUT"
+yes "and that a marked connection would not leave outside the tunnel" grep -q "FAIL.*a connection SSH direct marks would leave through proton-ca-1" <<<"$OUT"
+/etc/NetworkManager/dispatcher.d/50-vpnkit "$PHYS" up
+is "a link coming up loads them again" "$(status .ssh_direct_rules)" "true"
+nft delete table inet vpnkit_kill
+OUT=$(vpn-verify 2>&1)
+yes "a kill switch without its line is a failure" grep -q "FAIL.*the kill switch has no line for SSH direct's mark" <<<"$OUT"
+as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
+
+# Other ports than the loaded ones: the rules no longer count as loaded until on again.
+ssh_ports "2222"
+is "status: rules for other ports count as missing" "$(status .ssh_direct_rules)" "false"
+is "on again loads the new ports" "$(direct ssh on 2>&1)" "ssh direct: on (port 2222)"
+is "port 22 now follows the bar" "$(portip 22)" "10.2.0.2"
+is "port 2222 leaves from home" "$(portip 2222)" "$HOME_IP"
+ssh_ports "22 x"
+is "status: ports that are not valid while on" "$(status '[.ssh_direct_ports_ok, .ssh_direct_rules] | @json')" '[false,false]'
+yes "vpn-status says so" grep -q "DIRECT_SSH_PORTS in /etc/vpnkit/vpnkit.conf is not valid" <<<"$(as_user /usr/local/bin/vpn-status)"
+OUT=$(vpn-verify 2>&1); rc=$?
+is "the leak check fails on them" "$rc" "1"
+yes "and says why" grep -q "FAIL.*SSH direct is on but DIRECT_SSH_PORTS" <<<"$OUT"
+/usr/local/bin/vpnkit-direct-rules up >/dev/null 2>&1; rc=$?
+is "the rules helper refuses to load them" "$rc" "1"
+yes "and leaves the loaded rules as they were" ssh_mark
+ssh_ports "22 2222"
+is "on again with valid ports" "$(direct ssh on 2>&1)" "ssh direct: on (ports 22, 2222)"
+
+# Reboot: the unit loads the rules again from the state file.
+systemctl stop vpnkit-direct.service
+is "with its unit stopped, port 22 follows the bar" "$(portip 22)" "10.2.0.2"
+is "and status says the rules are missing" "$(status .ssh_direct_rules)" "false"
+systemctl start vpnkit-direct.service
+is "started again (as at boot), port 22 leaves from home" "$(portip 22)" "$HOME_IP"
+systemctl restart vpnkit-direct.service
+is "and after a restart" "$(portip 22)" "$HOME_IP"
+is "status: rules loaded" "$(status .ssh_direct_rules)" "true"
+
+# Independent of Chrome direct: either can go on or off without the other's rules.
+is "Chrome direct turns on beside it" "$(direct on 2>&1)" "direct: on"
+is "both rule sets are loaded" "$(direct status | jq -c '[.rules, .ssh.rules]')" "[true,true]"
+is "the slice exits from home" "$(slice_ip)" "$HOME_IP"
+is "port 22 still does" "$(portip 22)" "$HOME_IP"
+is "Chrome direct turns off" "$(direct off 2>&1)" "direct: off"
+is "SSH direct keeps its rules" "$(direct status | jq -c '[.enabled, .rules, .ssh.enabled, .ssh.rules]')" "[false,false,true,true]"
+is "port 22 still leaves from home" "$(portip 22)" "$HOME_IP"
+yes "the tailnet rule stays" tailnet_rule
+yes "the kill switch line stays" ks_line
+no "Chrome's mark is gone" chrome_mark
+is "a process in the slice follows the bar again" "$(slice_ip)" "10.2.0.2"
+is "Chrome direct on once more" "$(direct on 2>&1)" "direct: on"
+is "SSH direct turns off" "$(as_user /usr/local/bin/vpn-direct ssh off 2>&1)" "ssh direct: off"
+is "Chrome direct keeps its rules" "$(direct status | jq -c '[.enabled, .rules, .ssh.enabled, .ssh.rules]')" "[true,true,false,false]"
+is "the slice still exits from home" "$(slice_ip)" "$HOME_IP"
+is "port 22 follows the bar" "$(portip 22)" "10.2.0.2"
+yes "the kill switch line stays for Chrome" ks_line
+no "SSH's rules are gone" ssh_mark
+is "Chrome direct off" "$(direct off 2>&1)" "direct: off"
+
+# Off removes everything.
+is "SSH direct on again" "$(direct ssh on 2>&1)" "ssh direct: on (ports 22, 2222)"
+is "off" "$(as_user /usr/local/bin/vpn-direct ssh off 2>&1)" "ssh direct: off"
+no "off: nothing loaded" nft list table inet vpnkit_direct
+no "off: no fwmark rule" direct_rule
+no "off: no tailnet rule" tailnet_rule
+no "off: no slice" test -d "$DSLICE"
+no "off: the kill switch line is gone" ks_line
+yes "the kill switch itself stays armed" nft list table inet vpnkit_kill
+no "off: the unit is not enabled" systemctl is-enabled --quiet vpnkit-direct.service
+no "off: no state file" test -e /etc/vpnkit/direct-apps
+is "off: port 22 follows the bar" "$(portip 22)" "10.2.0.2"
+is "off: the status helper" "$(sshst)" '{"enabled":false,"ports":"22,2222","ports_ok":true,"rules":false}'
+/usr/local/bin/vpnkit-direct-rules up >/dev/null 2>&1; rc=$?
+is "the rules helper refuses to load while both are off" "$rc" "1"
+no "and loads nothing" nft list table inet vpnkit_direct
+
+# A unit that cannot start: ssh on rolls everything back.
+install -d /run/systemd/system/vpnkit-direct.service.d
+printf '[Service]\nExecStartPre=/usr/bin/false\n' > /run/systemd/system/vpnkit-direct.service.d/suite.conf
+systemctl daemon-reload
+OUT=$(direct ssh on 2>&1); rc=$?
+is "ssh on fails when its unit cannot start" "$rc" "1"
+no "and leaves no state file" test -e /etc/vpnkit/direct-apps
+no "no table" nft list table inet vpnkit_direct
+no "no fwmark rule" direct_rule
+no "no kill switch line" ks_line
+no "and the unit is not enabled" systemctl is-enabled --quiet vpnkit-direct.service
+rm -rf /run/systemd/system/vpnkit-direct.service.d; systemctl daemon-reload
+systemctl reset-failed vpnkit-direct.service 2>/dev/null
+ssh_ports -
+
+as_user /usr/local/bin/vpn-toggle off >/dev/null 2>&1
+
+# ---------------------------------------------------------------------------
 section "5. The leak check, the rescue, and deleting a server"
 as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
 OUT=$(vpn-verify --fail-closed 2>&1); rc=$?
 is "vpn-verify --fail-closed passes with a VPN up" "$rc" "0"
 (( rc == 0 )) || grep -E "FAIL|Result" <<<"$OUT" | sed 's/^/      /'
 echo "      $(grep Result <<<"$OUT")"
-no "no direct lines in the leak check when off" grep -qi "chrome direct" <<<"$OUT"
+no "no direct lines in the leak check when off" grep -qiE "chrome direct|ssh direct" <<<"$OUT"
 yes "the leak check covers the Firefox tunnel" grep -q "PASS.*Firefox exits from its own address (10.3.0.4)" <<<"$OUT"
 OUT=$(as_user sudo -n /usr/local/bin/vpn-verify 2>&1); rc=$?
 is "the panel's leak check runs without a password and passes" "$rc" "0"
@@ -1986,6 +2176,7 @@ shim() {
 }
 
 direct on >/dev/null 2>&1
+direct ssh on >/dev/null 2>&1
 # A command as 0.4.0 installed it carries no marker line: an update must still
 # know it as the kit's (by its checksum) and replace it without --move-aside.
 # The file itself comes from the 0.4.0 release (vm.sh copies it in for section
@@ -2016,6 +2207,7 @@ is "and still exits through its server" "$(ip netns exec ffvpn curl -4 -s --max-
 yes "and stays enabled" systemctl is-enabled --quiet ff-netns.service
 yes "Chrome direct stays on through a reinstall" systemctl is-active --quiet vpnkit-direct.service
 yes "with its rules" nft list table inet vpnkit_direct
+is "SSH direct stays on through a reinstall, with its rules" "$(direct status | jq -c '[.rules, .ssh.enabled, .ssh.rules]')" "[true,true,true]"
 is "a reinstall writes the launcher override while it is on" "$(head -1 "$DESK" 2>/dev/null)" "$MARK"
 is "an update replaces a command 0.4.0 installed (no marker) without --move-aside" "$(sed -n 2p /usr/local/bin/vpn-import)" "$BIN_MARK"
 yes "with secure_path off in sudoers, setup says so" grep -q "sudo has no secure_path" /tmp/install2.log
@@ -2131,7 +2323,8 @@ no "Chrome direct rules gone" nft list table inet vpnkit_direct
 no "Chrome direct fwmark rules gone" direct_rule
 no "Chrome direct slice gone" test -d "$DSLICE"
 no "Chrome direct units gone" bash -c 'ls /etc/systemd/system/vpnkit-direct.service /etc/systemd/system/vpnkitdirect.slice 2>/dev/null | grep -q .'
-no "Chrome direct state gone" test -e /etc/vpnkit/direct-apps
+no "Chrome direct and SSH direct state gone" test -e /etc/vpnkit/direct-apps
+no "SSH direct's rules gone (no marking left)" bash -c 'nft list ruleset | grep -q "ct mark set 0x0000ca6d"'
 no "namespace gone" bash -c "ip netns list | grep -qw qbtvpn"
 no "helpers gone" test -e /usr/local/bin/vpn-status
 no "Chrome direct helpers gone" bash -c 'ls /usr/local/bin/vpnkit-direct /usr/local/bin/vpnkit-direct-rules /usr/local/bin/vpn-direct /usr/local/bin/direct-launch 2>/dev/null | grep -q .'

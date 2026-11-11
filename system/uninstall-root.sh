@@ -93,7 +93,7 @@ if [[ -e /etc/systemd/system/ff-netns.service ]]; then
   systemctl disable --now ff-netns.service >/dev/null 2>&1 || fail "could not stop and disable ff-netns.service"
 fi
 rm -f /etc/systemd/system/ff-netns.service
-# Chrome direct: stopping the slice ends what still runs in it. A unit that
+# Chrome direct and SSH direct: stopping the slice ends what still runs in it. A unit that
 # will not go is reported; its rules are removed below in any case.
 if systemctl cat vpnkit-direct.service >/dev/null 2>&1; then
   systemctl disable --now vpnkit-direct.service >/dev/null || fail "could not stop and disable vpnkit-direct.service"

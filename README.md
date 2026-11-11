@@ -40,7 +40,7 @@ Details: [Install](#install).
 **Contents:** [Quick start](#quick-start) · [What you choose](#what-you-choose) ·
 [How to use it](#how-to-use-it) · [Requirements](#requirements) · [Install](#install) ·
 [Add servers](#add-servers) · [How the protection works](#how-the-protection-works) ·
-[Chrome direct](#chrome-direct) ·
+[Chrome direct](#chrome-direct) · [SSH direct](#ssh-direct) ·
 [Check it, and get out of trouble](#check-it-and-get-out-of-trouble) ·
 [Using it with Tailscale](#using-it-with-tailscale) ·
 [DNS and Omarchy's DNS setting](#dns-and-omarchys-dns-setting) · [Settings](#settings) ·
@@ -127,6 +127,7 @@ tunnel. Left-click opens the panel, right-click toggles the VPN, middle-click re
 | Header | where your regular traffic goes right now, and its IP; "kill switch on" with a server |
 | Torrents line | the torrent server, its IP, and whether qBittorrent is running inside the tunnel; the copy icon copies the IP |
 | Chrome line | only while [Chrome direct](#chrome-direct) is on: "Your own IP" and the resolver Chrome uses, or the first problem in the urgent colour |
+| SSH line | only while [SSH direct](#ssh-direct) is on: "SSH: direct (port 22)", or the problem in the urgent colour |
 | **Regular traffic / Torrents** | which traffic the list below chooses a server for |
 | Normal connection | (Regular traffic tab) your own IP, no VPN; removes the kill switch |
 | One row per server | click to use it for the tab you are on; a tick marks the current one. The server the other tab uses is greyed and labelled. The trash icon deletes a server (click twice) |
@@ -136,6 +137,7 @@ tunnel. Left-click opens the panel, right-click toggles the VPN, middle-click re
 | Check for leaks | runs about thirty-five checks on the live system and shows the result; any failing check is listed in red underneath. Each check is saved as a report; the folder icon opens them (see [Saved reports](#check-it-and-get-out-of-trouble)) |
 | Troubleshoot with AI | appears only when something is wrong (a failed check, a dropped VPN, the torrent tunnel down); see below |
 | Chrome uses your own IP | (shown when Google Chrome is installed) turns [Chrome direct](#chrome-direct) on or off |
+| SSH uses your own IP | turns [SSH direct](#ssh-direct) on or off |
 | Show IP addresses in the bar | on: the lock or globe plus both addresses; off: only the icons. Saved in the widget's settings |
 
 **Notifications** appear when the VPN drops and the kill switch starts blocking, when the
@@ -504,6 +506,52 @@ would if you had started it yourself. If that cannot be arranged, nothing is ope
 - **It protects against accidents, not against software running as you**, like the kill
   switch. See [Limits](#limits) and [SECURITY.md](SECURITY.md).
 
+## SSH direct
+
+Some servers only accept SSH from your home address. With a server selected, SSH would leave
+through the VPN and be refused. **SSH direct** sends new SSH connections out through your
+normal connection (your own IP) all the time, also while a server is selected or the bar says
+blocked. Everything else keeps following the bar, and the torrent and Firefox tunnels keep
+theirs.
+
+It works by **destination port**, not by program: every new TCP connection from this machine
+to one of the SSH ports goes direct, so `ssh`, `scp`, `sftp`, `rsync` over ssh and `git` over
+ssh all work without wrappers. The ports are `DIRECT_SSH_PORTS` in `/etc/vpnkit/vpnkit.conf`:
+`22` unless you change it, up to eight port numbers separated by spaces (`"22 2222"`). Anything
+else there is refused, and so are 53 and 853: DNS never leaves outside a tunnel.
+
+**It is off until you turn it on.** Until then nothing changes and none of its rules are
+loaded. Turn it on or off with the **SSH uses your own IP** switch in the panel, or:
+
+```sh
+vpn-direct ssh on     # new SSH connections use your own IP
+vpn-direct ssh off    # SSH follows the bar again
+```
+
+While it is on, the panel shows an **SSH: direct (port 22)** line and `vpn-status` an
+`SSH direct : on (port 22)` line; both turn the urgent colour (and the bar alerts) when its
+rules are missing or `DIRECT_SSH_PORTS` is not valid. It stays on across reboots until you
+turn it off. After changing `DIRECT_SSH_PORTS`, run `vpn-direct ssh on` again.
+
+**What you should know:**
+
+- **Connections that are open when you turn it on keep their path** until they are
+  reconnected; only new ones go direct. Connections open when you turn it off stop working;
+  reconnect them.
+- **Any program can use it, not only SSH.** Whatever connects to one of those ports, to any
+  host, leaves from your home address while it is on. Like the kill switch and Chrome direct,
+  this protects against accidents, not against software running as you.
+- **Names are still looked up through the bar.** `ssh myserver.example` asks the system
+  resolver, which uses the server's resolver through the tunnel while a server is selected.
+  While the bar says blocked, names do not resolve; an address or an entry in `/etc/hosts` or
+  `~/.ssh/config` (`HostName 192.0.2.10`) still works.
+- **Tailscale hosts stay on Tailscale:** SSH to a tailnet address (`100.64.0.0/10`) keeps
+  Tailscale's routes.
+- **The torrent and Firefox tunnels are not affected:** their traffic never goes direct, SSH
+  included.
+- It shares its mechanism with Chrome direct (the mark `51821`, the same note about a second
+  `wg-quick` tunnel applies); either, both or neither can be on.
+
 ## Check it, and get out of trouble
 
 ```sh
@@ -514,6 +562,7 @@ vpn-check --redact          # the latest report with public addresses and keys m
 vpn-verify                  # the same checks without saving a report
 vpn-rescue                  # way back: VPN off, kill switch off, confirms the internet works
 vpn-direct on|off           # Chrome direct on or off (see Chrome direct)
+vpn-direct ssh on|off       # SSH direct on or off (see SSH direct)
 vpn-diagnose "what you saw" # hand the problem to your AI agent (see above)
 ```
 
@@ -529,6 +578,9 @@ revoked). With IPv6 kept on, it also proves IPv6 cannot get out while the VPN is
 [Chrome direct](#chrome-direct) on, it checks that its rules are loaded, that a probe in its
 slice leaves from your own address while a server is selected, that `DIRECT_DNS` answers and is
 the only resolver each Chrome process sees, and names anything in the slice that is not Chrome.
+With [SSH direct](#ssh-direct) on, it checks that its rules match `DIRECT_SSH_PORTS`, that a
+connection it marks is routed outside the tunnel while a server is selected, and that the
+kill switch lets it out.
 
 **Saved reports.** Every check, from the panel or from `vpn-check`, is saved as a text file in
 **Documents > VPN leak checks** (`~/Documents/VPN leak checks/`; `REPORT_DIR` in
@@ -596,6 +648,7 @@ Everything else is in `/etc/vpnkit/vpnkit.conf`, which the installer never overw
 | `DISABLE_IPV6` | `1` | IPv6 off on every interface but loopback; see above. Setting it to `0` and running setup again gives IPv6 back (the same as `install.sh --keep-ipv6`) |
 | `VPNKIT_PROVIDER` | `proton` | naming preset; `generic`, `mullvad`, `ivpn`, `airvpn`, `windscribe` for other providers |
 | `DIRECT_DNS` | empty | the resolver Chrome asks while [Chrome direct](#chrome-direct) is on. Empty: the system resolver, which follows the bar. Otherwise a loopback address only (`127.x.x.x`), such as a local ad-blocking resolver on `127.0.0.1` |
+| `DIRECT_SSH_PORTS` | `22` | the ports [SSH direct](#ssh-direct) sends direct while it is on: up to eight port numbers, separated by spaces; not 53 or 853 |
 
 ## What gets installed
 
@@ -609,8 +662,8 @@ The engine underneath is called `vpnkit`; that is the name you will see in paths
 | `/etc/sudoers.d/99-vpnkit` | passwordless rules for eight specific helpers, validated with `visudo -c` before install |
 | `/etc/NetworkManager/dispatcher.d/50-vpnkit` | arms the kill switch, reconnects after resume |
 | `/etc/systemd/system/qbt-netns.service` | builds the torrent namespace at boot |
-| `/etc/systemd/system/vpnkit-direct.service`, `vpnkitdirect.slice` | Chrome direct's slice and rules; installed always, enabled only while it is on |
-| `/etc/vpnkit/direct-apps` | only while Chrome direct is on: says that it is |
+| `/etc/systemd/system/vpnkit-direct.service`, `vpnkitdirect.slice` | the rules of Chrome direct and SSH direct, and Chrome's slice; installed always, enabled only while one of them is on |
+| `/etc/vpnkit/direct-apps` | only while Chrome direct or SSH direct is on: says which |
 | `/etc/sysctl.d/99-vpnkit-disable-ipv6.conf` | IPv6 off (unless `--keep-ipv6`) |
 | `/etc/wireguard/`, `/etc/NetworkManager/system-connections/` | your imported configs, mode 0600, root |
 | `~/.local/share/applications/org.qbittorrent.qBittorrent.desktop` | launcher pointing at the wrapper, first line a marker; not written over an entry of yours unless you pass `--qbt-launcher` (yours is backed up next to it, and put back by the uninstaller) |
@@ -653,8 +706,8 @@ omarchy plugin remove io.github.ralphk-86.omarchy-proton
 ```
 
 The uninstaller switches to the normal connection, removes the kill switch, the torrent
-namespace and every file from the table above. It also turns Chrome direct off and removes its
-rules; a Chrome still running with your own IP is closed. It removes only what is the kit's:
+namespace and every file from the table above. It also turns Chrome direct and SSH direct off
+and removes their rules; a Chrome still running with your own IP is closed. It removes only what is the kit's:
 commands with its marker line (a file of yours under one of their names is kept, and one setup
 moved aside is put back), its own launcher entries (an entry of yours it replaced is put back),
 and, with `--purge`, the servers it imported, recognised by the uuid it gave them (also those
@@ -715,6 +768,8 @@ you, not as root), putting back any of yours.
   not against software running as you: such software can ask Chrome to start a program (an
   extension's helper, say), which then shares Chrome's exemption. The leak check names what it
   finds in Chrome's slice. Apps Chrome opens through `xdg-open` do not share it.
+- [SSH direct](#ssh-direct) is a deliberate hole for the SSH ports, only while you have it
+  on: any program may connect to those ports, on any host, from your home address then.
 - Switching servers uses NetworkManager's normal permissions: fine from your desktop session;
   from an SSH session NetworkManager (polkit) may refuse, and then the kill switch keeps you
   blocked until you switch from the desktop or run `vpn-toggle off`.

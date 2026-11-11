@@ -1,25 +1,36 @@
 #!/usr/bin/bash
 # omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
 # ============================================================================
-#  vpnkit-direct - turn Chrome direct on or off.
+#  vpnkit-direct - turn Chrome direct or SSH direct on or off.
 #
 #  Chrome direct keeps Google Chrome on the normal connection while a desktop
-#  server is selected. It is off until turned on here, and while off nothing of
-#  it is loaded.
+#  server is selected; SSH direct does that for new TCP connections to the
+#  ports in DIRECT_SSH_PORTS (vpnkit.conf, default 22). Both are off until
+#  turned on here, and while both are off nothing of them is loaded. They
+#  share one unit (vpnkit-direct.service), table and set of policy rules,
+#  which stay while either is on.
 #
-#    on      Refused unless DIRECT_DNS (vpnkit.conf) is empty, or a loopback
-#            address whose resolver answers. Then: write /etc/vpnkit/direct-apps
-#            (the rules helper loads nothing without it), enable and start
-#            vpnkit-direct.service (the slice's cgroup and the rules), and
-#            re-arm the kill switch if it is armed, so it lets the slice's
-#            packets out. If the unit does not start, all of it is undone.
+#    on      Chrome direct. Refused unless DIRECT_DNS (vpnkit.conf) is empty,
+#            or a loopback address whose resolver answers. Then: add "chrome"
+#            to /etc/vpnkit/direct-apps (the rules helper loads nothing
+#            without it), enable and start vpnkit-direct.service (the slice's
+#            cgroup and the rules), or load the rules again if it already
+#            runs, and re-arm the kill switch if it is armed, so it lets the
+#            marked packets out. If that fails, all of it is undone.
 #            Prints "direct: on".
 #    off     Refused while anything runs in the slice (close Chrome first).
-#            Then the reverse of on, the exemption first: stop the unit and
-#            remove the rules, and only then the state file. A step that
-#            fails stops it there, so status never says off while the rules
-#            are still loaded. Prints "direct: off".
-#    status  JSON: {"enabled","unit","rules","dns_ok"}, all true or false.
+#            Then the reverse of on, the exemption first: with SSH direct
+#            off, stop the unit and remove the rules, and only then the state
+#            file; with SSH direct on, load the rules again without Chrome's.
+#            A step that fails stops it there, so status never says off while
+#            Chrome's rule is still loaded. Prints "direct: off".
+#    ssh on  SSH direct. Refused while DIRECT_SSH_PORTS is not valid (one to
+#            eight port numbers, not 53 or 853). Then the same as on, with
+#            "ssh". Prints "ssh direct: on (port 22)".
+#    ssh off The same as off, for SSH direct; nothing needs closing first.
+#            Prints "ssh direct: off".
+#    status  JSON: {"enabled","unit","rules","dns_ok"} for Chrome direct, all
+#            true or false, and "ssh": {"enabled","ports","rules"}.
 #
 #  Allowed passwordless via /etc/sudoers.d/99-vpnkit, with exactly these
 #  arguments. Takes no paths; anything else exits 2.
@@ -35,7 +46,11 @@ UNIT="vpnkit-direct.service"
 CG="/sys/fs/cgroup/$DIRECT_SLICE"
 
 [[ $EUID -eq 0 ]] || { echo "vpnkit-direct: must run as root" >&2; exit 2; }
-[[ $# -eq 1 ]] || { echo "usage: vpnkit-direct on | off | status" >&2; exit 2; }
+usage() { echo "usage: vpnkit-direct on | off | status | ssh on | ssh off" >&2; exit 2; }
+case "$#:${1:-}:${2:-}" in
+  1:on:|1:off:|1:status:|2:ssh:on|2:ssh:off) ;;
+  *) usage ;;
+esac
 
 # The kill switch reads the state file when it is armed: arm it again, for the
 # same server, so it gains or loses the line for the mark.
@@ -71,53 +86,122 @@ dns_ok() {
 
 tf() { if "$@"; then echo true; else echo false; fi; }
 
-case "$1" in
-  on)
+# The exemptions that are on, in a fixed order, with one added or taken out.
+apps() {  # apps [+name | -name]
+  local a out=()
+  for a in chrome ssh; do
+    if [[ "${1:-}" == "+$a" ]] || { [[ "${1:-}" != "-$a" ]] && grep -qx "$a" "$DIRECT_STATE" 2>/dev/null; }; then
+      out+=("$a")
+    fi
+  done
+  printf '%s\n' "${out[@]}"
+}
+# Replace the state file with these lines (none: remove it). Written next to
+# it and renamed, so a reader never sees half a file.
+write_state() {
+  if [[ -z "$1" ]]; then rm -f "$DIRECT_STATE"; return 0; fi
+  local tmp
+  tmp=$(mktemp "$DIRECT_STATE.XXXXXX") || return 1
+  printf '%s\n' "$1" > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$DIRECT_STATE" || { rm -f "$tmp"; return 1; }
+}
+
+# turn_on <app> <how to undo>: add it, load the rules, re-arm the kill switch.
+turn_on() {
+  local before after
+  before=$(apps); after=$(apps "+$1")
+  write_state "$after"
+  if systemctl is-active --quiet "$UNIT"; then
+    # Already running for the other one: load the rules again, in place.
+    if ! /usr/local/bin/vpnkit-direct-rules up; then
+      echo "vpnkit-direct: its rules did not load" >&2
+      write_state "$before"
+      /usr/local/bin/vpnkit-direct-rules up >/dev/null 2>&1 || echo "vpnkit-direct: could not reload the rules; run: $2" >&2
+      rearm_killswitch
+      exit 1
+    fi
+    systemctl enable "$UNIT" >/dev/null 2>&1 || echo "vpnkit-direct: could not enable $UNIT; it will not come back after a reboot" >&2
+  elif ! systemctl enable --now "$UNIT" >/dev/null 2>&1; then
+    echo "vpnkit-direct: $UNIT did not start: journalctl -u $UNIT" >&2
+    # Undo it all. Without a state line the kill switch has no line for the mark.
+    if exemption_down; then
+      write_state "$before"
+      rearm_killswitch
+    else
+      echo "vpnkit-direct: could not undo it; run: $2" >&2
+    fi
+    exit 1
+  fi
+  rearm_killswitch
+}
+
+# turn_off <app>: the exemption first, the state line after.
+turn_off() {
+  local before after
+  before=$(apps); after=$(apps "-$1")
+  if [[ -z "$after" ]]; then
+    # The last one: once the rules are gone, the kill switch's line for the
+    # mark matches nothing. The state file goes only after that.
+    exemption_down || return 1
+    write_state ""
+  else
+    # The other one stays on: load the rules again without this one's. Only
+    # once that worked is the state line gone for good.
+    write_state "$after"
+    if systemctl is-active --quiet "$UNIT" && ! /usr/local/bin/vpnkit-direct-rules up; then
+      write_state "$before"
+      return 1
+    fi
+  fi
+  rearm_killswitch
+}
+
+ssh_ports_word() {  # "port 22" or "ports 22, 2222"
+  local p="$1"
+  if [[ "$p" == *,* ]]; then printf 'ports %s' "${p//,/, }"; else printf 'port %s' "$p"; fi
+}
+
+case "$#:$1:${2:-}" in
+  1:on:)
     if [[ -n "$DIRECT_DNS" ]]; then
       vpnkit_loopback_ip "$DIRECT_DNS" || {
         echo "vpnkit-direct: DIRECT_DNS must be empty or an address in 127.0.0.0/8 (got $DIRECT_DNS)" >&2; exit 1; }
       vpnkit_dns_answers "$DIRECT_DNS" || {
         echo "vpnkit-direct: the resolver at DIRECT_DNS ($DIRECT_DNS) does not answer; start it, or empty DIRECT_DNS" >&2; exit 1; }
     fi
-    printf 'chrome\n' > "$DIRECT_STATE"
-    chmod 644 "$DIRECT_STATE"
-    if ! systemctl enable --now "$UNIT" >/dev/null 2>&1; then
-      echo "vpnkit-direct: $UNIT did not start: journalctl -u $UNIT" >&2
-      # Undo it all. Without a state file the kill switch has no line for the mark.
-      if exemption_down; then
-        rm -f "$DIRECT_STATE"
-        rearm_killswitch
-      else
-        echo "vpnkit-direct: could not undo it; run: sudo vpnkit-direct off" >&2
-      fi
-      exit 1
-    fi
-    rearm_killswitch
+    turn_on chrome "sudo vpnkit-direct off"
     echo "direct: on"
     ;;
-  off)
+  1:off:)
     if grep -qx 'populated 1' "$CG/cgroup.events" 2>/dev/null; then
       names=$(find "$CG" -name cgroup.procs -exec cat {} + 2>/dev/null \
               | while read -r pid; do cat "/proc/$pid/comm" 2>/dev/null || true; done | sort -u | paste -sd, -) || true
       echo "vpnkit-direct: still running with the normal connection: ${names:-unknown}. Close Chrome first." >&2
       exit 1
     fi
-    # The exemption first: once the rules are gone, the kill switch's line for
-    # the mark matches nothing. The state file goes only after that.
-    exemption_down || { echo "vpnkit-direct: Chrome direct is still on" >&2; exit 1; }
-    rm -f "$DIRECT_STATE"
-    rearm_killswitch
+    turn_off chrome || { echo "vpnkit-direct: Chrome direct is still on" >&2; exit 1; }
     echo "direct: off"
     ;;
-  status)
+  2:ssh:on)
+    ports=$(vpnkit_ssh_ports 2>&1) || { echo "vpnkit-direct: $ports" >&2; exit 1; }
+    turn_on ssh "sudo vpnkit-direct ssh off"
+    echo "ssh direct: on ($(ssh_ports_word "$ports"))"
+    ;;
+  2:ssh:off)
+    turn_off ssh || { echo "vpnkit-direct: SSH direct is still on" >&2; exit 1; }
+    echo "ssh direct: off"
+    ;;
+  1:status:)
+    ports=$(vpnkit_ssh_ports 2>/dev/null) || ports=""
     jq -cn --argjson enabled "$(tf vpnkit_direct_on)" \
            --argjson unit "$(tf systemctl is-active --quiet "$UNIT")" \
            --argjson rules "$(tf vpnkit_direct_rules_loaded)" \
            --argjson dns_ok "$(tf dns_ok)" \
-           '{enabled: $enabled, unit: $unit, rules: $rules, dns_ok: $dns_ok}'
+           --argjson ssh_enabled "$(tf vpnkit_ssh_direct_on)" --arg ports "$ports" \
+           --argjson ssh_rules "$(tf vpnkit_ssh_rules_loaded "$ports")" \
+           '{enabled: $enabled, unit: $unit, rules: $rules, dns_ok: $dns_ok,
+             ssh: {enabled: $ssh_enabled, ports: $ports, rules: $ssh_rules}}'
     ;;
   *)
-    echo "usage: vpnkit-direct on | off | status" >&2
-    exit 2
+    usage
     ;;
 esac

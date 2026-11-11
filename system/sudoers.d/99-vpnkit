@@ -32,6 +32,11 @@ Defaults!/usr/local/bin/direct-launch env_keep += "WAYLAND_DISPLAY DISPLAY XDG_C
 @USER@ ALL=(root) NOPASSWD: /usr/local/bin/vpnkit-direct on
 @USER@ ALL=(root) NOPASSWD: /usr/local/bin/vpnkit-direct off
 @USER@ ALL=(root) NOPASSWD: /usr/local/bin/vpnkit-direct status
+# SSH direct on/off, with exactly these arguments: new connections to the
+# ports in DIRECT_SSH_PORTS (root's vpnkit.conf, checked by the script) keep
+# the normal connection while a server is selected. The same kind of choice.
+@USER@ ALL=(root) NOPASSWD: /usr/local/bin/vpnkit-direct ssh on
+@USER@ ALL=(root) NOPASSWD: /usr/local/bin/vpnkit-direct ssh off
 
 # Start Chrome in Chrome direct's slice (only while it is on). The binary is
 # fixed; the arguments go to Chrome, minus the flags that would make it start

@@ -1,9 +1,17 @@
 # ============================================================================
-#  direct.sh - Chrome direct's settings and helpers.
+#  direct.sh - Chrome direct's and SSH direct's settings and helpers.
 #
 #  Installed to /usr/local/lib/vpnkit/direct.sh. Sourced AFTER common.sh (it
-#  uses TARGET_USER, DIRECT_DNS, vpnkit_resolver_safe) by the scripts that deal
-#  with Chrome direct, as root or as you. Side-effect free, like common.sh.
+#  uses TARGET_USER, DIRECT_DNS, DIRECT_SSH_PORTS, vpnkit_resolver_safe) by the
+#  scripts that deal with Chrome direct or SSH direct, as root or as you.
+#  Side-effect free, like common.sh.
+#
+#  Both are opt-in exemptions from the bar that share one mechanism: packets
+#  marked DIRECT_FWMARK take the main table (the normal connection), and the
+#  kill switch lets them out. Chrome direct marks what runs in a slice, SSH
+#  direct new TCP connections to DIRECT_SSH_PORTS. The shared parts (the
+#  table, the policy rules, the NAT, the kill switch's line) are there while
+#  either is on.
 # ============================================================================
 
 # Chrome direct (opt-in): the one app that keeps the normal connection while a
@@ -21,9 +29,44 @@ DIRECT_PATH_DIR="/usr/local/lib/vpnkit/direct-bin"
 # Chrome's session bus is a filtered proxy of the user's (see direct-launch).
 DIRECT_PROXY="/usr/bin/xdg-dbus-proxy"
 
-# Is Chrome direct turned on? Only `vpnkit-direct on` writes the state file.
+# Is Chrome direct turned on? Only `vpnkit-direct on` writes the state file
+# (one line per exemption that is on: "chrome", "ssh").
 vpnkit_direct_on() {
   grep -qx chrome "$DIRECT_STATE" 2>/dev/null
+}
+# Is SSH direct turned on? Only `vpnkit-direct ssh on` writes its line.
+vpnkit_ssh_direct_on() {
+  grep -qx ssh "$DIRECT_STATE" 2>/dev/null
+}
+# Is either on? Then the shared rules belong loaded.
+vpnkit_direct_any_on() {
+  grep -qxE 'chrome|ssh' "$DIRECT_STATE" 2>/dev/null
+}
+
+vpnkit_ssh_ports() {  # vpnkit_ssh_ports [<value>]: DIRECT_SSH_PORTS checked, as "22,2222"
+  # Prints the ports, sorted and each once, separated by commas; or says why
+  # not on stderr and fails. One to eight port numbers (1-65535, no leading
+  # zero), separated by spaces or commas. Not 53 or 853: DNS never leaves
+  # outside a tunnel. Anything else is refused, never partly used.
+  local raw="${1-$DIRECT_SSH_PORTS}" p shown n=0
+  local -a ports=()
+  shown=$(printf '%s' "$raw" | tr -c '[:print:]' '?' | head -c 64)
+  if [[ ! "$raw" =~ ^[0-9,[:space:]]*$ ]]; then
+    echo "DIRECT_SSH_PORTS may hold only port numbers, separated by spaces or commas (it is \"$shown\")" >&2; return 1
+  fi
+  for p in ${raw//,/ }; do
+    n=$((n + 1))
+    if [[ ! "$p" =~ ^[1-9][0-9]{0,4}$ ]] || (( p > 65535 )); then
+      echo "DIRECT_SSH_PORTS: $p is not a port number (1 to 65535)" >&2; return 1
+    fi
+    if (( p == 53 || p == 853 )); then
+      echo "DIRECT_SSH_PORTS: $p is a DNS port; DNS never leaves outside a tunnel" >&2; return 1
+    fi
+    ports+=("$p")
+  done
+  if (( n == 0 )); then echo "DIRECT_SSH_PORTS is empty: name at least one port (22 is the usual one)" >&2; return 1; fi
+  if (( n > 8 )); then echo "DIRECT_SSH_PORTS names $n ports; at most 8 are allowed" >&2; return 1; fi
+  printf '%s\n' "${ports[@]}" | sort -nu | paste -sd, -
 }
 
 vpnkit_chrome_outside_pids() {  # vpnkit_chrome_outside_pids <user>
@@ -66,10 +109,48 @@ vpnkit_dns_answers() {  # vpnkit_dns_answers <IPv4 address>: true when a DNS ser
   [[ "$reply" =~ ^766b[89a-f] ]]
 }
 
-vpnkit_direct_rules_loaded() {  # Chrome direct's table and both its policy rules are in place
+vpnkit_direct_shared_loaded() {  # the table and both policy rules are in place (root)
   nft list table inet vpnkit_direct >/dev/null 2>&1 \
     && [[ -n "$(ip -4 rule list priority 90 fwmark "$DIRECT_FWMARK" table main 2>/dev/null)" ]] \
     && [[ -n "$(ip -4 rule list priority 89 fwmark "$DIRECT_FWMARK" to 100.64.0.0/10 table 52 2>/dev/null)" ]]
+}
+
+# The rules vpnkit-direct-rules writes carry a comment naming their
+# exemption ("chrome", "ssh"); these read them back from the kernel.
+_vpnkit_direct_has() {  # _vpnkit_direct_has <jq test on the chain's rules, given as $r> [jq args...]
+  local chain
+  chain=$(nft -j list chain inet vpnkit_direct output 2>/dev/null) || return 1
+  jq -e --argjson m "$DIRECT_FWMARK" "${@:2}" \
+    "[.nftables[]? | .rule? | select(type == \"object\")] as \$r | $1" >/dev/null 2>&1 <<<"$chain"
+}
+
+vpnkit_direct_rules_loaded() {  # Chrome direct's rules: the shared ones and its slice's mark (root)
+  vpnkit_direct_shared_loaded && _vpnkit_direct_has \
+    '$r | any(.comment == "chrome" and any(.expr[]?; .mangle?.key?.meta?.key? == "mark" and .mangle?.value? == $m))'
+}
+
+vpnkit_ssh_rules_loaded() {  # vpnkit_ssh_rules_loaded <ports "22,2222">: SSH direct's rules for exactly those ports (root)
+  # The shared rules; a rule that gives a new TCP connection to one of those
+  # ports (and no other) the mark on its connection; and the rule that puts
+  # the connection's mark on each of its packets.
+  [[ "$1" =~ ^[0-9]+(,[0-9]+)*$ ]] || return 1
+  vpnkit_direct_shared_loaded && _vpnkit_direct_has '
+    def ports: [.expr[]? | .match? | select(.left?.payload? == {"protocol": "tcp", "field": "dport"}) | .right
+                | if type == "object" then .set[]? else . end
+                | if type == "object" and has("range") then range(.range[0]; .range[1] + 1) else . end] | sort;
+    def sets(k): any(.expr[]?; .mangle?.key?[k]?.key? == "mark" and .mangle?.value? == $m);
+    ($r | map(select(.comment == "ssh"))) as $s
+    | ($s | any(ports == $want and sets("ct")))
+      and ($s | any(any(.expr[]?; .match?.left?.ct?.key? == "mark" and .match?.right? == $m) and sets("meta")))' \
+    --argjson want "[$1]"
+}
+
+vpnkit_kill_lets_direct_out() {  # the armed kill switch has its line for DIRECT_FWMARK (root)
+  local t
+  t=$(nft -j list chain inet vpnkit_kill output 2>/dev/null) || return 1
+  jq -e --argjson m "$DIRECT_FWMARK" '[.nftables[]? | .rule? | select(type == "object")]
+    | any(any(.expr[]?; .match?.left?.meta?.key? == "mark" and .match?.right? == $m) and any(.expr[]?; has("accept")))' \
+    >/dev/null 2>&1 <<<"$t"
 }
 
 _vpnkit_in_root() {  # _vpnkit_in_root <pid> <absolute path>: that file as <pid> sees it

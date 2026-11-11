@@ -1,5 +1,5 @@
 [Unit]
-Description=Chrome direct: keep its cgroup and its rules loaded (omarchy-proton)
+Description=Chrome direct and SSH direct: keep the slice's cgroup and their rules loaded (omarchy-proton)
 Documentation=https://github.com/ralphk-86/omarchy-proton
 # The rules match the slice's cgroup by an id nftables looks up when they are
 # loaded, so the slice must exist first and for as long as this unit is
