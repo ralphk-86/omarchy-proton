@@ -7,24 +7,29 @@
 #    make-preview.sh capture      a screenshot-mode capture of the open panel,
 #                                 and compare.png: drawn panel next to it
 #    make-preview.sh bar-states   screenshots/bar-states.png (captured)
+#    make-preview.sh opt-in       screenshots/opt-in.png, drawn (no capture):
+#                                 the panel with the Firefox tunnel, Chrome
+#                                 direct and SSH direct on
 #    make-preview.sh              all of the above
 #
 #  preview.png is what the Omarchy plugin marketplace shows (resized to fit
 #  1600 px on the detail page and 720 px for the cards) and what heads the
 #  README (full size, for high-density screens). A screen capture is 2560 px
 #  wide, so enlarging pieces of it would only blur them. Instead, the bar
-#  strip and the three panel rows are redrawn here with the widget's own
+#  strip and the four panel rows are redrawn here with the widget's own
 #  font, glyphs, colours and proportions, measured from a capture, at three
 #  times their size. `capture` puts the drawing next to a real capture
 #  (compare.png) so it can be checked against the widget.
 #
 #  The marketplace cards are 175 px tall and 352 px (three columns) or about
 #  518 px (two columns) wide and crop the image around the centre
-#  (object-fit: cover). So the title and the four features are big, short and
+#  (object-fit: cover). So the title and the five features are big, short and
 #  inside the middle 60% of the height.
 #
-#  Data is the made-up state of tests/preview/status.json: invented servers,
-#  addresses from the ranges reserved for documentation.
+#  Data is the made-up state of tests/preview/status.json (opt-in.png:
+#  status-direct.json): invented servers, addresses from the ranges reserved
+#  for documentation. compose, cards and opt-in only draw: they never touch
+#  the desktop.
 #
 #  Every step that touches the desktop uses only screenshot mode (the
 #  widget's demoStatusFile setting), `omarchy bar set`, opening and closing
@@ -67,6 +72,7 @@ CAPTURE="$WORK/capture.png"
 trap 'rm -f -- "$CAPTURE"' EXIT
 OUT="${OUT:-$REPO/preview.png}"
 BAR_STATES="${BAR_STATES:-$REPO/screenshots/bar-states.png}"
+OPT_IN="${OPT_IN:-$REPO/screenshots/opt-in.png}"
 WORKSPACE="${WORKSPACE:-8}"
 
 # Where the panel and the widget are in a capture (screenshot pixels).
@@ -122,12 +128,9 @@ r() {  # r <x0> <y0> <x1> <y1> <stroke colour> <fill colour> <stroke width>
               -stroke none)
 }
 
-# The panel, shortened to three parts: the header (server, kill switch, IP),
-# the torrents line, and the leak check with its saved report.
-draw_panel() {  # draw_panel <scale> <out>
-  K="$1"; draw_args=()
-  local w=412 h=262
-  r 1 1 410 260 "$ACCENT" "$BG" 3
+# The parts the panels below share: the header (server, kill switch, IP),
+# the torrents line, and the Firefox tunnel's line under it.
+draw_top() {
   t 17 51 28 "$FG" "$FONT" "$(g 0xF033E)"
   t 54 36 16.2 "$FG" "$BOLD" "Switzerland 7"
   t 54 57 11 "$DIM" "$BOLD" "THROUGH THE VPN, KILL SWITCH ON" 1.75
@@ -138,28 +141,88 @@ draw_panel() {  # draw_panel <scale> <out>
   t 60 105 11.3 "$DIM" "$FONT" "198.51.100.23 · qBittorrent is running"
   t 60 120 11.3 "$DIM" "$FONT" "inside the tunnel"
   t 365 108 16 "$FG" "$FONT" "$(g 0xF018F)"
-  r 19 137 394 137 "$LINE" "$LINE" 1
-  t 33 175 14 "$DIM" "$FONT" "$(g 0xF0565)"
-  t 60 166 13.8 "$FG" "$FONT" "Check for leaks"
-  t 60 183 11.3 "$DIM" "$FONT" "31 checks passed, no leaks found"
-  t 60 211 11.3 "$DIM" "$FONT" "Report saved in ~/Documents/VPN leak checks. To"
-  t 60 226 11.3 "$DIM" "$FONT" "share it, use latest-redacted.txt: addresses and"
-  t 60 241 11.3 "$DIM" "$FONT" "keys are masked."
-  t 365 175 16 "$FG" "$FONT" "$(g 0xF024B)"
-  magick -size "$(awk -v k="$K" -v v=$w 'BEGIN{printf "%d", v*k}')x$(awk -v k="$K" -v v=$h 'BEGIN{printf "%d", v*k}')" \
-    xc:"$BG" "${draw_args[@]}" "$2"
+  t 32 174 14 "$FG" "$FONT" "$(g 0xF0239)"
+  t 60 158 13.8 "$FG" "$FONT" "Firefox: Sweden 21"
+  t 60 175 11.3 "$DIM" "$FONT" "198.51.100.61 · Firefox is running inside"
+  t 60 190 11.3 "$DIM" "$FONT" "its tunnel"
+  t 365 178 16 "$FG" "$FONT" "$(g 0xF018F)"
+}
+# A switch row's toggle, on: track and knob. toggle <title baseline>
+toggle() {
+  r 331 $(( $1 + 3 )) 383 $(( $1 + 31 )) "#333646" "#333646" 0
+  r 359 $(( $1 + 7 )) 379 $(( $1 + 27 )) "$FG" "$FG" 0
+}
+render() {  # render <w> <h> <out>: the frame, then everything drawn
+  magick -size "$(awk -v k="$K" -v v="$1" 'BEGIN{printf "%d", v*k}')x$(awk -v k="$K" -v v="$2" 'BEGIN{printf "%d", v*k}')" \
+    xc:"$BG" -stroke "$ACCENT" -strokewidth "$(awk -v k="$K" 'BEGIN{print 3*k}')" -fill "$BG" \
+    -draw "rectangle $(awk -v k="$K" -v w="$1" -v h="$2" 'BEGIN{printf "%d,%d %d,%d", k, k, (w-2)*k, (h-2)*k}')" \
+    -stroke none "${draw_args[@]}" "$3"
 }
 
-# The widget in the bar: closed lock, regular IP, torrent IP, and the
-# underline the bar draws under a widget whose panel is open.
+# The panel, shortened to four parts: the header, the torrents line, the
+# Firefox line, and the leak check (without the note on its saved report,
+# which would push the bar strip out of the two-column card's crop).
+draw_panel() {  # draw_panel <scale> <out>
+  K="$1"; draw_args=()
+  draw_top
+  r 19 207 394 207 "$LINE" "$LINE" 1
+  t 33 245 14 "$DIM" "$FONT" "$(g 0xF0565)"
+  t 60 236 13.8 "$FG" "$FONT" "Check for leaks"
+  t 60 253 11.3 "$DIM" "$FONT" "31 checks passed, no leaks found"
+  t 365 245 16 "$FG" "$FONT" "$(g 0xF024B)"
+  render 412 274 "$2"
+}
+
+# The panel with every opt-in on (tests/preview/status-direct.json): the
+# header, torrents and Firefox lines, the Chrome direct and SSH direct lines,
+# then the panel's last three rows, their switches on.
+draw_opt_in() {  # draw_opt_in <scale> <out>
+  K="$1"; draw_args=()
+  draw_top
+  t 33 236 14 "$FG" "$FONT" "$(g 0xF059F)"
+  t 60 228 13.8 "$FG" "$FONT" "Chrome: direct"
+  t 60 245 11.3 "$DIM" "$FONT" "Your own IP · DNS 127.0.0.1"
+  t 33 298 14 "$FG" "$FONT" "$(g 0xF059F)"
+  t 60 282 13.8 "$FG" "$FONT" "SSH: direct (port 22)"
+  t 60 299 11.3 "$DIM" "$FONT" "Your own IP for new SSH connections · everything"
+  t 60 314 11.3 "$DIM" "$FONT" "else follows the bar"
+  r 19 335 394 335 "$LINE" "$LINE" 1
+  t 33 371 14 "$DIM" "$FONT" "$(g 0xF059F)"
+  t 60 362 13.8 "$FG" "$FONT" "Chrome uses your own IP"
+  t 60 379 11.3 "$DIM" "$FONT" "Only Chrome skips the VPN. Close Chrome"
+  t 60 394 11.3 "$DIM" "$FONT" "to turn this off"
+  toggle 362
+  t 33 431 14 "$DIM" "$FONT" "$(g 0xF059F)"
+  t 60 426 13.8 "$FG" "$FONT" "SSH uses your own IP"
+  t 60 443 11.3 "$DIM" "$FONT" "New connections to port 22 skip the VPN"
+  toggle 422
+  t 33 480 14 "$DIM" "$FONT" "$(g 0xF0208)"
+  t 60 475 13.8 "$FG" "$FONT" "Show IP addresses in the bar"
+  t 60 492 11.3 "$DIM" "$FONT" "Icons and both addresses"
+  toggle 471
+  render 412 510 "$2"
+}
+
+opt_in() {
+  need magick; fonts
+  draw_opt_in 3 "$OPT_IN.tmp.png"
+  magick "$OPT_IN.tmp.png" -strip -define png:compression-level=9 "$OPT_IN"
+  rm -f -- "$OPT_IN.tmp.png"
+  echo "wrote $OPT_IN ($(magick identify -format '%wx%h' "$OPT_IN"))"
+}
+
+# The widget in the bar: closed lock, regular IP, torrent IP, Firefox IP,
+# and the underline the bar draws under a widget whose panel is open.
 draw_bar() {  # draw_bar <scale> <out>
   K="$1"; draw_args=()
   t 11 19 12 "$FG" "$FONT" "$(g 0xF033E)"
   t 28 19 13.8 "$FG" "$FONT" "203.0.113.47"
   t 143 19 12 "$FG" "$FONT" "$(g 0xF01DA)"
   t 160 19 13.8 "$FG" "$FONT" "198.51.100.23"
-  r 62 25 213 26 "$ACCENT" "$ACCENT" 0
-  magick -size "$(awk -v k="$K" 'BEGIN{printf "%d", 282*k}')x$(awk -v k="$K" 'BEGIN{printf "%d", 28*k}')" \
+  t 283 19 12 "$FG" "$FONT" "$(g 0xF0239)"
+  t 300 19 13.8 "$FG" "$FONT" "198.51.100.61"
+  r 130 25 281 26 "$ACCENT" "$ACCENT" 0
+  magick -size "$(awk -v k="$K" 'BEGIN{printf "%d", 422*k}')x$(awk -v k="$K" 'BEGIN{printf "%d", 28*k}')" \
     xc:"$BG" "${draw_args[@]}" "$2"
 }
 
@@ -178,10 +241,11 @@ compose() {
     -font "$FONT" -fill "$DIM" -pointsize 52 -kerning 4 -annotate +160+470 "UNOFFICIAL OMARCHY BAR WIDGET" \
     -kerning 0 -font "$BOLD" -fill "$TITLE" -pointsize 208 -annotate +150+690 "Proton VPN" \
     -font "$BOLD" -pointsize 104 \
-    -fill "$ACCENT" -annotate +164+880  "$(g 0xF033E)" -fill "$TITLE" -annotate +300+880  "Kill switch" \
-    -fill "$ACCENT" -annotate +164+1036 "$(g 0xF01DA)" -fill "$TITLE" -annotate +300+1036 "Torrent tunnel" \
-    -fill "$ACCENT" -annotate +164+1192 "$(g 0xF0565)" -fill "$TITLE" -annotate +300+1192 "Leak checks" \
-    -fill "$ACCENT" -annotate +164+1348 "$(g 0xF024B)" -fill "$TITLE" -annotate +300+1348 "Drop-in configs" \
+    -fill "$ACCENT" -annotate +164+860  "$(g 0xF033E)" -fill "$TITLE" -annotate +300+860  "Kill switch" \
+    -fill "$ACCENT" -annotate +164+988  "$(g 0xF01DA)" -fill "$TITLE" -annotate +300+988  "Torrent tunnel" \
+    -fill "$ACCENT" -annotate +160+1116 "$(g 0xF0239)" -fill "$TITLE" -annotate +300+1116 "Firefox tunnel" \
+    -fill "$ACCENT" -annotate +164+1244 "$(g 0xF0565)" -fill "$TITLE" -annotate +300+1244 "Leak checks" \
+    -fill "$ACCENT" -annotate +164+1372 "$(g 0xF024B)" -fill "$TITLE" -annotate +300+1372 "Drop-in configs" \
     -font "$FONT" -fill "$DIM" -pointsize 40 -annotate +160+1610 "Unofficial. Not affiliated with Proton AG. Made-up servers and documentation IP addresses." \
     -strip -define png:compression-level=9 "$OUT"
   echo "wrote $OUT ($(magick identify -format '%wx%h' "$OUT"), $(du -h "$OUT" | cut -f1))"
@@ -237,7 +301,7 @@ capture() {
   hyprctl dispatch "hl.dsp.focus({ workspace = \"$WORKSPACE\" })" >/dev/null; sleep 1.2
   omarchy-shell shell summon "$ID" '{}' >/dev/null; sleep 2.5
   [ "$(hyprctl activeworkspace -j | jq .id)" = "$WORKSPACE" ] \
-    && grab "$PANEL_X" "$PANEL_Y" "$PANEL_W" 262 "$WORK/panel-real.png" && ok=1
+    && grab "$PANEL_X" "$PANEL_Y" "$PANEL_W" 274 "$WORK/panel-real.png" && ok=1
   omarchy-shell shell hide "$ID" >/dev/null 2>&1 || true
   hyprctl dispatch "hl.dsp.focus({ workspace = \"$prev\" })" >/dev/null
   omarchy bar set "$ID" demoStatusFile "" >/dev/null
@@ -282,6 +346,7 @@ case "${1:-all}" in
   cards) cards ;;
   capture) capture ;;
   bar-states) bar_states ;;
-  all) compose; cards; capture; bar_states ;;
-  *) echo "usage: $0 [compose|cards|capture|bar-states]"; exit 1 ;;
+  opt-in) opt_in ;;
+  all) compose; cards; opt_in; capture; bar_states ;;
+  *) echo "usage: $0 [compose|cards|capture|bar-states|opt-in]"; exit 1 ;;
 esac

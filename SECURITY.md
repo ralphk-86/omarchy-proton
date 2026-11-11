@@ -10,8 +10,9 @@ rather than in a public issue. Include the version (`cat /usr/local/lib/vpnkit/V
 you observed and how to reproduce it. Do not include private keys or your WireGuard configs.
 
 A leak is a vulnerability here: traffic that leaves outside a tunnel while a server is
-selected, DNS answered outside the tunnel, or a qBittorrent process that reaches the network
-outside its namespace.
+selected, DNS answered outside the tunnel, or a qBittorrent process (or, with the Firefox
+tunnel on, a Firefox the kit started) that reaches the network outside its namespace. Chrome
+direct and SSH direct are deliberate exceptions, described below.
 
 ## What runs as root
 
@@ -100,6 +101,14 @@ not only `ssh`'s: matching by port is what lets `scp`, `rsync` and `git` over ss
 wrappers. DNS is not part of it (53 and 853 are refused as ports, and the kill switch's DNS
 reject comes before its line for the mark). It shares Chrome direct's mark, policy rules, NAT
 and kill-switch line, which are loaded while either is on.
+
+The Firefox tunnel (off until a Firefox config is imported) is no hole: it confines the
+packaged Firefox to a namespace whose only way out is its own WireGuard link, like
+qBittorrent's. What it does not cover, by design: a Firefox not started through the kit (any
+other build, or `/usr/lib/firefox/firefox` run directly) runs on the regular connection, and
+is flagged in the status and the leak check, and the packaged one is refused meanwhile; apps
+Firefox hands files and links to (over the session bus it keeps, as qBittorrent does) run
+outside the namespace; and software running as you can do either on purpose.
 
 See "Limits" in the README. In short: the kill switch protects against accidents, not against
 software running as you, and the external-IP display makes a request to a third party.

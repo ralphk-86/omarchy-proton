@@ -2,11 +2,13 @@
 name: diagnose-vpn
 description: >
   Diagnose a problem with the Omarchy Proton VPN plugin (vpnkit): a failed leak
-  check, a VPN that dropped, a torrent tunnel that is down, or qBittorrent running
-  outside its tunnel. Use when a "Leaks found", "VPN dropped", "Torrent tunnel down"
-  or "qBittorrent is outside the tunnel" notification is acted on, or when asked why
-  the VPN, kill switch or torrent tunnel misbehaves. Triggers: vpn-verify FAIL,
-  vpn leak, DNS leak, kill switch, qbtvpn, vpn-toggle, vpn-rescue.
+  check, a VPN that dropped, a torrent or Firefox tunnel that is down, or
+  qBittorrent or Firefox running outside its tunnel. Use when a "Leaks found",
+  "VPN dropped", "Torrent tunnel down", "qBittorrent is outside the tunnel" or
+  "Firefox is outside its tunnel" notification is acted on, or when asked why the
+  VPN, kill switch, torrent tunnel, Firefox tunnel, Chrome direct or SSH direct
+  misbehaves. Triggers: vpn-verify FAIL, vpn leak, DNS leak, kill switch, qbtvpn,
+  ffvpn, vpn-toggle, vpn-direct, vpn-rescue.
 ---
 
 # Diagnosing the VPN
@@ -26,20 +28,23 @@ These come before everything else, including a user who is in a hurry.
    (`grep -c '^PrivateKey'`), never its value.
 2. **Diagnosis reads; it does not weaken protection.** Never remove the kill switch
    (`vpnkit-killswitch off`, `nft delete table inet vpnkit_kill`), never flush
-   nftables, never delete the `qbtvpn` namespace or its firewall, never re-enable
-   IPv6, never edit `/etc/nsswitch.conf` or anything the plugin installed, and never
-   start qBittorrent by its full path (`/usr/bin/qbittorrent`), which skips the
-   tunnel.
+   nftables, never delete the `qbtvpn` or `ffvpn` namespace or their firewalls,
+   never re-enable IPv6, never edit `/etc/nsswitch.conf` or anything the plugin
+   installed, never start qBittorrent or Firefox by its full path
+   (`/usr/bin/qbittorrent`, `/usr/lib/firefox/firefox`), which skips the tunnel,
+   and never turn Chrome direct or SSH direct on to make something work: each is a
+   deliberate hole in the kill switch that only the user decides on.
 3. **Ask before any change.** Explain what you want to run and why, and wait for a
    yes. This includes `sudo`, restarting services, and connecting or disconnecting a
    server. The user may be relying on the kill switch while you work.
 4. **SSH and remote servers.** Some servers only accept SSH from the home IP. That is
-   what `BYPASS_CIDRS` in `/etc/vpnkit/vpnkit.conf` is for. Do not suggest firewall or
-   SSH changes on remote machines.
+   what SSH direct (`vpn-direct ssh on`, the user's choice) and `BYPASS_CIDRS` in
+   `/etc/vpnkit/vpnkit.conf` are for. Do not suggest firewall or SSH changes on
+   remote machines.
 
 ## How the plugin works
 
-Two separate tunnels, both WireGuard:
+Up to three separate tunnels, all WireGuard, and two opt-in exceptions:
 
 - **Regular traffic** uses NetworkManager profiles named `<prefix>-<server>`
   (prefix is in `vpn-status --json`, usually `proton`). The user picks one in the
@@ -56,13 +61,24 @@ Two separate tunnels, both WireGuard:
   and a default-deny firewall, brought up by `qbt-netns.service`. The server it uses
   is named in `/etc/vpnkit/torrent-server`; its config is
   `/etc/wireguard/vpnkit-torrent.conf`. `/usr/local/bin/qbittorrent` is a wrapper
-  that only starts qBittorrent inside the namespace. One server cannot carry both
-  tunnels at once.
+  that only starts qBittorrent inside the namespace. One server carries one of
+  regular traffic, torrents and Firefox at a time.
+- **Firefox** (only once the user opted in by importing a config from the drop
+  folder's `firefox/`) runs in the namespace `ffvpn` (interface `pff0`), built
+  the same way by `ff-netns.service` from `/etc/wireguard/vpnkit-firefox.conf`;
+  its server is named in `/etc/vpnkit/firefox-server`. `/usr/local/bin/firefox`
+  starts the packaged Firefox inside through `ff-launch`, and refuses while any
+  Firefox of the user (any build) runs outside. Its exit must differ from the
+  torrent tunnel's. `sudo vpnkit-sync firefox off` turns it off.
+- **Chrome direct** and **SSH direct** (off unless the user turned them on,
+  `/etc/vpnkit/direct-apps`) let Chrome's slice, or new TCP connections to
+  `DIRECT_SSH_PORTS`, out on the normal connection through the table
+  `inet vpnkit_direct` (mark 51821) and one line in the kill switch.
 - **The NetworkManager dispatcher** `/etc/NetworkManager/dispatcher.d/50-vpnkit`
   re-arms the kill switch and reconnects the chosen server when the network changes.
 - IPv6 is disabled by `/etc/sysctl.d/99-vpnkit-disable-ipv6.conf` and in each profile.
 
-Settings: `/etc/vpnkit/vpnkit.conf`. Helpers: `/usr/local/bin/vpn*`, `qbt-*`.
+Settings: `/etc/vpnkit/vpnkit.conf`. Helpers: `/usr/local/bin/vpn*`, `qbt-*`, `ff-*`.
 Their headers explain each one; read them rather than guessing.
 
 ## Establish the facts
@@ -90,6 +106,7 @@ Their headers explain each one; read them rather than guessing.
    - `sudo nft list table inet vpnkit_kill`
    - `sudo ip netns exec qbtvpn ip route`, `sudo ip netns exec qbtvpn wg show`
    - `systemctl status qbt-netns.service`, `journalctl -u qbt-netns.service -n 50`
+   - the same for Firefox: `sudo ip netns exec ffvpn wg show`, `ff-netns.service`
    - `journalctl -u NetworkManager --since "-15 min"` for the desktop tunnel
    - `pgrep -a qbittorrent` and `sudo ip netns identify <pid>` for a stray qBittorrent
 
@@ -132,6 +149,10 @@ Their headers explain each one; read them rather than guessing.
   output names the launcher.
 - *Kill switch not armed while a server is chosen*: the dispatcher did not run, or
   the table was removed by hand. Reselecting the server re-arms it.
+- *Firefox outside its tunnel*: a Firefox (any build: Mozilla's tarball, a flatpak,
+  a snap, or `/usr/lib/firefox/firefox` started directly) runs outside `ffvpn`.
+  The check names the pid. Closing it is the fix; the next start from the launcher
+  or `firefox` lands inside.
 - *Handshake too old / namespace missing*: usually the torrent server is down;
   `sudo systemctl restart qbt-netns.service`, or choose another torrent server in the
   panel. qBittorrent has no network meanwhile, which is correct.
@@ -140,12 +161,13 @@ Their headers explain each one; read them rather than guessing.
 
 - Pick another server: `vpn-toggle <server>` (keeps the kill switch on).
 - Re-import configs: the panel's Refresh, or `vpn-import`.
-- Restart the torrent tunnel: `sudo systemctl restart qbt-netns.service`.
+- Restart the torrent tunnel: `sudo systemctl restart qbt-netns.service`; the
+  Firefox tunnel: `sudo systemctl restart ff-netns.service` (close Firefox first).
 - Rerun setup: the panel's *Finish setup* / *Update the system part*, or the plugin's
   `install.sh`. It is idempotent.
 - **Last resort, and say what it costs:** `vpn-rescue` gets the normal connection
   back by turning the VPN and the kill switch off. Regular traffic then uses the
-  user's real IP. The torrent tunnel is not touched.
+  user's real IP. The torrent and Firefox tunnels are not touched.
 
 ## Report
 

@@ -108,28 +108,32 @@ omarchy bar set $ID demoStatusFile ""    # back to real data
 
 `tests/preview/status-torrents.json` is the same state with the Torrents tab open
 (`demo_tab`), `status-normal.json` shows the normal connection, for the bar-states image, and
-`status-direct.json` is the first state with Chrome direct on (the "Chrome: direct" line).
+`status-direct.json` is the first state with Chrome direct and SSH direct on (the
+"Chrome: direct" and "SSH: direct" lines). All of them have the Firefox tunnel on.
 
-`screenshots/chrome-direct.png` shows the panel with Chrome direct on. It is drawn with the same
-helpers (made-up data from `status-direct.json`), not captured.
+`screenshots/opt-in.png` shows the panel with the Firefox tunnel, Chrome direct and SSH direct
+on. It is drawn with the same helpers (made-up data from `status-direct.json`), not captured.
 
 The README shows both tabs in full (`screenshots/regular.png`, `screenshots/torrents.png`,
-cropped to 1144x1340 at the top right of a 2560x1440 screen) and the bar in four states
-(`screenshots/bar-states.png`). The root `preview.png` (3200x1800) is the marketplace image
-and heads the README. `tests/preview/make-preview.sh` makes all of them except the two tab
-screenshots, without any key presses or clicks:
+cropped to 1144x1340 at the top right of a 2560x1440 screen; captured before 0.5.0, so without
+the Firefox line and the SSH switch) and the bar in four states (`screenshots/bar-states.png`).
+The root `preview.png` (3200x1800) is the marketplace image and heads the README.
+`tests/preview/make-preview.sh` makes all of them except the two tab screenshots, without any
+key presses or clicks:
 
 - `compose`: `preview.png`. The bar strip and the panel rows are drawn with the widget's font,
   glyphs and colours at three times their size, so the image stays sharp at full size; the
-  title and four features are large and in the middle 60% of the height, because the
+  title and five features are large and in the middle 60% of the height, because the
   marketplace's cards crop around the centre. It also writes the 1600 and 720 px copies the
   marketplace serves.
+- `opt-in`: `screenshots/opt-in.png`, drawn the same way.
 - `cards`: the marketplace card at 2x (three and two columns), alone and with name and
   description, to check the crop.
 - `capture`: a screenshot-mode capture next to the drawn panel (`compare.png`), to check the
   drawing still matches the widget after a change to the panel.
 - `bar-states`: four captures of the bar from the demo files, at the screen's resolution.
 
-It needs ImageMagick 7 and the JetBrainsMono Nerd Font; `capture` and `bar-states` need an
+`compose`, `cards` and `opt-in` only draw and never touch the desktop. It needs ImageMagick 7
+and the JetBrainsMono Nerd Font; `capture` and `bar-states` need an
 empty workspace (default 8) and assume a 2560x1440 screen at scale 1.25 (coordinates can be
 set in the environment).

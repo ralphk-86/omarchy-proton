@@ -6,6 +6,8 @@ Guidance for Claude Code (and any other agent) working in this repository.
 
 `omarchy-proton` is an Omarchy shell plugin: Proton VPN over WireGuard in the bar, with a kill
 switch, and a second always-on tunnel in a network namespace that qBittorrent cannot leave.
+Opt-in: a third such tunnel for Firefox, and Chrome direct and SSH direct (the home IP for
+Chrome, or for new SSH connections, while a server is selected).
 Plugin id `io.github.ralphk-86.omarchy-proton`. The engine underneath is called `vpnkit`
 (paths `/etc/vpnkit`, `/usr/local/lib/vpnkit`, helpers `vpnkit-*`); that name is internal and
 stays.
@@ -21,7 +23,7 @@ Design notes, plans and agent working files are kept outside it (`docs/superpowe
 - `SECURITY.md`: the table of root helpers. Keep it true.
 - `tests/vm/README.md`: what the test VM is and is not.
 
-## Architecture in six lines
+## Architecture in seven lines
 
 1. `VpnWidget.qml` shows `vpn-status --json` and runs commands. No VPN logic in QML.
 2. `system/bin/*` are installed to `/usr/local/bin`. `vpn-*` are user commands; `vpnkit-*`,
@@ -34,8 +36,8 @@ Design notes, plans and agent working files are kept outside it (`docs/superpowe
    by `vpn-toggle off`.
 4. Torrent tunnel = namespace `qbtvpn` with interface `pqbt0`, built by `qbt-netns-up` from
    `/etc/wireguard/vpnkit-torrent.conf`. `/usr/local/bin/qbittorrent` shadows the real binary.
-5. Configs arrive through the drop folder (`~/Documents/WireGuard`, `torrent/` inside it for
-   the torrent tunnel); `vpnkit-sync` imports and then removes them from the folder.
+5. Configs arrive through the drop folder (`~/Documents/WireGuard`, `torrent/` and `firefox/`
+   inside it for the two tunnels); `vpnkit-sync` imports and then removes them from the folder.
 6. Chrome direct (opt-in) = slice `vpnkitdirect.slice` (only root places processes there),
    nftables table `inet vpnkit_direct` marking its packets 51821 for the main table, and
    `meta mark 51821 accept` in the kill switch (after its DNS reject) only while on.
@@ -44,7 +46,17 @@ Design notes, plans and agent working files are kept outside it (`docs/superpowe
    (no `org.freedesktop.systemd1`, else Chrome moves itself out) and the kit's `xdg-open`
    first in its PATH. Its helpers live in `system/lib/direct.sh`. SSH direct (opt-in, same
    mark, rules, unit and kill-switch line, loaded while either is on) marks new TCP
-   connections to `DIRECT_SSH_PORTS` (default 22): `vpnkit-direct ssh on|off`.
+   connections to `DIRECT_SSH_PORTS` (default 22) through their conntrack mark, so open
+   connections keep their path: `vpnkit-direct ssh on|off`.
+7. Firefox tunnel (opt-in) = namespace `ffvpn` with interface `pff0`, built by `ff-netns-up`
+   from `/etc/wireguard/vpnkit-firefox.conf` with the same `vpnkit_netns_up`
+   (`system/lib/netns.sh`) as the torrent tunnel. On only while a Firefox server is chosen
+   (`vpnkit-sync firefox <name>|off`, or a config in `firefox/`; recorded in
+   `/etc/vpnkit/firefox-server`). The `firefox` wrapper starts the packaged Firefox inside
+   through `ff-launch` and refuses while any Firefox build of the user runs outside (main
+   processes only: Firefox's sandboxed children have namespaces of their own);
+   `vpn-firefox-launcher` makes the launcher entry follow the opt-in. Its exit and key must
+   differ from the torrent tunnel's.
 
 ## Non-negotiable rules
 

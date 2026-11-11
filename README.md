@@ -3,13 +3,14 @@
 Proton VPN kill switch, torrent tunnel & leak checks in the [Omarchy](https://omarchy.org/) bar.
 An unofficial bar widget for Proton VPN over WireGuard: pick your own IP or a Proton server, the
 kill switch is always on while a server is selected, qBittorrent has its own tunnel it cannot
-leave, every leak check is saved as a report, and an optional switch keeps Google Chrome on your
-own connection while everything else follows the VPN.
+leave, and every leak check is saved as a report. Three things are off until you turn them on:
+a tunnel of its own for Firefox, on a server of its own; Google Chrome on your own connection;
+and SSH on your own connection, for servers that only let your home address in.
 
 Listed in the [Omarchy plugin marketplace](https://plugins.omarchy.org/plugin.html?id=io.github.ralphk-86.omarchy-proton).
 What changed in each version: [changelog](CHANGELOG.md).
 
-<img src="preview.png" alt="The widget in the bar and its panel, next to the four features" width="100%">
+<img src="preview.png" alt="The widget in the bar and its panel, next to the five features" width="100%">
 
 > Unofficial. This is a community plugin, not affiliated with or endorsed by Proton AG. It
 > uses the standard WireGuard configs you download from your own Proton VPN account.
@@ -40,7 +41,7 @@ Details: [Install](#install).
 **Contents:** [Quick start](#quick-start) · [What you choose](#what-you-choose) ·
 [How to use it](#how-to-use-it) · [Requirements](#requirements) · [Install](#install) ·
 [Add servers](#add-servers) · [How the protection works](#how-the-protection-works) ·
-[Chrome direct](#chrome-direct) · [SSH direct](#ssh-direct) ·
+[Firefox tunnel](#firefox-tunnel) · [Chrome direct](#chrome-direct) · [SSH direct](#ssh-direct) ·
 [Check it, and get out of trouble](#check-it-and-get-out-of-trouble) ·
 [Using it with Tailscale](#using-it-with-tailscale) ·
 [DNS and Omarchy's DNS setting](#dns-and-omarchys-dns-setting) · [Settings](#settings) ·
@@ -65,9 +66,10 @@ Details for each step follow below.
 
 ## What you choose
 
-Your regular traffic (browser, apps, everything except qBittorrent, and except Chrome if you
-turn on [Chrome direct](#chrome-direct)) goes out one of two ways, and you pick which in the
-panel:
+Your regular traffic (browser, apps, everything except qBittorrent, and except what you turn
+on below: Firefox in [its tunnel](#firefox-tunnel), Chrome under
+[Chrome direct](#chrome-direct), SSH under [SSH direct](#ssh-direct)) goes out one of two ways,
+and you pick which in the panel:
 
 - **Normal connection:** your own IP address, no VPN. This is the default, and what you get
   after a reboot.
@@ -81,20 +83,25 @@ also what a reboot gives you.
 
 The bar always shows which IP your regular traffic is using right now. Torrents are separate:
 qBittorrent always uses its own tunnel, whatever you pick for regular traffic, and the bar
-shows that IP too.
+shows that IP too (and Firefox's, once its tunnel is on).
 
-Two tunnels, on purpose, and one exception you can turn on:
+Two tunnels, on purpose, and three things you can turn on:
 
-| | Desktop VPN | Torrent tunnel | Chrome direct (optional) |
-|---|---|---|---|
-| What goes through it | everything you do, when you pick a server | qBittorrent, always | Google Chrome, always on your normal connection |
-| Default | off: you are on your normal connection | on from boot | off: Chrome follows the bar like everything else |
-| You control it | from the bar panel | you don't; it is never toggled | the panel's **Chrome uses your own IP** switch, or `vpn-direct on`/`off` |
-| If it fails | kill switch: traffic is blocked until you pick a server or "Normal connection" | qBittorrent has no network at all | Chrome goes into the VPN or is blocked, never other apps out; the panel says so |
+| | Desktop VPN | Torrent tunnel | Firefox tunnel (optional) | Chrome direct, SSH direct (optional) |
+|---|---|---|---|---|
+| What goes through it | everything you do, when you pick a server | qBittorrent, always | Firefox, always, on a server of its own | Google Chrome, or new connections to the SSH ports: always on your normal connection |
+| Default | off: you are on your normal connection | on from boot | off until you import a config into `firefox/`; then on from boot | off: Chrome and SSH follow the bar like everything else |
+| You control it | from the bar panel | you don't; it is never toggled | the `firefox/` drop folder; `sudo vpnkit-sync firefox off` turns it off | the panel's **Chrome uses your own IP** and **SSH uses your own IP** switches, or `vpn-direct on`/`off`, `vpn-direct ssh on`/`off` |
+| If it fails | kill switch: traffic is blocked until you pick a server or "Normal connection" | qBittorrent has no network at all | Firefox has no network at all, or is not started | Chrome or SSH goes into the VPN or is blocked, never other apps out; the panel says so |
+
+<img src="screenshots/opt-in.png" alt="The panel with all three turned on: the Firefox line under the torrents line, the Chrome: direct and SSH: direct lines, and the Chrome uses your own IP and SSH uses your own IP switches" width="520">
+
+<sub>Drawn with made-up data, like the other images.</sub>
 
 Most setups use one VPN for both jobs, and they conflict: you want to switch the browsing VPN
 on and off freely, and you never want torrents to be off it. Here they are independent.
-Turning the desktop VPN off, or switching server, does not touch the torrent tunnel.
+Turning the desktop VPN off, or switching server, does not touch the torrent tunnel, nor the
+Firefox tunnel.
 
 Built for and tested with Proton VPN. It only relies on standard WireGuard `.conf` files, so
 other providers (Mullvad, IVPN, AirVPN, Windscribe, self-hosted) work too; set
@@ -114,11 +121,13 @@ other providers (Mullvad, IVPN, AirVPN, Windscribe, self-hosted) work too; set
 
 <img src="screenshots/bar-states.png" alt="The widget in the bar: a lock with both IP addresses, the lock alone with the addresses hidden, the globe on the normal connection, and the globe alone" width="640">
 
-Next to it is the external IP of your regular traffic and, after the download arrow, the exit
-IP of the torrent tunnel. **Show IP addresses in the bar**, the last row of the panel, hides
-the addresses and leaves only the icons. The bar also turns the urgent colour when the torrent
-tunnel is down, and flashes `TORRENT LEAK` if a qBittorrent process is ever found outside its
-tunnel. Left-click opens the panel, right-click toggles the VPN, middle-click refreshes.
+Next to it is the external IP of your regular traffic, after the download arrow the exit IP of
+the torrent tunnel, and, once the [Firefox tunnel](#firefox-tunnel) is on, after the Firefox
+icon its exit IP. **Show IP addresses in the bar**, the last row of the panel, hides the
+addresses and leaves only the icons. The bar also turns the urgent colour when the torrent or
+Firefox tunnel is down, and flashes `TORRENT LEAK` if a qBittorrent process is ever found
+outside its tunnel, `FIREFOX LEAK` if a Firefox is found outside its own. Left-click opens
+the panel, right-click toggles the VPN, middle-click refreshes.
 
 **The panel**, top to bottom:
 
@@ -126,11 +135,12 @@ tunnel. Left-click opens the panel, right-click toggles the VPN, middle-click re
 |---|---|
 | Header | where your regular traffic goes right now, and its IP; "kill switch on" with a server |
 | Torrents line | the torrent server, its IP, and whether qBittorrent is running inside the tunnel; the copy icon copies the IP |
+| Firefox line | only once the [Firefox tunnel](#firefox-tunnel) is on: its server, its IP, and whether Firefox is running inside it; the copy icon copies the IP |
 | Chrome line | only while [Chrome direct](#chrome-direct) is on: "Your own IP" and the resolver Chrome uses, or the first problem in the urgent colour |
 | SSH line | only while [SSH direct](#ssh-direct) is on: "SSH: direct (port 22)", or the problem in the urgent colour |
 | **Regular traffic / Torrents** | which traffic the list below chooses a server for |
 | Normal connection | (Regular traffic tab) your own IP, no VPN; removes the kill switch |
-| One row per server | click to use it for the tab you are on; a tick marks the current one. The server the other tab uses is greyed and labelled. The trash icon deletes a server (click twice) |
+| One row per server | click to use it for the tab you are on; a tick marks the current one. The server the other tab uses is greyed and labelled, and so is the Firefox tunnel's ("Used for Firefox"). The trash icon deletes a server (click twice) |
 | Refresh servers | imports every config waiting in `~/Documents/WireGuard`; the folder icon opens that folder |
 | Import from files | opens the standard file dialog; pick one or more `.conf` files from any folder |
 | Open qBittorrent | starts it inside the tunnel (it refuses when the tunnel is down) |
@@ -141,8 +151,9 @@ tunnel. Left-click opens the panel, right-click toggles the VPN, middle-click re
 | Show IP addresses in the bar | on: the lock or globe plus both addresses; off: only the icons. Saved in the widget's settings |
 
 **Notifications** appear when the VPN drops and the kill switch starts blocking, when the
-torrent tunnel goes down, if a qBittorrent process is ever found outside its tunnel, and when
-a leak check fails. The critical ones get through Do Not Disturb. A drop and a torrent tunnel
+torrent tunnel goes down, if a qBittorrent process (or, with its tunnel on, a Firefox) is ever
+found outside its tunnel, when Firefox or qBittorrent started from the launcher is refused, and
+when a leak check fails. The critical ones get through Do Not Disturb. A drop and a torrent tunnel
 going down are announced only once the state has held still for a few seconds: switching
 servers and going back to your own connection pass through both for a moment, and a toast that
 you may read hours later should not describe something that fixed itself. The bar and the panel
@@ -188,7 +199,9 @@ copies your IP, `esc` closes.
   (`pacman -S --needed`), along with any of the others that are missing. Nothing comes from the
   AUR and nothing is downloaded from anywhere else.
 - `qbittorrent` is optional and is not installed for you. If you want the torrent tunnel:
-  `omarchy pkg add qbittorrent`.
+  `omarchy pkg add qbittorrent`. The same goes for `firefox` and the
+  [Firefox tunnel](#firefox-tunnel): it uses the package from the official repositories
+  (`omarchy pkg add firefox`).
 - A VPN account that gives you WireGuard configuration files.
 
 ## Install
@@ -241,11 +254,13 @@ Setup changes these things outside the plugin folder, and nothing else:
   tunnel. If you already have your own entry there, it is left alone (with a warning when it
   starts qBittorrent outside the tunnel); `install.sh --qbt-launcher` replaces it, keeping
   yours next to it as a backup that the uninstaller puts back
+- only while the [Firefox tunnel](#firefox-tunnel) or [Chrome direct](#chrome-direct) is on:
+  a launcher entry for Firefox or Chrome in the same folder (see those sections)
 
 Except as listed above, it never edits your existing configuration files. The recommended
 qBittorrent settings are applied only if you ask: `install.sh --qbt-config` (a backup of `qBittorrent.conf` is kept).
 The commands it puts in `/usr/local/bin` carry a marker line; if a file of yours is already
-there under one of their names (your own `google-chrome-stable` wrapper, say), setup stops
+there under one of their names (your own `firefox` or `google-chrome-stable` wrapper, say), setup stops
 before changing anything and names it. `install.sh --move-aside` then keeps it in
 `/usr/local/lib/vpnkit/moved-aside/` while the kit is installed, and the uninstaller puts it
 back. A file there that is an edited copy of one of the kit's own commands (or one from before
@@ -269,6 +284,10 @@ same time.
   `vpn-import`.
 - **Import from files:** choose **Import from files** and pick one or more configs wherever
   they are, for example straight from `~/Downloads`. From a terminal: `vpn-import <files>`.
+
+A config put into `firefox/` inside the drop folder (or imported with
+`vpn-import --firefox <file>`) turns the [Firefox tunnel](#firefox-tunnel) on; nothing else
+does.
 
 Each config becomes a server named after its location (`# SE#21` inside a Proton config becomes
 "Sweden 21"; other files are named after the file). Imported files are **moved out of the
@@ -298,7 +317,7 @@ torrents straight away, which is handy the first time. For Proton, pick servers 
 **One server cannot do both at the same time.** A config is one key, and Proton (like most
 providers) drops both connections when one key is used twice. So you need at least two
 configs, and the panel greys out, for regular traffic, the server that carries torrents, and
-the other way round. Two configs of the *same* Proton server are fine: each download has its
+the other way round (the Firefox tunnel's server, too, on both tabs). Two configs of the *same* Proton server are fine: each download has its
 own key.
 
 From then on `qbittorrent` (the command, the launcher entry and magnet links) always starts
@@ -313,6 +332,7 @@ to start, because this kit's promise is that it never runs outside a tunnel.
 | Interface | Where it exists | Carries |
 |---|---|---|
 | `pqbt0` | only inside the `qbtvpn` network namespace | torrents: qBittorrent, and nothing else |
+| `pff0` | only inside the `ffvpn` network namespace, once the Firefox tunnel is on | Firefox, and nothing else |
 | `proton-<server>` (e.g. `proton-se-21`) | on your desktop, while a server is picked | regular traffic |
 | your ethernet / Wi-Fi (`enp…`, `wlp…`) | on your desktop | regular traffic on Normal connection (your own IP) |
 
@@ -328,9 +348,9 @@ to start, because this kit's promise is that it never runs outside a tunnel.
   whenever you switch servers. Use qBittorrent. If one of these apps is found running, the
   panel and bar warn you and the leak check fails.
 
-The names above are the defaults; `WG_IF`, `NS` and the provider prefix can be changed in
-`/etc/vpnkit/vpnkit.conf`. `vpn-status --json` shows the ones in use (`torrent_if`,
-`torrent_ns`, `prefix`).
+The names above are the defaults; `WG_IF`, `NS`, `FF_WG_IF`, `FF_NS` and the provider prefix
+can be changed in `/etc/vpnkit/vpnkit.conf`. `vpn-status --json` shows the ones in use
+(`torrent_if`, `torrent_ns`, `firefox_if`, `firefox_ns`, `prefix`).
 
 ## How the protection works
 
@@ -365,6 +385,9 @@ The status you see is measured, not inferred: a running qBittorrent is reported 
 only when the inode of `/proc/<pid>/ns/net` equals the namespace's, and the torrent exit IP is
 fetched from inside the namespace. If a qBittorrent process is ever found outside, the bar
 flashes `TORRENT LEAK`.
+
+The [Firefox tunnel](#firefox-tunnel) is a second namespace (`ffvpn`) built by the same code,
+with the same resolver files, firewall and IPv6 rules, and measured the same way.
 
 **IPv6** is switched off on every interface except loopback, which keeps `::1`: wired and
 Wi-Fi, and also Tailscale, Docker, Podman and libvirt bridges and the like (the sysctl covers
@@ -412,6 +435,90 @@ profile of that name is switched off. Versions before 0.3.6 saved
 nothing at all; a profile they switched off is not in the file and stays off: turn it back on
 with `nmcli connection modify "<profile>" ipv6.method auto`.
 
+## Firefox tunnel
+
+The desktop VPN moves the whole machine: every switch or drop changes your address and cuts
+every open connection. If you want one browser that is always on a VPN, from boot, and never on
+your home address, the **Firefox tunnel** gives Firefox a tunnel of its own, built like the
+torrent tunnel: a network namespace whose only way out is its own WireGuard link, on a server
+of its own. Your regular traffic keeps following the bar, qBittorrent keeps its tunnel, and
+switching or turning off the desktop VPN never touches Firefox. One app only: the packaged
+Firefox (`/usr/lib/firefox/firefox`, from the official repositories).
+
+**It is off until you turn it on.** Installing or updating the plugin changes nothing for
+Firefox: `firefox`, its launcher and links open Firefox exactly as before, on the bar's
+connection. Importing a config for it is the switch:
+
+1. Download one more WireGuard config from your Proton account, for a **different server** than
+   the torrent one (and not one you use for regular traffic). Choose the NetShield level you
+   want for Firefox when you create it.
+2. Close Firefox.
+3. Put the config into `~/Documents/WireGuard/firefox/` and choose **Refresh servers** in the
+   panel (or, in a terminal, `vpn-import --firefox <file>`).
+
+From then on the tunnel comes up at boot, and every normal way to start Firefox lands inside
+it: the launcher entry and its actions (new window, private window), `firefox` in a terminal,
+and links from other apps when Firefox is your default browser. The panel shows a
+**Firefox:** line under the torrents line (its server, its IP, and whether Firefox runs inside)
+and `vpn-status` a `Firefox tunnel` and a `Firefox app` line.
+
+To move Firefox to another server, close Firefox, then put another config into `firefox/` and
+refresh, or `sudo vpnkit-sync firefox <server>` for a server already imported. The panel cannot
+choose it yet. **To turn it off**, close Firefox, then:
+
+```sh
+sudo vpnkit-sync firefox off    # no password needed; Firefox follows the bar again
+```
+
+That stops the tunnel, removes its config and the launcher entry, and leaves the server in
+your list, free for other use.
+
+**A server of its own, really.** The point is that websites cannot link your browsing to your
+torrents, so the Firefox server must differ from the torrent server: a config with the torrent
+tunnel's endpoint (host and port) or key is refused, and so is the reverse. The Firefox server
+cannot carry regular traffic or torrents either (the panel shows it as "Used for Firefox"). The
+leak check fails if Firefox's exit address equals the torrent tunnel's or your regular
+traffic's: one server can sit behind several endpoints.
+
+**Fail closed.** No tunnel, no Firefox network. While its server does not answer, Firefox
+inside simply has no network. While the namespace or its route is missing (at boot before the
+network is up, say), a new Firefox is refused with a message (a notification when started from
+the launcher) instead of starting on your normal connection; at boot, `ff-netns.service` tries
+again every 10 seconds until the tunnel is up.
+
+**What the namespace means for Firefox.** Inside it Firefox sees only the tunnel, so these do
+not work from Firefox, by design, and another browser is the one for them: `localhost` and
+other services on this machine (local development servers), your local network (router and
+printer pages), and Tailscale hosts. WebRTC can only see the tunnel's address. The window,
+clipboard, file dialogs, sound and notifications work as usual: they go through files, not the
+network.
+
+**What you should know:**
+
+- **Close Firefox once when you turn it on.** A Firefox that was already open keeps using
+  your regular connection (whatever the bar says): the panel and the bar say so (`FIREFOX LEAK`), and every new Firefox
+  window is refused until you close it, because a new Firefox hands its pages to the one
+  already running.
+- **Only the packaged Firefox is started inside.** Any other Firefox (Mozilla's tarball, a
+  flatpak, a snap, Developer Edition, or `/usr/lib/firefox/firefox` started directly) uses
+  your regular connection. While one runs, the packaged Firefox is refused, and the status, the
+  bar and the leak check name it.
+- **Apps Firefox hands things to follow the bar.** Firefox keeps your session's message bus, as
+  qBittorrent does, so a download you open, a link opened with another app, `mailto:` and the
+  like start that app outside the namespace, on the regular connection.
+- **DNS.** Firefox asks the resolver your config names (Proton's, with NetShield), through the
+  tunnel. Firefox's own DNS over HTTPS, if it is on, also goes through the tunnel, but around
+  that resolver and NetShield; turn it off in Firefox's settings (Privacy & Security, DNS over
+  HTTPS) to use them.
+- **Your own Firefox launcher entry** (`~/.local/share/applications/firefox.desktop`, if you
+  have one) is replaced while the tunnel is on, kept next to it as `firefox.desktop.bak.<time>`,
+  and put back when you turn the tunnel off or uninstall.
+- **Uninstalling keeps its config**, like the torrent tunnel's: a later reinstall turns the
+  Firefox tunnel on again. `uninstall.sh --purge` removes it.
+- **It protects against accidents, not against software running as you**, like the kill
+  switch: such software can start another Firefox build or the real binary. See
+  [Limits](#limits).
+
 ## Chrome direct
 
 Some sites expect your own address: your bank, work tools that lock out VPN addresses, a
@@ -436,13 +543,9 @@ place. A Chrome that was already open when you turned it on keeps using the VPN 
 "restart Chrome"), and while it runs a new Chrome window is refused, because Chrome would hand
 it to the running one. Turning it off is refused while Chrome runs with your own IP.
 
-<img src="screenshots/chrome-direct.png" alt="The panel with Chrome direct on: the Chrome: direct line and the Chrome uses your own IP switch" width="520">
-
-<sub>Redrawn with made-up data, like the other images.</sub>
-
 While it is on, the panel shows a **Chrome: direct** line under the torrents line ("Your own IP
-· DNS 127.0.0.1", or the first problem in the urgent colour) and `vpn-status` a
-`Chrome direct` line. Every normal way to open Chrome lands in it: the launcher entry and its
+· DNS 127.0.0.1", or the first problem in the urgent colour; see the image under
+[What you choose](#what-you-choose)) and `vpn-status` a `Chrome direct` line. Every normal way to open Chrome lands in it: the launcher entry and its
 actions (pointed at the kit's wrapper while it is on), Omarchy's browser shortcut and links
 from other apps when Chrome is your default browser, and `google-chrome-stable` in a terminal.
 
@@ -530,8 +633,10 @@ vpn-direct ssh off    # SSH follows the bar again
 
 While it is on, the panel shows an **SSH: direct (port 22)** line and `vpn-status` an
 `SSH direct : on (port 22)` line; both turn the urgent colour (and the bar alerts) when its
-rules are missing or `DIRECT_SSH_PORTS` is not valid. It stays on across reboots until you
-turn it off. After changing `DIRECT_SSH_PORTS`, run `vpn-direct ssh on` again.
+rules are missing, the kill switch does not let them out, or `DIRECT_SSH_PORTS` is not valid.
+Ports that are not valid take only SSH direct down: Chrome direct, if it is on, keeps working.
+It stays on across reboots until you turn it off. After changing `DIRECT_SSH_PORTS`, run
+`vpn-direct ssh on` again.
 
 **What you should know:**
 
@@ -551,11 +656,17 @@ turn it off. After changing `DIRECT_SSH_PORTS`, run `vpn-direct ssh on` again.
   included.
 - It shares its mechanism with Chrome direct (the mark `51821`, the same note about a second
   `wg-quick` tunnel applies); either, both or neither can be on.
+- **TCP, made for IPv4.** UDP (`mosh`, say) follows the bar. With IPv6 kept on
+  (`--keep-ipv6`), an SSH connection over IPv6 is marked too but has no routing rule of its
+  own: it follows the IPv6 routes, direct when they use your physical link, into the tunnel
+  otherwise.
+- **Strict reverse-path filtering breaks it** (and Chrome direct): with `rp_filter=1` the
+  kernel drops the replies, and the connection hangs. Arch's default (`2`, loose) works.
 
 ## Check it, and get out of trouble
 
 ```sh
-vpn-status                  # both tunnels, both external IPs
+vpn-status                  # every tunnel and its external IP
 vpn-check                   # the leak checks, saved as a report (same as the panel row)
 vpn-check --fail-closed     # also pulls each tunnel down and proves nothing gets out
 vpn-check --redact          # the latest report with public addresses and keys masked
@@ -563,6 +674,7 @@ vpn-verify                  # the same checks without saving a report
 vpn-rescue                  # way back: VPN off, kill switch off, confirms the internet works
 vpn-direct on|off           # Chrome direct on or off (see Chrome direct)
 vpn-direct ssh on|off       # SSH direct on or off (see SSH direct)
+sudo vpnkit-sync firefox off  # the Firefox tunnel off (see Firefox tunnel)
 vpn-diagnose "what you saw" # hand the problem to your AI agent (see above)
 ```
 
@@ -580,7 +692,11 @@ slice leaves from your own address while a server is selected, that `DIRECT_DNS`
 the only resolver each Chrome process sees, and names anything in the slice that is not Chrome.
 With [SSH direct](#ssh-direct) on, it checks that its rules match `DIRECT_SSH_PORTS`, that a
 connection it marks is routed outside the tunnel while a server is selected, and that the
-kill switch lets it out.
+kill switch lets it out. With the [Firefox tunnel](#firefox-tunnel) on, it checks that
+namespace as it checks the torrent one (interfaces, route, resolver files, firewall, IPv6,
+handshake, DNS), that Firefox's exit address is neither your regular traffic's nor the torrent
+tunnel's, that every Firefox of yours runs inside with the namespace's resolver files, and that
+the launcher entry and `firefox` in a terminal reach the kit's wrapper.
 
 **Saved reports.** Every check, from the panel or from `vpn-check`, is saved as a text file in
 **Documents > VPN leak checks** (`~/Documents/VPN leak checks/`; `REPORT_DIR` in
@@ -648,7 +764,9 @@ Everything else is in `/etc/vpnkit/vpnkit.conf`, which the installer never overw
 | `DISABLE_IPV6` | `1` | IPv6 off on every interface but loopback; see above. Setting it to `0` and running setup again gives IPv6 back (the same as `install.sh --keep-ipv6`) |
 | `VPNKIT_PROVIDER` | `proton` | naming preset; `generic`, `mullvad`, `ivpn`, `airvpn`, `windscribe` for other providers |
 | `DIRECT_DNS` | empty | the resolver Chrome asks while [Chrome direct](#chrome-direct) is on. Empty: the system resolver, which follows the bar. Otherwise a loopback address only (`127.x.x.x`), such as a local ad-blocking resolver on `127.0.0.1` |
-| `DIRECT_SSH_PORTS` | `22` | the ports [SSH direct](#ssh-direct) sends direct while it is on: up to eight port numbers, separated by spaces; not 53 or 853 |
+| `DIRECT_SSH_PORTS` | `22` | the ports [SSH direct](#ssh-direct) sends direct while it is on: up to eight port numbers, separated by spaces; not 53 or 853. Only the ports your SSH servers listen on, never 80 or 443: every program's connections to them go direct |
+| `NS`, `WG_IF`, `QBT_CONF` | `qbtvpn`, `pqbt0`, `/etc/wireguard/vpnkit-torrent.conf` | the torrent tunnel's namespace, interface and config (rarely changed) |
+| `FF_NS`, `FF_WG_IF`, `FF_CONF` | `ffvpn`, `pff0`, `/etc/wireguard/vpnkit-firefox.conf` | the same for the [Firefox tunnel](#firefox-tunnel); must differ from the torrent tunnel's |
 
 ## What gets installed
 
@@ -656,25 +774,29 @@ The engine underneath is called `vpnkit`; that is the name you will see in paths
 
 | Path | What |
 |---|---|
-| `/usr/local/bin/vpn-*`, `vpnkit-*`, `qbt-*`, `direct-launch`, `qbittorrent`, `google-chrome-stable` | the commands and helpers, each with the marker line `# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).`; `qbittorrent` and `google-chrome-stable` are wrappers that come first in `PATH` (the Chrome one starts Chrome unchanged while Chrome direct is off) |
+| `/usr/local/bin/vpn-*`, `vpnkit-*`, `qbt-*`, `ff-*`, `direct-launch`, `qbittorrent`, `firefox`, `google-chrome-stable` | the commands and helpers, each with the marker line `# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).`; `qbittorrent`, `firefox` and `google-chrome-stable` are wrappers that come first in `PATH` (the Firefox one starts Firefox unchanged while the Firefox tunnel is off, the Chrome one Chrome while Chrome direct is off) |
 | `/usr/local/lib/vpnkit/` | shared libraries, version stamp (written last, once setup succeeded), a copy of the uninstaller, the `diagnose-vpn` skill for AI troubleshooting; `moved-aside/` only with `install.sh --move-aside` |
 | `/etc/vpnkit/` | settings (no secrets); `vpnkit.conf.bak.<time>`, the settings before `install.sh --keep-ipv6` changed them; `ipv6-profiles.saved`, your profiles' IPv6 settings from before setup, and `ipv6-profiles.superseded`, saved settings set aside because their profile is gone (see [IPv6](#ipv6-and-your-network-profiles)) |
 | `/etc/sudoers.d/99-vpnkit` | passwordless rules for eight specific helpers, validated with `visudo -c` before install |
 | `/etc/NetworkManager/dispatcher.d/50-vpnkit` | arms the kill switch, reconnects after resume |
 | `/etc/systemd/system/qbt-netns.service` | builds the torrent namespace at boot |
+| `/etc/systemd/system/ff-netns.service` | builds the Firefox namespace at boot; installed always, enabled only while the Firefox tunnel is on |
+| `/etc/vpnkit/firefox-server`, `/etc/wireguard/vpnkit-firefox.conf` | only while the Firefox tunnel is on: its server's name, and a root-only copy of its config |
+| `/etc/netns/qbtvpn/`, `/etc/netns/ffvpn/` | the namespaces' own resolver files (`resolv.conf`, `nsswitch.conf`) |
 | `/etc/systemd/system/vpnkit-direct.service`, `vpnkitdirect.slice` | the rules of Chrome direct and SSH direct, and Chrome's slice; installed always, enabled only while one of them is on |
 | `/etc/vpnkit/direct-apps` | only while Chrome direct or SSH direct is on: says which |
 | `/etc/sysctl.d/99-vpnkit-disable-ipv6.conf` | IPv6 off (unless `--keep-ipv6`) |
 | `/etc/wireguard/`, `/etc/NetworkManager/system-connections/` | your imported configs, mode 0600, root |
 | `~/.local/share/applications/org.qbittorrent.qBittorrent.desktop` | launcher pointing at the wrapper, first line a marker; not written over an entry of yours unless you pass `--qbt-launcher` (yours is backed up next to it, and put back by the uninstaller) |
 | `~/.local/share/applications/google-chrome.desktop` | only while Chrome direct is on: Chrome's launcher entry pointing at the wrapper (a file of your own there is backed up next to it first, and put back when Chrome direct is turned off) |
+| `~/.local/share/applications/firefox.desktop` | only while the Firefox tunnel is on: Firefox's launcher entry pointing at the wrapper (a file of your own there is backed up next to it first, and put back when the tunnel is turned off) |
 | `~/Documents/VPN leak checks/` | your saved leak-check reports, created by the first check; removed only by `uninstall.sh --purge` |
 | `~/.config/qBittorrent/qBittorrent.conf` | only with `install.sh --qbt-config`: merged with `qbittorrent/qBittorrent.conf.template` (backup kept): bind to the tunnel interface, anonymous mode, require encryption, no UPnP, no local discovery |
 
 The passwordless helpers are written to be safe to grant: they set a fixed `PATH` before
 running anything (sudo passes your own on when `/etc/sudoers` has no `secure_path`; setup
 warns if yours has none), take no paths from the caller, validate every argument, the
-launchers drop to your user before starting qBittorrent or Chrome, the status helper only
+launchers drop to your user before starting qBittorrent, Firefox or Chrome, the status helper only
 reads, and the leak check reads files in your home folder with your permissions, not root's.
 
 ## Update
@@ -688,7 +810,12 @@ it (one password prompt). It is safe to run again when only the widget or the do
 changed. It stops without changing anything in two cases, and says so in its window: a file
 in `/usr/local/bin` under one of the kit's command names is not the kit's (it prints the
 `install.sh --move-aside` command to run in a terminal, see [Install](#install)), or the kit is
-set up for another desktop user (`TARGET_USER` in `/etc/vpnkit/vpnkit.conf`).
+set up for another desktop user (`TARGET_USER` in `/etc/vpnkit/vpnkit.conf`). A new version can
+add command names: 0.5.0 adds `firefox`, `ff-launch`, `ff-netns-up`, `ff-netns-down` and
+`vpn-firefox-launcher`, so a `/usr/local/bin/firefox` of your own (a wrapper you wrote, say)
+stops the update until you run `install.sh --move-aside`, or remove it. Updating does not turn
+the [Firefox tunnel](#firefox-tunnel) on: only a config in `firefox/` does (one already waiting
+in that folder is imported by the update, and turns it on).
 
 If the widget still looks like the old version after an update, run `omarchy restart shell`:
 the shell does not always reload a plugin's code in place.
@@ -706,15 +833,15 @@ omarchy plugin remove io.github.ralphk-86.omarchy-proton
 ```
 
 The uninstaller switches to the normal connection, removes the kill switch, the torrent
-namespace and every file from the table above. It also turns Chrome direct and SSH direct off
-and removes their rules; a Chrome still running with your own IP is closed. It removes only what is the kit's:
+namespace, the Firefox tunnel and every file from the table above. It also turns Chrome direct
+and SSH direct off and removes their rules; a Chrome still running with your own IP is closed. It removes only what is the kit's:
 commands with its marker line (a file of yours under one of their names is kept, and one setup
 moved aside is put back), its own launcher entries (an entry of yours it replaced is put back),
 and, with `--purge`, the servers it imported, recognised by the uuid it gave them (also those
 imported under another provider's prefix; a WireGuard profile or config of your own with the
 same prefix is left alone). Without `--purge` it keeps your
-servers, the torrent config, `/etc/vpnkit/vpnkit.conf` and your saved leak-check reports, so a later
-reinstall picks up where you left off. `--purge` deletes the reports too (only the files the
+servers, the torrent and Firefox configs, `/etc/vpnkit/vpnkit.conf` and your saved leak-check
+reports, so a later reinstall picks up where you left off: it turns the Firefox tunnel on again. `--purge` deletes the reports too (only the files the
 check wrote; the folder stays if you put anything else in it). A step that fails is named, the
 rest still runs, and the uninstaller then exits with an error.
 IPv6 stays off unless you pass `--restore-ipv6`, which puts back each profile's saved IPv6
@@ -726,7 +853,7 @@ setup. Run `uninstall.sh --restore-ipv6` from the plugin folder **before**
 `omarchy plugin remove`: once both the plugin and the system part are gone, nothing on the
 machine reads the file. A later `uninstall.sh --restore-ipv6` that restores everything also
 removes what is left of `/etc/vpnkit`.
-qBittorrent is no longer confined afterwards.
+qBittorrent and Firefox are no longer confined afterwards.
 
 If you removed the plugin folder first, the system part can still be removed:
 `sudo bash /usr/local/lib/vpnkit/uninstall-root.sh` (same options). It does the whole job:
@@ -735,8 +862,10 @@ you, not as root), putting back any of yours.
 
 ## Security and privacy
 
-- **Network requests of its own:** one. The bar looks up your external IP at `ifconfig.me`
-  (every 30 seconds while the widget polls, cached, configurable with `IP_LOOKUP_URL`). What
+- **Network requests of its own:** one kind. The bar looks up your external IP at `ifconfig.me`
+  (every 30 seconds while the widget polls, cached, configurable with `IP_LOOKUP_URL`), and the
+  exit IP of the torrent tunnel and, once it is on, of the Firefox tunnel, from inside each
+  (cached for a minute). What
   comes back is read with a time limit and a 256-byte size cap, so a broken or hostile lookup
   server cannot flood a helper. There is no telemetry and nothing else is contacted, apart
   from `pacman` installing packages during setup. *Troubleshoot with AI* starts your own AI agent only when you click it.
@@ -768,10 +897,14 @@ you, not as root), putting back any of yours.
   not against software running as you: such software can ask Chrome to start a program (an
   extension's helper, say), which then shares Chrome's exemption. The leak check names what it
   finds in Chrome's slice. Apps Chrome opens through `xdg-open` do not share it.
-- The Firefox tunnel starts only the packaged Firefox (`/usr/lib/firefox/firefox`) inside its
-  namespace. Any other Firefox build (Mozilla's tarball, a flatpak, a snap, Developer
-  Edition) runs outside it; while one runs, the packaged Firefox is refused and the status
-  and the leak check name it, because a new Firefox could hand its pages to it.
+- The [Firefox tunnel](#firefox-tunnel) carries one app, and only the packaged Firefox
+  (`/usr/lib/firefox/firefox`) is started inside its namespace. Any other Firefox build
+  (Mozilla's tarball, a flatpak, a snap, Developer Edition) runs outside it; while one runs,
+  the packaged Firefox is refused and the status and the leak check name it, because a new
+  Firefox could hand its pages to it. Apps Firefox opens files and links with run outside, on
+  the regular connection. From inside, `localhost`, the local network and Tailscale hosts are
+  out of reach. It needs a server of its own, on another exit than the torrent tunnel's, and the
+  server is chosen through the drop folder or `vpnkit-sync`, not yet in the panel.
 - [SSH direct](#ssh-direct) is a deliberate hole for the SSH ports, only while you have it
   on: any program may connect to those ports, on any host, from your home address then.
 - Switching servers uses NetworkManager's normal permissions: fine from your desktop session;

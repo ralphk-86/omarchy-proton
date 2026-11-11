@@ -38,8 +38,9 @@ from the home address when it should not. See the header of `suite.sh`.
 
 For Chrome direct the suite installs real Google Chrome (from the `[omarchy]` repository) and
 `Xvfb`, and runs Chrome headed on a virtual display, started the way a user starts it, besides
-the stand-in Chrome it uses for most of those checks. That needs the internet during section 1,
-like the installer's own packages.
+the stand-in Chrome it uses for most of those checks. The same for the Firefox tunnel: real
+Firefox (from the official repositories) runs headed inside its namespace, besides a stand-in.
+That needs the internet during section 1, like the installer's own packages.
 
 The last section is an upgrade: the release named in `upgrade-from` (a git tag) is installed
 from its own files, then updated to the tree under test and uninstalled. `vm.sh` copies that

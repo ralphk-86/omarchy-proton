@@ -1,5 +1,85 @@
 # Changelog
 
+## 0.5.0 (2026-11-11)
+
+- **New, off until you turn it on: the Firefox tunnel.** Firefox gets an always-on WireGuard
+  tunnel of its own, built like the torrent tunnel: a network namespace (`ffvpn`, interface
+  `pff0`) whose only way out is that tunnel, on a server of its own, up from boot and
+  independent of the desktop VPN, which can switch or drop without touching Firefox. Turn it on
+  by putting one more config (for another server than the torrent one) into the drop folder's
+  new `firefox/` folder and choosing **Refresh servers** (or `vpn-import --firefox <file>`);
+  turn it off with `sudo vpnkit-sync firefox off`. Every normal way to start Firefox lands
+  inside: the launcher entry and its actions, `firefox` in a terminal, links from other apps.
+  No tunnel, no Firefox network: while the namespace or its route is missing, Firefox is
+  refused (with a notification when started from the launcher), never started on your own
+  connection. README: "Firefox tunnel".
+- **One key and one exit per tunnel.** A server carries one of regular traffic, torrents and
+  Firefox at a time; the Firefox and torrent tunnels never share an endpoint or a key (either
+  import is refused), and no import may carry a tunnel's key. The leak check fails when
+  Firefox leaves from the torrent tunnel's or your regular traffic's address.
+- **A Firefox outside its tunnel is caught.** The wrapper and the root launcher (`ff-launch`,
+  a new passwordless helper listed in SECURITY.md) refuse to start Firefox while any Firefox
+  of yours runs outside the namespace, any build (Mozilla's tarball, a flatpak, a snap), because
+  a new Firefox hands its pages to the running one. Only the packaged Firefox is started
+  inside. Firefox's sandboxed child processes, which have namespaces of their own, are not
+  mistaken for one outside.
+- **The bar, the panel, the status and the leak check know about it.** The bar shows Firefox's
+  exit IP after its icon and flashes `FIREFOX LEAK` when a Firefox runs outside; the panel has a
+  **Firefox:** line under the torrents line and marks the Firefox server "Used for Firefox" in
+  both lists; `vpn-status` has `Firefox tunnel` and `Firefox app` lines; the leak check
+  covers the namespace like the torrent one, plus the exit, every running Firefox and the
+  launcher. What you should know (in the README): `localhost`, the local network and Tailscale
+  hosts are out of reach from Firefox; apps Firefox hands files and links to run outside the
+  namespace; Firefox's own DNS over HTTPS goes around the provider's resolver (still through
+  the tunnel); a launcher entry of your own is backed up while the tunnel is on.
+- **New, off until you turn it on: SSH direct.** New SSH connections leave from your own IP
+  all the time, also while a server is selected or the bar says blocked, for servers that only
+  let your home address in: the panel's **SSH uses your own IP** switch, or
+  `vpn-direct ssh on`/`off`. It matches new TCP connections to the ports in `DIRECT_SSH_PORTS`
+  (default `22`, up to eight; 53 and 853 are refused), so `scp`, `rsync` and `git` over ssh
+  work without wrappers; connections already open keep their path, and ones open when you turn
+  it off need a reconnect. It shares Chrome direct's mechanism; either, both or neither can be
+  on, and invalid ports take only SSH direct down. The trade-off, stated in README and
+  SECURITY.md: any program on this machine can reach any host on those ports from your home
+  address while it is on. README: "SSH direct".
+- Also: the status reports Chrome direct and SSH direct as working only while the armed kill
+  switch also lets them out; the status reads every program of yours once per poll (one pass)
+  instead of once per check; the torrent tunnel's namespace builder is now shared with the
+  Firefox tunnel (`system/lib/netns.sh`), with no change for the torrent tunnel; a refused
+  qBittorrent started from the launcher now shows a notification too; a bare `vpn-toggle`
+  skips the two tunnels' servers; the namespace tests no longer use a pipeline that could fail
+  under `pipefail`; `vpn-direct ssh off` says that open connections need a reconnect.
+- **Upgrading:** nothing changes for Firefox, Chrome or SSH until you turn one on; after
+  "Update the system part" `firefox` starts Firefox exactly as before. Three things to check:
+  - The update adds `firefox`, `ff-launch`, `ff-netns-up`, `ff-netns-down` and
+    `vpn-firefox-launcher` to `/usr/local/bin`. If you have a `/usr/local/bin/firefox` of your
+    own, the update stops and names it, changing nothing: run `install.sh --move-aside` (it
+    keeps yours aside and the uninstaller puts it back), or remove yours.
+  - A `firefox/` folder that already holds `.conf` files inside your drop folder is imported
+    by the update and turns the Firefox tunnel on. Move such files away first if that is not
+    what you want.
+  - The `README.txt` in your drop folder is written only when it is missing, so an existing one
+    does not mention `firefox/`; delete it to get the new one.
+- Tests: static checks pass; the marketplace security baseline is `review-required` with no
+  findings. VM suite: VMRESULT. VM tests added in this release: the Firefox namespace (only
+  `lo` and its interface, its resolver files and firewall, DNS through the tunnel, nothing out
+  and no DNS while the tunnel is down, the torrent tunnel untouched), the opt-in (no change to
+  `firefox` or its launcher until a config is imported; off removes the unit, config, record
+  and launcher entry and puts the user's own entry back; a reinstall leaves a running tunnel
+  alone; uninstall removes it, `--purge` its config), the separate-exit and key guards both
+  ways, the wrapper's and `ff-launch`'s refusals (tunnel down, resolver files missing, a
+  Firefox outside, another build such as `/opt/firefox/firefox`, abuse of the sudo rule, the
+  PATH test), the notifications (one record, none from a terminal), real Firefox on a virtual
+  display (a page from the tunnel's address, no process in the host's namespace, a second start
+  handed over), the status and leak check; and for SSH direct: off by default, the exact sudo
+  arguments (also as one word), every invalid port value, ports 22 and 2222 from the home
+  address while port 443 and the torrent and Firefox namespaces follow their tunnels, a
+  connection open before it is turned on keeping its path, UDP to the same ports following the
+  bar, the blocked state, missing rules, an armed kill switch without its line, invalid ports
+  next to Chrome direct, a reboot (unit restart), independence from Chrome direct both ways, a
+  clean off, and a unit that cannot start. The panel's new rows and switch have not been
+  checked on screen; `screenshots/opt-in.png` is drawn from the widget's code.
+
 ## 0.4.2 (2026-11-11)
 
 - **No predictable files in a shared `/tmp`.** The developer helper that makes the
