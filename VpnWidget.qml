@@ -34,6 +34,9 @@ Panel {
   // The torrent tunnel's interface; it exists only inside the namespace.
   property string torrentIf: "pqbt0"
   property string torrentNs: "qbtvpn"
+  // The Firefox tunnel's interface and namespace (opt-in).
+  property string firefoxIf: "pff0"
+  property string firefoxNs: "ffvpn"
   property string regularIf: ""
   // Where vpn-check saves the leak-check reports, and the newest one.
   property string reportDir: ""
@@ -69,6 +72,7 @@ Panel {
   readonly property string gUnlock: String.fromCodePoint(0xF033F)
   readonly property string gEye: String.fromCodePoint(0xF0208)
   readonly property string gEyeOff: String.fromCodePoint(0xF0209)
+  readonly property string gFirefox: String.fromCodePoint(0xF0239)
 
   // --- state from vpn-status -------------------------------------------------
   property bool loaded: false
@@ -100,6 +104,18 @@ Panel {
   property bool qbtRunning: false
   property bool qbtProtected: false
   property bool qbtUnprotected: false
+  // The Firefox tunnel (opt-in): vpn-status's ff_* fields, shown as they are.
+  property bool ffKnown: false
+  property bool ffConfigured: false
+  property bool ffNs: false
+  property bool ffTunnel: false
+  property string ffIp: ""
+  property string ffServer: ""
+  property string ffConn: ""
+  property bool ffRunning: false
+  property bool ffProtected: false
+  property bool ffUnprotected: false
+  property var ffPids: []
   // Other torrent apps running outside the tunnel (only qBittorrent is routed in).
   property var otherApps: []
   readonly property string otherAppsText: otherApps.join(", ")
@@ -154,13 +170,16 @@ Panel {
   // The one signal that must never be missed: qBittorrent outside the tunnel.
   readonly property bool danger: qbtUnprotected || otherApps.length > 0
   readonly property bool torrentDown: loaded && qbtKnown && qbtConfigured && !qbtTunnel
+  // Firefox outside its tunnel is as loud as qBittorrent outside its own.
+  readonly property bool ffDanger: ffUnprotected
+  readonly property bool ffDown: loaded && ffKnown && ffConfigured && !ffTunnel
   // A VPN that is up without its kill switch was started before the hook ran.
   readonly property bool unguarded: desktopVpn && !killswitch
   // Chrome direct is on but something is wrong with it, or something that is
   // not Chrome uses the home IP through it.
   readonly property bool directProblem: directEnabled
     && (!directKnown || !directWorking || !directDnsOk || !directOverrideOk || directOthers.length > 0)
-  readonly property bool alert: danger || torrentDown || blocked || unguarded || directProblem
+  readonly property bool alert: danger || ffDanger || torrentDown || ffDown || blocked || unguarded || directProblem
 
   // Two of those states come and go on their own while a command runs, so they
   // are not alarms until they have held still. Picking a server arms the kill
@@ -194,13 +213,17 @@ Panel {
 
   readonly property string regularText: blocked ? "blocked" : (externalIp !== "" ? externalIp : "...")
   readonly property string torrentText: qbtTunnel ? (qbtIp !== "" ? qbtIp : "...") : (qbtKnown ? "down" : "?")
+  readonly property string ffText: ffTunnel ? (ffIp !== "" ? ffIp : "...") : (ffKnown ? "down" : "?")
   readonly property string barText: {
     if (!installed) return gWrench
     if (danger) return gAlert + " TORRENT LEAK"
+    if (ffDanger) return gAlert + " FIREFOX LEAK"
     var regular = regularGlyph
     var showTorrent = qbtConfigured || qbtRunning
-    if (vertical || !showIps) return showTorrent ? regular + " " + gTorrent : regular
+    if (vertical || !showIps)
+      return regular + (showTorrent ? " " + gTorrent : "") + (ffConfigured ? " " + gFirefox : "")
     return regular + " " + regularText + (showTorrent ? "  " + gTorrent + " " + torrentText : "")
+      + (ffConfigured ? "  " + gFirefox + " " + ffText : "")
   }
 
   readonly property string heroTitle: !installed ? "Setup needed"
@@ -224,6 +247,18 @@ Panel {
     if (qbtProtected) return "qBittorrent is running inside the tunnel"
     if (qbtRunning) return "qBittorrent is running, location unknown"
     return "qBittorrent is not running"
+  }
+  readonly property string ffTitle: {
+    if (!ffKnown) return "Status unavailable"
+    if (ffTunnel) return ffConn !== "" ? prettyName(ffConn) : (ffServer !== "" ? prettyName(ffServer) : "tunnel up")
+    return ffNs ? "Tunnel down, Firefox blocked" : "Tunnel not started, Firefox blocked"
+  }
+  readonly property string ffDetail: {
+    if (ffUnprotected) return "Firefox is running OUTSIDE its tunnel" + (ffPids.length > 0 ? " (pid " + ffPids.join(", ") + ")" : "") + ". Close it, then start it again."
+    if (!ffKnown) return "State unknown: it could not be checked"
+    if (ffProtected) return "Firefox is running inside its tunnel"
+    if (ffRunning) return "Firefox is running, location unknown"
+    return "Firefox is not running. It always starts inside its tunnel"
   }
   readonly property string directDetail: {
     if (!directKnown) return "State unknown: it could not be checked"
@@ -253,7 +288,7 @@ Panel {
   readonly property int launchIndex: pickIndex + 1
   readonly property int verifyIndex: launchIndex + 1
   // "Troubleshoot with AI" appears only when something is wrong.
-  readonly property bool showAi: installed && (verifyFailures.length > 0 || blockedSteady || torrentDownSteady || danger)
+  readonly property bool showAi: installed && (verifyFailures.length > 0 || blockedSteady || torrentDownSteady || danger || ffDanger)
   readonly property int aiIndex: showAi ? verifyIndex + 1 : -1
   // The Chrome direct switch, when Chrome is installed (or it is on).
   readonly property bool showDirect: installed && (directAvailable || directEnabled)
@@ -316,6 +351,18 @@ Panel {
     qbtRunning = j.qbt_running === true
     qbtProtected = j.qbt_protected === true
     qbtUnprotected = j.qbt_unprotected === true
+    ffKnown = j.ff_known === true
+    ffConfigured = j.ff_configured === true
+    ffNs = j.ff_ns === true
+    ffTunnel = j.ff_tunnel === true
+    ffIp = String(j.ff_ip || "")
+    ffServer = String(j.ff_server || "")
+    ffConn = String(j.ff_conn || "")
+    ffRunning = j.ff_running === true
+    ffProtected = j.ff_protected === true
+    ffUnprotected = j.ff_unprotected === true
+    var ffp = j.ff_pids instanceof Array ? j.ff_pids : []
+    if (JSON.stringify(ffp) !== JSON.stringify(ffPids)) ffPids = ffp
     var apps = j.other_torrent_apps instanceof Array ? j.other_torrent_apps : []
     if (JSON.stringify(apps) !== JSON.stringify(otherApps)) otherApps = apps
     directAvailable = j.direct_available === true
@@ -341,6 +388,8 @@ Panel {
     aiAgent = String(j.ai_agent || "")
     torrentIf = String(j.torrent_if || "pqbt0")
     torrentNs = String(j.torrent_ns || "qbtvpn")
+    firefoxIf = String(j.firefox_if || "pff0")
+    firefoxNs = String(j.firefox_ns || "ffvpn")
     regularIf = String(j.regular_if || "")
     reportDir = String(j.report_dir || "")
     if (demo) {
@@ -409,6 +458,7 @@ Panel {
       parts.push("Imported " + names.join(", ") + ".")
     }
     if (j.torrent) parts.push("Torrent tunnel: " + prettyName(j.torrent) + ".")
+    if (j.firefox) parts.push("Firefox tunnel: " + prettyName(j.firefox) + ".")
     if (j.note) parts.push(String(j.note))
     var skipped = j.skipped instanceof Array ? j.skipped : []
     var errors = []
@@ -507,6 +557,9 @@ Panel {
   onQbtUnprotectedChanged: if (qbtUnprotected) notify("critical", "qBittorrent is outside the tunnel",
     "A qBittorrent process is running outside the VPN namespace. Close it now.",
     "A qBittorrent process is running outside the qbtvpn namespace, so its traffic may not go through the tunnel.")
+  onFfUnprotectedChanged: if (ffUnprotected) notify("critical", "Firefox is outside its tunnel",
+    "A Firefox is running outside the Firefox tunnel. Close it, then start Firefox again.",
+    "A Firefox process is running outside the " + firefoxNs + " namespace, so its browsing does not go through the Firefox tunnel.")
   onOtherAppsTextChanged: if (otherAppsText !== "") notify("critical", otherAppsText + " is not in the torrent tunnel",
     "Only qBittorrent opened from this panel or its launcher uses the torrent tunnel. " + otherAppsText + " uses your regular connection. Close it and use qBittorrent.",
     "A torrent app other than qBittorrent (" + otherAppsText + ") is running outside the qbtvpn namespace, so it uses the regular connection instead of the torrent tunnel.")
@@ -517,6 +570,7 @@ Panel {
       return "The leak check (vpn-verify) found " + verifyFailures.length + " failing check" + (verifyFailures.length === 1 ? "" : "s") + "."
     if (qbtUnprotected) return "A qBittorrent process is running outside the qbtvpn namespace."
     if (otherApps.length > 0) return "A torrent app other than qBittorrent (" + otherAppsText + ") is running outside the qbtvpn namespace."
+    if (ffUnprotected) return "A Firefox process is running outside the " + firefoxNs + " namespace, so its browsing does not go through the Firefox tunnel."
     if (blockedSteady) return "The VPN dropped: " + (wanted !== "" ? wanted : "the chosen server") + " is selected but not connected, so the kill switch is blocking regular traffic."
     if (torrentDownSteady) return "The torrent tunnel (namespace qbtvpn) is down, so qBittorrent has no network."
     return ""
@@ -812,7 +866,7 @@ Panel {
 
   Timer {
     interval: 500
-    running: vpn.danger
+    running: vpn.danger || vpn.ffDanger
     repeat: true
     onTriggered: vpn.blinkOn = !vpn.blinkOn
     onRunningChanged: if (!running) vpn.blinkOn = true
@@ -824,7 +878,7 @@ Panel {
     bar: vpn.bar
     text: vpn.barText
     active: vpn.alert
-    dimmed: vpn.danger && !vpn.blinkOn
+    dimmed: (vpn.danger || vpn.ffDanger) && !vpn.blinkOn
     // Tooltip suppressed because the panel is the detail view.
     tooltipText: ""
     onPressed: function(buttonCode) {
@@ -990,6 +1044,61 @@ Panel {
               Layout.alignment: Qt.AlignVCenter
               Layout.rightMargin: Style.space(6)
               onClicked: vpn.copy(vpn.qbtIp)
+            }
+          }
+
+          // The Firefox tunnel, under the torrents line, once it is set up.
+          RowLayout {
+            visible: vpn.installed && vpn.ffConfigured
+            width: parent.width
+            spacing: Style.space(8)
+
+            Text {
+              textFormat: Text.PlainText
+              text: vpn.ffDanger || vpn.ffDown ? vpn.gAlert : vpn.gFirefox
+              color: vpn.ffDanger || vpn.ffDown ? vpn.urgent : vpn.foreground
+              font.family: vpn.fontFamily
+              font.pixelSize: Style.font.body
+              horizontalAlignment: Text.AlignHCenter
+              Layout.preferredWidth: Style.space(22)
+              Layout.leftMargin: Style.space(6)
+              Layout.alignment: Qt.AlignVCenter
+            }
+
+            ColumnLayout {
+              Layout.fillWidth: true
+              spacing: Style.space(1)
+
+              Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                text: "Firefox: " + vpn.ffTitle
+                color: vpn.ffDown ? vpn.urgent : vpn.foreground
+                font.family: vpn.fontFamily
+                font.pixelSize: Style.font.body
+                elide: Text.ElideRight
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                text: (vpn.ffTunnel && vpn.ffIp !== "" ? vpn.ffIp + " \u00b7 " : "") + vpn.ffDetail
+                color: vpn.ffDanger ? vpn.urgent : vpn.dim
+                font.family: vpn.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+            }
+
+            PanelActionButton {
+              visible: vpn.ffIp !== ""
+              iconText: vpn.gCopy
+              tooltipText: "Copy Firefox IP"
+              foreground: vpn.foreground
+              fontFamily: vpn.fontFamily
+              Layout.alignment: Qt.AlignVCenter
+              Layout.rightMargin: Style.space(6)
+              onClicked: vpn.copy(vpn.ffIp)
             }
           }
 
@@ -1200,7 +1309,8 @@ Panel {
               glyph: vpn.gShield
               title: vpn.verifying ? "Checking" : "Check for leaks"
               subtitle: vpn.verifying ? "Takes about twenty seconds"
-                : (vpn.verifySummary !== "" ? vpn.verifySummary : "Routes, DNS, IPv6, kill switch, torrent tunnel")
+                : (vpn.verifySummary !== "" ? vpn.verifySummary
+                  : "Routes, DNS, IPv6, kill switch, torrent tunnel" + (vpn.ffConfigured ? ", Firefox tunnel" : ""))
               isPending: vpn.verifying
               actionGlyph: vpn.reportDir !== "" ? vpn.gFolder : ""
               actionTooltip: "Open the saved reports"
