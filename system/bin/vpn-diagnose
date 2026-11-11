@@ -26,7 +26,7 @@ REPORT=""
 if [[ -r /usr/local/lib/vpnkit/common.sh ]]; then
   REPORT="$(bash -c '. /usr/local/lib/vpnkit/common.sh && vpnkit_report_dir' 2>/dev/null)/latest.txt"
 fi
-[[ -s "$REPORT" ]] || REPORT="${XDG_RUNTIME_DIR:-/tmp}/vpnkit-last-check.txt"
+[[ -s "$REPORT" ]] || REPORT="${XDG_RUNTIME_DIR:-$HOME/.cache}/vpnkit-last-check.txt"
 
 reason="$*"
 [[ -n "$reason" ]] || reason="Something is wrong with the VPN (opened by hand)."

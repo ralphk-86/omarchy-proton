@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.2 (2026-11-11)
+
+- **No predictable files in a shared `/tmp`.** The developer helper that makes the
+  presentation images (`tests/preview/make-preview.sh`) wrote full-desktop captures under a
+  fixed name in `/tmp`, where another local user could read them. It now works in a new
+  private folder for each run (a `WORK` folder you set must be yours, not a symlink, mode
+  700, or it refuses), captures only the panel or bar area of the focused monitor instead of
+  the whole desktop, and deletes the raw capture as soon as it is cropped, also when it
+  fails half way. Only people who build the images run it.
+- The same class, in the plugin: when `XDG_RUNTIME_DIR` is not set (not the case in a normal
+  desktop session), `vpn-status` kept its address cache, and the panel and `vpn-diagnose`
+  their session report, under a fixed name in `/tmp`. They now use a private folder in your
+  home instead (`~/.cache/vpnkit`, `~/.cache`).
+- VM suite: 682 passed, 0 failed.
+
 ## 0.4.1 (2026-11-10)
 
 - **Static IPv6 in a network profile is now saved in full and put back exactly.** To switch

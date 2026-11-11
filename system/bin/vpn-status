@@ -17,7 +17,16 @@ set -uo pipefail
 
 . /usr/local/lib/vpnkit/common.sh
 . /usr/local/lib/vpnkit/direct.sh
-CACHE="${XDG_RUNTIME_DIR:-/tmp}/vpnkit-external-ip"
+# The address cache lives in your runtime folder, or else a private folder of
+# yours; never a predictable name in a shared /tmp, where another user could
+# leave a file that would show a false address.
+if [[ -n "${XDG_RUNTIME_DIR:-}" && -d "$XDG_RUNTIME_DIR" && -O "$XDG_RUNTIME_DIR" ]]; then
+  CACHE_DIR="$XDG_RUNTIME_DIR"
+else
+  CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/vpnkit"
+  (umask 077; mkdir -p -- "$CACHE_DIR") 2>/dev/null || true
+fi
+CACHE="$CACHE_DIR/vpnkit-external-ip"
 
 MODE="text"; FORCE=0
 for arg in "$@"; do

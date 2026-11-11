@@ -18,7 +18,7 @@ Panel {
   moduleName: "io.github.ralphk-86.omarchy-proton"
 
   // Must match VERSION and manifest.json (tests/check.sh verifies it).
-  readonly property string kitVersion: "0.4.1"
+  readonly property string kitVersion: "0.4.2"
 
   readonly property string statusCmd: "/usr/local/bin/vpn-status"
   readonly property string toggleCmd: "/usr/local/bin/vpn-toggle"
@@ -40,7 +40,7 @@ Panel {
   property string lastReport: ""
   readonly property string diagnoseCmd: "/usr/local/bin/vpn-diagnose"
   // The last leak check's output, for vpn-diagnose to hand to the AI agent.
-  readonly property string reportFile: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/vpnkit-last-check.txt"
+  readonly property string reportFile: (Quickshell.env("XDG_RUNTIME_DIR") || (Quickshell.env("HOME") + "/.cache")) + "/vpnkit-last-check.txt"
   // Screenshot mode: with "demoStatusFile" set on this widget's shell.json
   // entry, the widget shows that file instead of the real status and ignores
   // clicks. Used to make preview images without anyone's real servers or IPs

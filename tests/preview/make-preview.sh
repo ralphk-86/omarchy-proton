@@ -38,11 +38,33 @@
 #  set in the environment for another layout.
 # ============================================================================
 set -euo pipefail
+# Captures show the desktop: everything this script writes is private to you.
+umask 077
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ID=io.github.ralphk-86.omarchy-proton
-WORK="${WORK:-${TMPDIR:-/tmp}/omarchy-proton-preview}"
+
+# The work folder. By default a new private folder for each run (kept, so its
+# images can be looked at; the path is printed). A WORK you set must be a
+# directory you own, not a symlink, with no access for group or others; it
+# is created (mode 700) if it does not exist. A shared or predictable folder
+# would let another user read or replace the captures.
+work_dir() {
+  if [[ -z "${WORK:-}" ]]; then
+    WORK=$(mktemp -d "${TMPDIR:-/tmp}/omarchy-proton-preview.XXXXXXXX")
+    return
+  fi
+  [[ -e "$WORK" || -L "$WORK" ]] || mkdir -m 700 -- "$WORK"
+  if [[ -L "$WORK" || ! -d "$WORK" || ! -O "$WORK" ]] \
+     || (( 8#$(stat -c %a -- "$WORK") & 8#077 )); then
+    echo "WORK=$WORK must be a directory you own (not a symlink) with mode 700; refusing" >&2
+    exit 1
+  fi
+}
+work_dir
 CAPTURE="$WORK/capture.png"
+# Raw captures never outlive the run, also when it fails half way.
+trap 'rm -f -- "$CAPTURE"' EXIT
 OUT="${OUT:-$REPO/preview.png}"
 BAR_STATES="${BAR_STATES:-$REPO/screenshots/bar-states.png}"
 WORKSPACE="${WORKSPACE:-8}"
@@ -57,6 +79,25 @@ BG="#1a1b26"; FG="#a9b1d6"; DIM="#6d728a"; ACCENT="#7aa2f7"; LINE="#2b2d3b"; BOX
 TITLE="#c0caf5"
 
 need() { for c in "$@"; do command -v "$c" >/dev/null || { echo "needs $c"; exit 1; }; done; }
+
+# grab <x> <y> <w> <h> <out>: capture only that rectangle of the focused
+# monitor, given in its screenshot pixels, into <out> at exactly <w>x<h>.
+# grim takes the region in layout coordinates, so the rectangle is widened
+# to whole layout pixels, captured at the monitor's scale, then trimmed.
+# Nothing outside it (other windows, other monitors) is ever saved.
+grab() {
+  local mon geo crop
+  mon=$(hyprctl monitors -j | jq -c '[.[] | select(.focused)][0] // empty')
+  [[ -n "$mon" ]] || { echo "no focused monitor"; exit 1; }
+  read -r geo crop < <(jq -r --argjson x "$1" --argjson y "$2" --argjson w "$3" --argjson h "$4" '
+    .scale as $s
+    | ($x / $s | floor) as $lx | ($y / $s | floor) as $ly
+    | ((($x + $w) / $s | ceil) - $lx) as $lw | ((($y + $h) / $s | ceil) - $ly) as $lh
+    | "\(.x + $lx),\(.y + $ly)_\($lw)x\($lh) \($w)x\($h)+\($x - $lx * $s | round)+\($y - $ly * $s | round)"' <<<"$mon")
+  grim -s "$(jq -r .scale <<<"$mon")" -g "${geo/_/ }" "$CAPTURE"
+  magick "$CAPTURE" -crop "$crop" +repage "$5"
+  rm -f -- "$CAPTURE"
+}
 font_file() { fc-match -f '%{file}' "$1" 2>/dev/null || true; }
 g() { printf "\\U$(printf '%08X' "$1")"; }     # a Nerd Font glyph by code point
 
@@ -188,37 +229,35 @@ cards() {
 # A real capture of the open panel in screenshot mode, and the drawn panel
 # and bar at 1x next to it, to check the drawing against the widget.
 capture() {
-  need grim jq hyprctl omarchy omarchy-shell magick; fonts; mkdir -p "$WORK"
+  need grim jq hyprctl omarchy omarchy-shell magick; fonts
   [ "$(hyprctl clients -j | jq --argjson w "$WORKSPACE" '[.[] | select(.workspace.id == $w)] | length')" = 0 ] \
     || { echo "workspace $WORKSPACE is not empty; set WORKSPACE to an empty one"; exit 1; }
   local prev ok=0; prev=$(hyprctl activeworkspace -j | jq .id)
   omarchy bar set "$ID" demoStatusFile "$REPO/tests/preview/status.json" >/dev/null
   hyprctl dispatch "hl.dsp.focus({ workspace = \"$WORKSPACE\" })" >/dev/null; sleep 1.2
   omarchy-shell shell summon "$ID" '{}' >/dev/null; sleep 2.5
-  [ "$(hyprctl activeworkspace -j | jq .id)" = "$WORKSPACE" ] && grim "$CAPTURE" && ok=1
+  [ "$(hyprctl activeworkspace -j | jq .id)" = "$WORKSPACE" ] \
+    && grab "$PANEL_X" "$PANEL_Y" "$PANEL_W" 262 "$WORK/panel-real.png" && ok=1
   omarchy-shell shell hide "$ID" >/dev/null 2>&1 || true
   hyprctl dispatch "hl.dsp.focus({ workspace = \"$prev\" })" >/dev/null
   omarchy bar set "$ID" demoStatusFile "" >/dev/null
   (( ok )) || { echo "the workspace changed during the capture; try again"; exit 1; }
   draw_panel 1 "$WORK/panel-1x.png"
-  magick "$CAPTURE" -crop "${PANEL_W}x262+${PANEL_X}+${PANEL_Y}" +repage "$WORK/panel-real.png"
   magick "$WORK/panel-real.png" "$WORK/panel-1x.png" +append -scale 300% "$WORK/compare.png"
-  echo "captured $CAPTURE; drawn vs real (top rows only): $WORK/compare.png"
+  echo "captured the panel only: $WORK/panel-real.png; drawn vs real (top rows only): $WORK/compare.png"
 }
 
 # The bar alone in four states. Captured at the screen's own resolution,
 # nothing scaled up.
 bar_states() {
-  need grim jq omarchy magick; fonts; mkdir -p "$WORK"
+  need grim jq hyprctl omarchy magick; fonts
   local orig
   orig=$(jq -r --arg id "$ID" '[.. | objects | select(.id? == $id) | .showIps][0] // true' "$HOME/.config/omarchy/shell.json")
   shoot() {  # shoot <demo file> <showIps> <name>
     omarchy bar set "$ID" demoStatusFile "$REPO/tests/preview/$1" >/dev/null
     omarchy bar set "$ID" showIps "$2" --json >/dev/null
     sleep 6.5      # one refresh of the widget
-    grim "$WORK/full-$3.png"
-    magick "$WORK/full-$3.png" -crop "${STRIP_W}x${BAR_H}+${STRIP_X}+0" +repage "$WORK/strip-$3.png"
-    rm -f "$WORK/full-$3.png"
+    grab "$STRIP_X" 0 "$STRIP_W" "$BAR_H" "$WORK/strip-$3.png"
   }
   shoot status.json true locked-ips
   shoot status.json false locked-noips
