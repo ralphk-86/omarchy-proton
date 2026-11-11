@@ -258,8 +258,9 @@ firefox_inside() {
 # passes Firefox through as the tunnel's state says.
 ff_launcher() {
   [[ -n "$TARGET_USER" && "$TARGET_USER" != root && -n "${TARGET_HOME:-}" && -d "$TARGET_HOME" ]] || return 0
-  runuser -u "$TARGET_USER" -- env -i HOME="$TARGET_HOME" PATH="$PATH" \
-    timeout 30 /usr/local/bin/vpn-firefox-launcher >/dev/null 2>&1 \
+  # The time limit is root's, outside runuser: the user cannot stop it.
+  timeout 30 runuser -u "$TARGET_USER" -- env -i HOME="$TARGET_HOME" PATH="$PATH" \
+    /usr/local/bin/vpn-firefox-launcher >/dev/null 2>&1 \
     || echo "vpnkit-sync: could not update the Firefox launcher entry (run vpn-firefox-launcher)" >&2
   return 0
 }

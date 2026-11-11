@@ -121,8 +121,9 @@ exit_ip=$(ns_exit_ip "$NS" "$IPCACHE" "$tunnel_up")
 # Computed like the torrent fields above. It is on once a Firefox server was
 # chosen (vpnkit_ff_opted_in, or its config is in place); only then are the
 # desktop user's Firefox processes looked at (by their program, FF_BIN, and
-# their namespace inode: every Firefox process, not only the main one). "pids"
-# lists the ones outside the namespace. The namespace is never the torrent
+# their namespace inode; only main processes, see vpnkit_ff_pids: Firefox's
+# sandboxed children have namespaces of their own). "pids" lists the ones
+# outside the namespace. The namespace is never the torrent
 # tunnel's, whatever vpnkit.conf says.
 firefox_json() {
   local configured=false exists=false route=false hs=0 ep="" up=false addr="" conn server="" ino="" scan
@@ -139,7 +140,7 @@ firefox_json() {
   if [[ "$route" == true && "$hs" -gt 0 ]] && (( now - hs < HANDSHAKE_MAX_AGE )); then up=true; fi
   addr=$(ns_exit_ip "$FF_NS" "$FF_IPCACHE" "$up")
   scan=""
-  [[ "$configured" == true ]] && scan=$(vpnkit_app_pids "$TARGET_USER" "$VPNKIT_FF_EXE_RE" both "netns:$ino")
+  [[ "$configured" == true ]] && scan=$(vpnkit_ff_pids "$ino" "$TARGET_USER" both)
   jq -Rsc --argjson configured "$configured" --argjson exists "$exists" --argjson route "$route" \
           --argjson up "$up" --argjson hs "$hs" --arg ep "$ep" --arg addr "$addr" \
           --arg server "$server" --arg conn "$conn" '

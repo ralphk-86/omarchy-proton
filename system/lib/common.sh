@@ -233,13 +233,40 @@ vpnkit_qbt_outside_pids() {  # vpnkit_qbt_outside_pids <namespace inode or ""> <
 
 # The real Firefox binary (FF_BIN), also after an update replaced it.
 VPNKIT_FF_EXE_RE="^${FF_BIN}( \\(deleted\\))?\$"
+vpnkit_ff_pids() {  # vpnkit_ff_pids <namespace inode or ""> <user> <inside|outside|both>
+  # Like vpnkit_app_pids for Firefox, but only its main processes: those
+  # whose parent is not a Firefox process. Firefox starts its content, RDD,
+  # utility and extension processes (same program) in a sandbox with a
+  # network namespace of their own, and the fork server under the main one;
+  # a child either shares its parent's namespace or has one without any
+  # network, and only a main process takes over what a new Firefox is asked
+  # to open. So the children say nothing about where Firefox runs. A process
+  # whose parent cannot be read (another user's, as root's runuser is for
+  # ff-launch's Firefox) counts as a main process.
+  local where pid k v ppid
+  while read -r where pid; do
+    [[ -n "$pid" ]] || continue
+    ppid=""
+    { while IFS=$':\t ' read -r k v; do
+        [[ "$k" == PPid ]] && { ppid="$v"; break; }
+      done < "/proc/$pid/status"; } 2>/dev/null
+    [[ "$ppid" =~ ^[0-9]+$ ]] || continue          # it vanished
+    [[ "$(readlink "/proc/$ppid/exe" 2>/dev/null)" =~ $VPNKIT_FF_EXE_RE ]] && continue
+    case "$3" in
+      both) printf '%s %s\n' "$where" "$pid" ;;
+      "$where") printf '%s\n' "$pid" ;;
+    esac
+  done < <(vpnkit_app_pids "$2" "$VPNKIT_FF_EXE_RE" both "netns:$1")
+  return 0
+}
 vpnkit_ff_outside_pids() {  # vpnkit_ff_outside_pids <namespace inode or ""> <user>
-  # Prints each Firefox process of <user> that is NOT inside the Firefox
-  # namespace. A new Firefox hands the URLs it is asked to open to a running
-  # one of the same profile (over the session bus or a socket file, both of
-  # which cross network namespaces), so while one of these runs, a Firefox
-  # started inside the namespace would open its pages outside the tunnel.
-  vpnkit_app_pids "$2" "$VPNKIT_FF_EXE_RE" outside "netns:$1"
+  # Prints each Firefox (main process, see vpnkit_ff_pids) of <user> that is
+  # NOT inside the Firefox namespace. A new Firefox hands the URLs it is asked
+  # to open to a running one of the same profile (over the session bus or a
+  # socket file, both of which cross network namespaces), so while one of
+  # these runs, a Firefox started inside the namespace would open its pages
+  # outside the tunnel.
+  vpnkit_ff_pids "$1" "$2" outside
 }
 vpnkit_ff_inside_pids() {  # vpnkit_ff_inside_pids <namespace inode or ""> <user>
   vpnkit_app_pids "$2" "$VPNKIT_FF_EXE_RE" inside "netns:$1"

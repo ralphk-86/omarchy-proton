@@ -377,8 +377,9 @@ else
   fi
   # Every Firefox of the desktop user: inside the namespace, and entered
   # with its resolver files (one check per mount namespace: its processes
-  # share what they see).
-  FFPS=$(vpnkit_app_pids "$TARGET_USER" "$VPNKIT_FF_EXE_RE" both "netns:$FFINO")
+  # share what they see). Main processes only (vpnkit_ff_pids): Firefox's
+  # sandboxed children have namespaces, and a root, of their own.
+  FFPS=$(vpnkit_ff_pids "$FFINO" "$TARGET_USER" both)
   FFOUT=$(awk '$1 == "outside" {print $2}' <<<"$FFPS" | paste -sd' ' -)
   if [[ -n "$FFOUT" ]]; then
     no "Firefox is running OUTSIDE the Firefox tunnel (pid $FFOUT) - its pages use your regular connection; close it, then start Firefox again"

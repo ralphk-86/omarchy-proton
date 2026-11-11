@@ -62,9 +62,10 @@ if ! vpnkit_resolver_safe "/etc/netns/$FF_NS"; then
 fi
 
 # FAIL CLOSED: refuse to launch unless the tunnel actually has a route.
-if ! ip netns exec "$FF_NS" ip route show default 2>/dev/null | grep -q .; then
-  refuse "the Firefox tunnel is DOWN - refusing to launch Firefox."
-fi
+# (Read in full first: under pipefail, grep -q quitting early can fail the
+# pipeline, and that would be a false refusal.)
+ROUTE=$(ip netns exec "$FF_NS" ip route show default 2>/dev/null) || ROUTE=""
+[[ -n "$ROUTE" ]] || refuse "the Firefox tunnel is DOWN - refusing to launch Firefox."
 
 # FAIL CLOSED: a Firefox of the user running outside the namespace would be
 # handed whatever this one is asked to open (see vpnkit_ff_outside_pids).

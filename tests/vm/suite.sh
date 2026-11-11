@@ -362,6 +362,13 @@ no "tester may NOT run the leak check with arguments" as_user sudo -n /usr/local
 pacman -S --needed --noconfirm google-chrome xorg-server-xvfb > /tmp/chrome-install.log 2>&1
 yes "real Google Chrome is installed for the Chrome direct checks" test -x /opt/google/chrome/chrome
 yes "and Xvfb" command -v Xvfb
+# Real Firefox (official repositories), for the Firefox tunnel checks with the
+# real browser (end of 3b). Its launcher entry replaces the suite's fixture
+# (section 0), which is put back: 3b checks the override against it.
+cp /usr/share/applications/firefox.desktop /root/suite-firefox.desktop
+pacman -S --needed --noconfirm --overwrite /usr/share/applications/firefox.desktop firefox > /tmp/firefox-install.log 2>&1
+cp /root/suite-firefox.desktop /usr/share/applications/firefox.desktop; rm -f /root/suite-firefox.desktop
+yes "real Firefox is installed for the Firefox tunnel checks" test -x /usr/lib/firefox/firefox
 
 gateway on
 is "the lookup service answers with the home address" "$(myip)" "$HOME_IP"
@@ -702,7 +709,7 @@ is "choosing it directly (as from a terminal) writes the launcher override too" 
 FFBAK=""; [[ -e /usr/lib/firefox/firefox ]] && { FFBAK=$(mktemp); cp -a /usr/lib/firefox/firefox "$FFBAK"; }
 install -D -m 755 /usr/bin/sleep /usr/lib/firefox/firefox
 ffpids() { local p; for p in $(pgrep -u $U); do [[ "$(readlink /proc/$p/exe 2>/dev/null)" == /usr/lib/firefox/firefox ]] && echo "$p"; done; return 0; }
-ffkill() { local p; for p in $(ffpids); do kill "$p" 2>/dev/null; done; sleep 1; }
+ffkill() { local p; for p in $(ffpids); do pkill -P "$p" 2>/dev/null; kill "$p" 2>/dev/null; done; sleep 1; }
 FFNSINO=$(stat -Lc %i /run/netns/ffvpn)
 HOSTINO=$(stat -Lc %i /proc/self/ns/net)
 as_user /usr/local/bin/firefox 600 </dev/null >/dev/null 2>&1 &
@@ -730,6 +737,35 @@ yes "(it checked Firefox's resolver files)" grep -qE "PASS.*Firefox \(pid [0-9]+
 yes "(and its own exit)" grep -q "PASS.*Firefox exits from its own address (10.3.0.4), not the host's nor the torrent tunnel's" <<<"$OUT"
 yes "(and that the launcher reaches the wrapper)" grep -q "PASS.*the Firefox launcher and links reach the wrapper (/usr/local/bin/firefox)" <<<"$OUT"
 ffkill
+# Firefox starts its sandboxed children (content, RDD, utility, extension
+# processes: the same program) in network namespaces of their own. They are
+# not a Firefox outside the tunnel, so a second start must not be refused.
+# A bash stand-in with such a child (unshare -Urn, as Firefox's sandbox does).
+install -m 755 /usr/bin/bash /usr/lib/firefox/firefox
+as_user /usr/local/bin/firefox -c 'unshare -Urn /usr/lib/firefox/firefox -c "sleep 600; :"; :' </dev/null >/dev/null 2>&1 &
+sleep 2
+FFMAIN=""; FFCHILD=""
+for p in $(ffpids); do
+  pp=$(awk '/^PPid:/ {print $2}' /proc/$p/status 2>/dev/null)
+  if [[ "$(readlink /proc/${pp:-0}/exe 2>/dev/null)" == /usr/lib/firefox/firefox ]]; then FFCHILD=$p; else FFMAIN=$p; fi
+done
+is "(the stand-in runs inside the namespace)" "$(stat -Lc %i /proc/${FFMAIN:-none}/ns/net 2>/dev/null)" "$FFNSINO"
+yes "(and its sandboxed child has a network namespace of its own)" bash -c '[[ -n "$1" ]] && i=$(stat -Lc %i /proc/$1/ns/net) && [[ "$i" != "$2" && "$i" != "$3" ]]' _ "$FFCHILD" "$FFNSINO" "$HOSTINO"
+OUT=$(as_user /usr/local/bin/firefox -c 'exit 0' 2>&1); rc=$?
+is "a sandboxed child is not a Firefox outside: the wrapper starts Firefox" "$rc:$(grep -c 'NOT started' <<<"$OUT")" "0:0"
+OUT=$(as_user sudo -n /usr/local/bin/ff-launch -c 'exit 0' 2>&1); rc=$?
+is "and so does ff-launch" "$rc:$(grep -c 'ff-launch:' <<<"$OUT")" "0:0"
+is "status: protected, nothing outside" "$(status '[.ff_protected, .ff_unprotected] | map(tostring) | join(",")')" "true,false"
+OUT=$(vpn-verify 2>&1)
+is "the leak check does not count the sandboxed child" "$(ffsect "$OUT" | grep -c FAIL)" "0"
+ffsect "$OUT" | grep FAIL | sed 's/^/      /'
+ffkill
+as_user /usr/lib/firefox/firefox -c 'sleep 600; :' </dev/null >/dev/null 2>&1 &
+sleep 1
+OUT=$(as_user /usr/local/bin/firefox -c 'exit 0' 2>&1); rc=$?
+is "(a stand-in started outside is still refused)" "$rc:$(grep -c 'already running outside' <<<"$OUT")" "1:1"
+ffkill
+install -m 755 /usr/bin/sleep /usr/lib/firefox/firefox
 # A Firefox already outside the namespace would be handed what a new one opens.
 as_user /usr/lib/firefox/firefox 600 </dev/null >/dev/null 2>&1 &
 sleep 1
@@ -737,7 +773,8 @@ P=$(ffpids | head -1)
 OUT=$(as_user /usr/local/bin/firefox 5 2>&1); rc=$?
 is "with one outside, the wrapper refuses" "$rc" "1"
 yes "and names its pid" grep -q "pid $P" <<<"$OUT"
-no "with one outside, ff-launch refuses" as_user sudo -n /usr/local/bin/ff-launch 5
+OUT=$(as_user sudo -n /usr/local/bin/ff-launch 5 2>&1); rc=$?
+is "with one outside, ff-launch refuses, naming it" "$rc:$(grep -c "already running outside the namespace (pid $P)" <<<"$OUT")" "1:1"
 no "with one outside, the wrapper refuses even from inside the namespace" ip netns exec ffvpn runuser -u "$U" -- /usr/local/bin/firefox 5
 is "(no second Firefox was started)" "$(ffpids | wc -l)" "1"
 is "status: a Firefox outside the namespace is unprotected" "$(status .ff_unprotected)" "true"
@@ -788,6 +825,33 @@ is "(nothing was started)" "$(ffpids | wc -l)" "0"
 systemctl start ff-netns.service
 is "(namespace back)" "$(ip netns exec ffvpn curl -4 -s --max-time 6 $LOOKUP)" "10.3.0.4"
 FFNSINO=$(stat -Lc %i /run/netns/ffvpn)
+# Without its config the tunnel is off for ff-launch, even with the namespace up.
+mv /etc/wireguard/vpnkit-firefox.conf /root/suite-ffconf
+OUT=$(as_user sudo -n /usr/local/bin/ff-launch 5 2>&1); rc=$?
+is "without its config, ff-launch refuses (the tunnel is off), namespace up or not" "$rc:$(grep -c 'tunnel is off' <<<"$OUT")" "1:1"
+mv /root/suite-ffconf /etc/wireguard/vpnkit-firefox.conf
+# vpnkit.conf naming the torrent namespace for Firefox.
+cp /etc/vpnkit/vpnkit.conf /root/suite-vpnkit.conf
+printf 'FF_NS="qbtvpn"\n' >> /etc/vpnkit/vpnkit.conf
+OUT=$(as_user sudo -n /usr/local/bin/ff-launch 5 2>&1); rc=$?
+is "ff-launch refuses FF_NS naming the torrent namespace" "$rc:$(grep -c "other than the torrent tunnel's" <<<"$OUT")" "1:1"
+cp /root/suite-vpnkit.conf /etc/vpnkit/vpnkit.conf; rm -f /root/suite-vpnkit.conf
+is "(nothing was started)" "$(ffpids | wc -l)" "0"
+# Any one of record, namespace and boot unit means on: a half-removed tunnel
+# never lets Firefox out.
+mv /etc/vpnkit/firefox-server /root/suite-ffrec
+as_user /usr/local/bin/firefox 600 </dev/null >/dev/null 2>&1 &
+sleep 2
+is "without the record (namespace and unit left), the wrapper still enters the namespace" \
+  "$(for p in $(ffpids); do stat -Lc %i /proc/$p/ns/net; done | sort -u | paste -sd, -)" "$FFNSINO"
+ffkill
+systemctl stop ff-netns.service
+OUT=$(as_user /usr/local/bin/firefox 5 2>&1); rc=$?
+is "with only the boot unit left, the wrapper refuses" "$rc:$(grep -c 'NOT started' <<<"$OUT")" "1:1"
+is "(nothing was started)" "$(ffpids | wc -l)" "0"
+mv /root/suite-ffrec /etc/vpnkit/firefox-server
+systemctl start ff-netns.service
+FFNSINO=$(stat -Lc %i /run/netns/ffvpn)
 # The passwordless rule: the binary is fixed, and it runs as the user. A
 # stand-in that takes any arguments and keeps running (yes) shows what ran.
 install -m 755 /usr/bin/yes /usr/lib/firefox/firefox
@@ -817,6 +881,65 @@ ffkill
 no "firefox off: ff-launch refuses" as_user sudo -n /usr/local/bin/ff-launch 5
 is "(back on for the rest of the suite)" "$(as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-se-4 2>&1)" "firefox: proton-se-4"
 if [[ -n "$FFBAK" ]]; then cp -a "$FFBAK" /usr/lib/firefox/firefox; rm -f "$FFBAK"; else rm -rf /usr/lib/firefox; fi
+
+# Real Firefox, headed on a virtual X display, started the way the user
+# starts it (the wrapper on PATH). Its sandboxed children (content, RDD,
+# utility processes) have network namespaces of their own: none of them may
+# count as a Firefox outside the tunnel, anywhere.
+cat > /tmp/fflog.py <<'PYLOG'
+import http.server, socketserver
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        with open("/tmp/ff-seen.log", "a") as f:
+            f.write("%s %s\n" % (self.client_address[0], self.path))
+        body = b"<html><body>ok</body></html>"
+        self.send_response(200); self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body))); self.send_header("Connection", "close")
+        self.end_headers(); self.wfile.write(body)
+    def log_message(self, *a): pass
+class S(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True; allow_reuse_address = True
+S(("0.0.0.0", 8082), H).serve_forever()
+PYLOG
+rm -f /tmp/ff-seen.log /tmp/ff-real.log
+ip netns exec provider python3 /tmp/fflog.py </dev/null >/dev/null 2>&1 &
+FFLOG_PID=$!
+as_user Xvfb :98 -nolisten tcp </dev/null >/dev/null 2>&1 &
+FFX_PID=$!
+sleep 1
+FFNSINO=$(stat -Lc %i /run/netns/ffvpn)
+ffseen() {  # ffseen <path>: the client address of the first request for <path>, waiting up to 60 s
+  local i; for i in $(seq 1 120); do grep -q " $1\$" /tmp/ff-seen.log 2>/dev/null && break; sleep 0.5; done
+  awk -v p="$1" '$2 == p {print $1; exit}' /tmp/ff-seen.log 2>/dev/null
+}
+ffmain() {  # Firefox's main processes: its program, with a parent that is not Firefox
+  local p pp; for p in $(ffpids); do
+    pp=$(awk '/^PPid:/ {print $2}' /proc/$p/status 2>/dev/null)
+    [[ "$(readlink /proc/${pp:-0}/exe 2>/dev/null)" == /usr/lib/firefox/firefox ]] || echo "$p"
+  done
+}
+FFENV=(HOME=$UHOME USER=$U XDG_RUNTIME_DIR=/run/user/$UID_T PATH="$PATH" DISPLAY=:98 MOZ_ENABLE_WAYLAND=0)
+runuser -u $U -- env "${FFENV[@]}" /usr/local/bin/firefox http://192.0.2.80:8082/ff-first </dev/null >>/tmp/ff-real.log 2>&1 &
+is "real Firefox: a page it opens leaves through the Firefox server" "$(ffseen /ff-first)" "10.3.0.4"
+is "real Firefox: one main process, inside the namespace" "$(for p in $(ffmain); do stat -Lc %i /proc/$p/ns/net; done | paste -sd, -)" "$FFNSINO"
+FFNSES=$(for p in $(ffpids); do stat -Lc %i /proc/$p/ns/net; done)
+echo "      (real Firefox: $(ffpids | wc -l) processes in $(sort -u <<<"$FFNSES" | wc -l) network namespaces)"
+no "real Firefox: none of its processes is in the host's network namespace" grep -qx "$HOSTINO" <<<"$FFNSES"
+is "status: real Firefox protected, nothing outside" "$(status '[.ff_running, .ff_protected, .ff_unprotected] | map(tostring) | join(",")')" "true,true,false"
+OUT=$(vpn-verify 2>&1)
+is "the leak check passes real Firefox and its children" "$(ffsect "$OUT" | grep -c FAIL)" "0"
+ffsect "$OUT" | grep FAIL | sed 's/^/      /'
+# A second start (a new window, or a link from another app) goes to the
+# running Firefox and is not refused.
+OUT=$(timeout 90 runuser -u $U -- env "${FFENV[@]}" /usr/local/bin/firefox --new-window http://192.0.2.80:8082/ff-second </dev/null 2>&1); rc=$?
+is "real Firefox: a second start is not refused" "$rc:$(grep -cE 'NOT started|ff-launch:' <<<"$OUT")" "0:0"
+is "its page leaves through the Firefox server too" "$(ffseen /ff-second)" "10.3.0.4"
+is "(handed to the running Firefox: still one main process)" "$(ffmain | wc -l)" "1"
+(( rc == 0 )) || { echo "      second start: $OUT" | head -5; tail -5 /tmp/ff-real.log | sed 's/^/      /'; }
+for p in $(ffmain); do kill "$p" 2>/dev/null; done
+for i in $(seq 1 20); do [[ -z "$(ffpids)" ]] && break; sleep 0.5; done
+ffkill
+kill "$FFX_PID" "$FFLOG_PID" 2>/dev/null
 
 # ---------------------------------------------------------------------------
 section "4. Desktop VPN and kill switch"
