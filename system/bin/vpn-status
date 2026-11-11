@@ -94,7 +94,7 @@ DIRECT_ON=false; vpnkit_direct_on && DIRECT_ON=true
 CHROME_THERE=false; [[ -x "$DIRECT_BIN" ]] && CHROME_THERE=true
 
 # --- configs waiting in the drop folder -------------------------------------
-INBOX=$(find "$CONFIG_DIR" "$CONFIG_DIR/torrent" -maxdepth 1 -type f -name '*.conf' 2>/dev/null | wc -l)
+INBOX=$(find "$CONFIG_DIR" "$CONFIG_DIR/torrent" "$CONFIG_DIR/firefox" -maxdepth 1 -type f -name '*.conf' 2>/dev/null | wc -l)
 
 # --- the AI agent the panel can hand a problem to (Omarchy's default) -------
 AGENT=$(omarchy-default-agent 2>/dev/null | head -1) || AGENT=""

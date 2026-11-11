@@ -398,6 +398,7 @@ say "Reading the drop folder: $CONFIG_DIR"
 /usr/local/bin/vpnkit-sync sync | jq -r '
   (.imported[] | "    imported: \(.)"),
   (if .torrent != "" then "    torrent tunnel: \(.torrent)" else empty end),
+  (if (.firefox // "") != "" then "    Firefox tunnel: \(.firefox)" else empty end),
   (.skipped[] | "    skipped: \(.file): \(.reason)")' || true
 
 # Before 0.1.0 the torrent config was not a server of its own. Make it one, so
@@ -430,7 +431,7 @@ if [[ -r "$FF_CONF" ]]; then
          INCOMPLETE+=("enabling ff-netns.service"); }
   # Leave a running namespace alone: rebuilding it would cut a running
   # Firefox off from the network.
-  if ! ip netns list 2>/dev/null | grep -qw "$FF_NS"; then
+  if ! [[ -e "/run/netns/$FF_NS" ]]; then
     systemctl restart ff-netns.service || warn "ff-netns.service failed to start: journalctl -u ff-netns.service"
   fi
 fi

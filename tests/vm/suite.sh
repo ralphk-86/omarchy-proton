@@ -358,6 +358,9 @@ is "status counts the waiting configs" "$(status .inbox)" "4"
 OUT=$(as_user sudo -n /usr/local/bin/vpnkit-sync sync); echo "      $OUT"
 is "three servers imported" "$(jq -r '.imported | sort | join(",")' <<<"$OUT")" "proton-ca-1,proton-nl-3,proton-se-2"
 is "the config from torrent/ is chosen for torrents" "$(jq -r .torrent <<<"$OUT")" "proton-nl-3"
+is "no Firefox server without a config in firefox/" "$(jq -r .firefox <<<"$OUT")" ""
+is "the drop folder has a firefox/ subfolder, private" "$(stat -c '%a %U' "$DROP/firefox" 2>/dev/null)" "700 $U"
+yes "and its README explains it" grep -q '^  firefox/' "$DROP/README.txt"
 is "status names the torrent server" "$(status .qbt_conn)" "proton-nl-3"
 is "the junk file is reported, not imported" "$(jq -r '.skipped[].file' <<<"$OUT")" "notes.conf"
 no "imported desktop configs are gone from the folder" test -e "$DROP/wg-CA-1.conf"
@@ -539,6 +542,83 @@ no "without its config, the unit fails: no namespace, nothing to fall back to" s
 no "(no Firefox namespace)" ip netns exec ffvpn true
 systemctl reset-failed ff-netns.service 2>/dev/null; systemctl stop ff-netns.service 2>/dev/null
 
+# Opting in: a config put in the drop folder's firefox/ becomes a server and is
+# chosen for Firefox, which turns the tunnel on.
+conf "$DROP/firefox/se-4.conf" "$WG/ff.key" 10.3.0.4 10.3.0.1 "SE#4" "$WG/srvB.pub" 51821
+is "status counts a config waiting in firefox/" "$(status .inbox)" "1"
+OUT=$(as_user /usr/local/bin/vpn-import 2>&1); echo "$OUT" | sed 's/^/      /'
+yes "import from firefox/ selects it for Firefox" grep -qx "Firefox tunnel: proton-se-4" <<<"$OUT"
+is "the Firefox server is recorded" "$(cat /etc/vpnkit/firefox-server 2>/dev/null)" "proton-se-4"
+no "the imported config is gone from firefox/" test -e "$DROP/firefox/se-4.conf"
+is "the Firefox config is root-only" "$(stat -c '%a %U' /etc/wireguard/vpnkit-firefox.conf 2>/dev/null)" "600 root"
+is "the unit is enabled: the tunnel comes up at boot" "$(systemctl is-enabled ff-netns.service 2>/dev/null)" "enabled"
+is "Firefox namespace exits through its own server" "$(ip netns exec ffvpn curl -4 -s --max-time 6 $LOOKUP)" "10.3.0.4"
+is "only lo and the tunnel are inside" "$(ip -n ffvpn -o link show | awk -F': ' '{print $2}' | sort | paste -sd,)" "lo,pff0"
+yes "DNS inside uses the in-tunnel resolver" ip netns exec ffvpn getent hosts only-in-tunnel.test
+is "the torrent tunnel is untouched" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "10.2.0.3"
+OUT=$(as_user /usr/local/bin/vpn-toggle list 2>&1)
+yes "vpn-toggle list names it as used for Firefox" bash -c 'grep -A1 "^Used for Firefox" <<<"$1" | grep -qx "  proton-se-4"' _ "$OUT"
+# One server, one use; and the two tunnels never share an exit.
+no "the Firefox server cannot carry regular traffic" as_user /usr/local/bin/vpn-toggle proton-se-4
+no "(nothing was connected)" bash -c 'nmcli -t -f NAME connection show --active | grep -qx proton-se-4'
+no "the Firefox server cannot carry torrents" as_user sudo -n /usr/local/bin/vpnkit-sync torrent proton-se-4
+is "(the torrent tunnel stays on its server)" "$(cat /etc/vpnkit/torrent-server)" "proton-nl-3"
+no "the torrent server cannot be chosen for Firefox" as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-nl-3
+is "(Firefox stays on its server)" "$(cat /etc/vpnkit/firefox-server)" "proton-se-4"
+# nl-5: another key on the torrent tunnel's endpoint; se-6: the key of
+# proton-se-2 on the Firefox tunnel's endpoint.
+conf "$DROP/nl-5.conf" "$WG/ffx.key"   10.2.0.5 10.2.0.1 "NL#5" "$WG/srvA.pub" 51820
+conf "$DROP/se-6.conf" "$WG/deskB.key" 10.3.0.6 10.3.0.1 "SE#6" "$WG/srvB.pub" 51821
+is "(two more servers imported)" "$(as_user sudo -n /usr/local/bin/vpnkit-sync sync | jq -r '.imported | sort | join(",")')" "proton-nl-5,proton-se-6"
+OUT=$(as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-nl-5 2>&1); rc=$?
+is "a server on the torrent tunnel's endpoint is refused for Firefox" "$rc" "1"
+yes "and says why" grep -q "the torrent tunnel's exit" <<<"$OUT"
+OUT=$(as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-se-6 2>&1); rc=$?
+is "a server with another server's key is refused for Firefox" "$rc" "1"
+yes "and names that server" grep -q "same key as the server proton-se-2" <<<"$OUT"
+OUT=$(as_user sudo -n /usr/local/bin/vpnkit-sync torrent proton-se-6 2>&1); rc=$?
+is "a server on the Firefox tunnel's endpoint is refused for torrents" "$rc" "1"
+yes "and says why" grep -q "the Firefox tunnel's exit" <<<"$OUT"
+is "(neither tunnel moved)" "$(cat /etc/vpnkit/torrent-server) $(cat /etc/vpnkit/firefox-server)" "proton-nl-3 proton-se-4"
+as_user sudo -n /usr/local/bin/vpnkit-sync remove proton-nl-5 >/dev/null
+as_user sudo -n /usr/local/bin/vpnkit-sync remove proton-se-6 >/dev/null
+no "the Firefox server cannot be removed" as_user sudo -n /usr/local/bin/vpnkit-sync remove proton-se-4
+yes "(it is still there)" nmcli connection show proton-se-4
+# Arguments of the passwordless rule: names only, validated.
+no "names outside the kit cannot be chosen for Firefox" as_user sudo -n /usr/local/bin/vpnkit-sync firefox "Wired connection 1"
+no "a path is not a name" as_user sudo -n /usr/local/bin/vpnkit-sync firefox ../../etc/shadow
+no "nor an absolute one" as_user sudo -n /usr/local/bin/vpnkit-sync firefox /etc/wireguard/vpnkit-torrent.conf
+no "no name at all is refused" as_user sudo -n /usr/local/bin/vpnkit-sync firefox
+no "extra arguments are refused" as_user sudo -n /usr/local/bin/vpnkit-sync firefox off now
+is "(Firefox stays on its server)" "$(cat /etc/vpnkit/firefox-server)" "proton-se-4"
+# A Firefox inside the namespace would be stranded by a rebuild; one outside
+# is not (it is refused at its next start instead). Stand-in binary.
+FFBAK=""; [[ -e /usr/lib/firefox/firefox ]] && { FFBAK=$(mktemp); cp -a /usr/lib/firefox/firefox "$FFBAK"; }
+install -D -m 755 /usr/bin/sleep /usr/lib/firefox/firefox
+ip netns exec ffvpn runuser -u $U -- /usr/lib/firefox/firefox 600 </dev/null >/dev/null 2>&1 &
+sleep 1
+no "the Firefox server cannot be switched under a Firefox inside" as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-se-4
+no "and the tunnel cannot be turned off under it" as_user sudo -n /usr/local/bin/vpnkit-sync firefox off
+pkill -x -u $U firefox; sleep 1
+as_user /usr/lib/firefox/firefox 600 </dev/null >/dev/null 2>&1 &
+sleep 1
+yes "a Firefox outside the namespace does not stop a switch" as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-se-4
+pkill -x -u $U firefox; sleep 1
+if [[ -n "$FFBAK" ]]; then cp -a "$FFBAK" /usr/lib/firefox/firefox; rm -f "$FFBAK"; else rm -rf /usr/lib/firefox; fi
+# Opting out, without uninstalling.
+is "firefox off" "$(as_user sudo -n /usr/local/bin/vpnkit-sync firefox off 2>&1)" "firefox: off"
+no "the Firefox namespace is gone" ip netns exec ffvpn true
+is "the unit is disabled" "$(systemctl is-enabled ff-netns.service 2>/dev/null)" "disabled"
+no "the Firefox config is gone" test -e /etc/wireguard/vpnkit-firefox.conf
+no "the record of its server is gone" test -e /etc/vpnkit/firefox-server
+no "the namespace's resolver files are gone" test -e /etc/netns/ffvpn
+yes "the server itself stays" nmcli connection show proton-se-4
+is "the torrent tunnel is untouched" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "10.2.0.3"
+yes "firefox off again changes nothing and succeeds" as_user sudo -n /usr/local/bin/vpnkit-sync firefox off
+# Back on for the rest of the suite: a server chosen directly.
+is "a server can be chosen for Firefox directly" "$(as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-se-4 2>&1)" "firefox: proton-se-4"
+is "Firefox exits through it again" "$(ip netns exec ffvpn curl -4 -s --max-time 6 $LOOKUP)" "10.3.0.4"
+
 # ---------------------------------------------------------------------------
 section "4. Desktop VPN and kill switch"
 nft -f - <<EOF
@@ -566,6 +646,7 @@ is "no DNS packet left through the physical interface" "$(( $(dns_leaks) - befor
 is "a program bound to the physical interface cannot get out" "$(myip --interface veth-h)" "none"
 is "the bypass address still uses the normal connection" "$(curl -4 -s --max-time 3 $BYPASS_URL)" "$HOME_IP"
 is "the torrent tunnel is untouched" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "10.2.0.3"
+is "the Firefox tunnel is untouched" "$(ip netns exec ffvpn curl -4 -s --max-time 4 $LOOKUP)" "10.3.0.4"
 
 # Switching servers must have no moment on the home address.
 ( end=$((SECONDS+12)); while (( SECONDS < end )); do myip; echo; sleep 0.05; done ) > /tmp/switch.log &
@@ -1539,12 +1620,19 @@ shim() {
 direct on >/dev/null 2>&1
 # A command as 0.4.0 installed it carries no marker line: an update must still
 # know it as the kit's (by its checksum) and replace it without --move-aside.
-sed -i 2d /usr/local/bin/vpn-import
+# The file itself comes from the 0.4.0 release (vm.sh copies it in for section
+# 7); this release's vpn-import has changed since.
+if [[ -f $UHOME/releases/v0.4.0/system/bin/vpn-import ]]; then
+  install -m 755 $UHOME/releases/v0.4.0/system/bin/vpn-import /usr/local/bin/vpn-import
+else
+  bad "the 0.4.0 release is in the VM (vm.sh copies it from its git tag)"
+fi
 no "(vpn-import as 0.4.0 left it: no marker)" grep -qxF "$BIN_MARK" /usr/local/bin/vpn-import
 # A launcher cache that cannot be updated (update-desktop-database fails, as
 # in a read-only or root-owned folder) must not end the run after the system
 # part: the user-side steps run under set -e.
 shim update-desktop-database 'true'
+FFINO=$(stat -Lc %i /run/netns/ffvpn 2>/dev/null)
 in_terminal "$PLUGIN/install.sh" --qbt-launcher > /tmp/install2.log 2>&1; rc=$?
 is "install.sh can be run again" "$rc" "0"
 (( rc == 0 )) || sed 's/^/      /' /tmp/install2.log | tail -15
@@ -1555,6 +1643,9 @@ is "vpn-direct launcher exits 0 all the same" "$rc" "0"
 rm -f /usr/local/sbin/update-desktop-database
 is "settings survive a reinstall" "$(. /etc/vpnkit/vpnkit.conf; echo "$BYPASS_CIDRS")" "198.51.100.80/32"
 is "the running torrent tunnel was left alone" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "10.2.0.3"
+is "the running Firefox tunnel was left alone (the same namespace)" "$(stat -Lc %i /run/netns/ffvpn 2>/dev/null)" "${FFINO:-missing}"
+is "and still exits through its server" "$(ip netns exec ffvpn curl -4 -s --max-time 4 $LOOKUP)" "10.3.0.4"
+yes "and stays enabled" systemctl is-enabled --quiet ff-netns.service
 yes "Chrome direct stays on through a reinstall" systemctl is-active --quiet vpnkit-direct.service
 yes "with its rules" nft list table inet vpnkit_direct
 is "a reinstall writes the launcher override while it is on" "$(head -1 "$DESK" 2>/dev/null)" "$MARK"

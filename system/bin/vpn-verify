@@ -153,7 +153,10 @@ fi
 # --- 7. in-namespace firewall ----------------------------------------------
 echo
 echo "7. In-namespace firewall"
-if nsx nft list table inet qbtguard 2>/dev/null | grep -q 'policy drop'; then
+# Read in full first: grep -q quits at the first match, and nft, still
+# writing, then dies of SIGPIPE, which pipefail reports as a failure.
+QBTGUARD=$(nsx nft list table inet qbtguard 2>/dev/null) || QBTGUARD=""
+if grep -q 'policy drop' <<< "$QBTGUARD"; then
   ok "default-deny ruleset is loaded"
 else
   no "qbtguard default-deny ruleset is not loaded"

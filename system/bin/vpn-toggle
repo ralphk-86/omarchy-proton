@@ -3,9 +3,9 @@
 # ============================================================================
 #  vpn-toggle - switch the DESKTOP VPN between off and a specific server.
 #
-#  This only affects your desktop connection. The qBittorrent namespace tunnel
-#  is completely separate and stays up regardless, so switching or turning the
-#  VPN off here never exposes torrent traffic.
+#  This only affects your desktop connection. The qBittorrent and Firefox
+#  namespace tunnels are completely separate and stay up regardless, so
+#  switching or turning the VPN off here never exposes their traffic.
 #
 #  Picking a server arms the kill switch (see vpnkit-killswitch): from then on
 #  regular traffic leaves through a tunnel or not at all, until `vpn-toggle off`.
@@ -67,6 +67,11 @@ connect_to() {  # connect_to <name or substring>
     echo "pick another server, or choose a different server for torrents first."
     return 1
   fi
+  if [[ "$(head -1 "$FF_SERVER_FILE" 2>/dev/null)" == "$match" ]]; then
+    echo "$match carries the Firefox tunnel. One config cannot be used twice at the same time:"
+    echo "pick another server, or choose a different server for Firefox first."
+    return 1
+  fi
   # Arm the kill switch BEFORE touching any connection. From here on regular
   # traffic can only leave through a tunnel, including while servers are being
   # switched. It is not optional: if it cannot be armed, nothing connects.
@@ -112,6 +117,9 @@ case "${1:-toggle}" in
     echo
     echo "Used for torrents (not selectable for regular traffic while it is):"
     echo "  $(head -1 /etc/vpnkit/torrent-server 2>/dev/null || echo "none")"
+    echo
+    echo "Used for Firefox (not selectable for regular traffic while it is):"
+    echo "  $(head -1 "$FF_SERVER_FILE" 2>/dev/null || echo "none")"
     ;;
   status)
     exec /usr/local/bin/vpn-status

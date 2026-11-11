@@ -9,19 +9,26 @@
 #    <folder>/torrent/*.conf   the same, and the first one is also chosen as the
 #                              torrent server (a shortcut; any server can be
 #                              chosen for torrents later from the panel)
+#    <folder>/firefox/*.conf   the same, and the first one is also chosen as the
+#                              Firefox server, which turns the Firefox tunnel
+#                              on (it is off until then)
 #
 #  A config holds a private key, so an imported file is removed from the folder.
 #  The installed copies are root-only (/etc/wireguard and NetworkManager's
 #  system-connections). A file that cannot be imported stays where it is and is
 #  reported with the reason.
 #
-#  Every server can carry regular traffic or torrents, one or the other at a
-#  time: a WireGuard config is one key, and one key in two tunnels at once
-#  makes the provider drop both.
+#  Every server can carry regular traffic, torrents or Firefox, one of them at
+#  a time: a WireGuard config is one key, and one key in two tunnels at once
+#  makes the provider drop both. The torrent and Firefox tunnels also never
+#  share an exit (the same endpoint, or the same key), so websites cannot link
+#  browsing to the torrent address.
 #
 #  Usage:
 #    vpnkit-sync [sync]          import everything waiting, print a JSON summary
 #    vpnkit-sync torrent <name>  use this server for the torrent tunnel
+#    vpnkit-sync firefox <name>  use this server for the Firefox tunnel (turns it on)
+#    vpnkit-sync firefox off     turn the Firefox tunnel off
 #    vpnkit-sync remove <name>   delete a server
 #
 #  Allowed passwordless via /etc/sudoers.d/99-vpnkit. It takes no paths from
@@ -38,15 +45,15 @@ set -uo pipefail
 
 as_user() { runuser -u "$TARGET_USER" -- "$@"; }
 
-IMPORTED=(); SKIPPED=(); TORRENT=""; NOTE=""
+IMPORTED=(); SKIPPED=(); TORRENT=""; FIREFOX=""; NOTE=""
 skip() { SKIPPED+=("$(jq -cn --arg f "$1" --arg r "$2" '{file:$f, reason:$r}')"); }
 
 summary() {
   local imp skp
   imp=$(printf '%s\n' "${IMPORTED[@]:-}" | jq -R . | jq -cs 'map(select(. != ""))')
   skp=$(printf '%s\n' "${SKIPPED[@]:-}" | jq -cs '.')
-  jq -cn --argjson i "$imp" --argjson s "$skp" --arg t "$TORRENT" --arg n "$NOTE" --arg d "$CONFIG_DIR" \
-    '{imported:$i, torrent:$t, skipped:$s, note:$n, folder:$d}'
+  jq -cn --argjson i "$imp" --argjson s "$skp" --arg t "$TORRENT" --arg f "$FIREFOX" --arg n "$NOTE" --arg d "$CONFIG_DIR" \
+    '{imported:$i, torrent:$t, firefox:$f, skipped:$s, note:$n, folder:$d}'
 }
 
 # Copy a file out of the user's folder using the USER's permissions, so a
@@ -63,7 +70,7 @@ discard() {  # remove an imported file from the folder, as the user
 }
 
 ensure_folder() {
-  as_user install -d -m 700 "$CONFIG_DIR" "$CONFIG_DIR/torrent" 2>/dev/null || return 1
+  as_user install -d -m 700 "$CONFIG_DIR" "$CONFIG_DIR/torrent" "$CONFIG_DIR/firefox" 2>/dev/null || return 1
   if ! as_user test -e "$CONFIG_DIR/README.txt"; then
     as_user tee "$CONFIG_DIR/README.txt" >/dev/null <<EOF
 WireGuard configs for the Omarchy VPN widget
@@ -75,10 +82,14 @@ Put WireGuard .conf files here, then press "Refresh servers" in the VPN panel.
   this folder      every .conf becomes a server
   torrent/         the same, and a config put here is also chosen for the
                    torrent tunnel (qBittorrent's only way to the internet)
+  firefox/         the same, and a config put here is also chosen for the
+                   Firefox tunnel, which this turns on: from then on Firefox
+                   runs only through it (off until you put a config here)
 
 In the panel you choose which server carries your regular traffic and which
-one carries torrents. One server cannot do both at the same time: most
-providers allow one connection per config, so download at least two.
+one carries torrents. One server cannot do two of these at the same time:
+most providers allow one connection per config, so download one per use.
+The Firefox config must be for another server than the torrent one.
 
 Imported files are removed from this folder on purpose: they contain a
 private key. The installed copies are readable by root only. To remove a
@@ -116,10 +127,30 @@ do_sync() {
   done < <(as_user find "$CONFIG_DIR" -maxdepth 1 -type f -name '*.conf' -print0 2>/dev/null | sort -z)
 
   # --- torrent/ subfolder: imported the same way, then chosen for torrents --
-  local first=""
+  local first
+  import_sub torrent; first="$SUB_FIRST"
+  if [[ -n "$first" ]]; then
+    if out=$(select_torrent "$first" 2>&1); then TORRENT="$first"
+    else skip "torrent/" "imported $first, but could not use it for torrents: ${out#vpnkit-sync: }"; fi
+  fi
+
+  # --- firefox/ subfolder: the same, then chosen for the Firefox tunnel ------
+  # Putting a config here is how the Firefox tunnel is turned on.
+  import_sub firefox; first="$SUB_FIRST"
+  if [[ -n "$first" ]]; then
+    if out=$(select_firefox "$first" 2>&1); then FIREFOX="$first"
+    else skip "firefox/" "imported $first, but could not use it for Firefox: ${out#vpnkit-sync: }"; fi
+  fi
+  summary
+}
+
+# import_sub <subfolder>: import every config in <folder>/<subfolder> like the
+# ones directly in the folder; SUB_FIRST is the name of the first one imported.
+import_sub() {
+  local sub="$1" f base tmp out first=""
   while IFS= read -r -d '' f; do
-    base="torrent/$(basename "$f")"
-    tmp="$work/$(basename "$f")"
+    base="$sub/$(basename "$f")"
+    tmp="$WORK/$(basename "$f")"
     if ! fetch "$f" "$tmp"; then skip "$base" "cannot read the file, or it is not a config"; continue; fi
     if out=$(/usr/local/bin/vpnkit-import "$tmp" 2>&1); then
       out=$(sed -n 's/^imported: //p' <<<"$out" | head -1)
@@ -130,12 +161,8 @@ do_sync() {
       skip "$base" "${out//"$tmp"/$base}"
     fi
     rm -f "$tmp"
-  done < <(as_user find "$CONFIG_DIR/torrent" -maxdepth 1 -type f -name '*.conf' -print0 2>/dev/null | sort -z)
-  if [[ -n "$first" ]]; then
-    if out=$(select_torrent "$first" 2>&1); then TORRENT="$first"
-    else skip "torrent/" "imported $first, but could not use it for torrents: ${out#vpnkit-sync: }"; fi
-  fi
-  summary
+  done < <(as_user find "$CONFIG_DIR/$sub" -maxdepth 1 -type f -name '*.conf' -print0 2>/dev/null | sort -z)
+  SUB_FIRST="$first"
 }
 
 TORRENT_FILE=/etc/vpnkit/torrent-server
@@ -148,6 +175,64 @@ in_regular_use() {  # the server carries, or is wanted for, regular traffic
   nmcli -t -f NAME connection show --active 2>/dev/null | grep -qxF "$1" \
     || [[ "$(head -1 /run/vpnkit/wanted 2>/dev/null)" == "$1" ]]
 }
+# What a server is used for: regular, torrent, firefox, or nothing.
+role_of() {  # role_of <server name>
+  if in_regular_use "$1"; then echo regular
+  elif [[ "$(head -1 "$TORRENT_FILE" 2>/dev/null)" == "$1" ]]; then echo torrent
+  elif [[ "$(head -1 "$FF_SERVER_FILE" 2>/dev/null)" == "$1" ]]; then echo firefox
+  fi
+  return 0
+}
+# A config's exit and key, to tell the tunnels apart; empty when the file is
+# missing or has none. Endpoints compare case-insensitively (host names).
+endpoint_of() {  # endpoint_of <file>
+  [[ -r "$1" ]] || return 0
+  vpnkit_wg_get "$1" peer Endpoint | tr 'A-Z' 'a-z'
+}
+key_of() {  # key_of <file>
+  [[ -r "$1" ]] || return 0
+  vpnkit_wg_get "$1" interface PrivateKey
+}
+# same_exit <file> <other file>: the two configs share an endpoint or a key.
+same_exit() {
+  local e k
+  e=$(endpoint_of "$1"); k=$(key_of "$1")
+  [[ -n "$e" && "$e" == "$(endpoint_of "$2")" ]] || [[ -n "$k" && "$k" == "$(key_of "$2")" ]]
+}
+# key_used_by <file>: prints the name of another server whose config has the
+# same private key (a provider may give one key to every config of a device).
+key_used_by() {
+  local k f
+  k=$(key_of "$1"); [[ -n "$k" ]] || return 1
+  for f in /etc/wireguard/"$PROFILE_PREFIX"-*.conf; do
+    [[ -f "$f" && "$f" != "$1" && "$f" != "$FF_CONF" && "$f" != "$QBT_CONF" ]] || continue
+    [[ "$k" == "$(key_of "$f")" ]] && { basename "$f" .conf; return 0; }
+  done
+  return 1
+}
+# Processes of the desktop user running the real Firefox binary (also after an
+# update replaced it), one pid per line; with "inside", only those in the
+# Firefox namespace.
+firefox_pids() {  # firefox_pids [inside]
+  local pid ns="" pns
+  if [[ "${1:-}" == inside ]]; then
+    ns=$(stat -Lc '%i' "/run/netns/$FF_NS" 2>/dev/null) || return 0
+  fi
+  for pid in $(pgrep -u "$TARGET_USER" 2>/dev/null); do
+    [[ "$(readlink "/proc/$pid/exe" 2>/dev/null)" =~ ^"$FF_BIN"(\ \(deleted\))?$ ]] || continue
+    if [[ -n "$ns" ]]; then
+      pns=$(stat -Lc '%i' "/proc/$pid/ns/net" 2>/dev/null) || continue
+      [[ "$pns" == "$ns" ]] || continue
+    fi
+    printf '%s\n' "$pid"
+  done
+  return 0
+}
+# The two tunnels must not be set up on each other's names (vpnkit.conf).
+ff_names_ok() {
+  [[ "$FF_NS" != "$NS" && "$FF_WG_IF" != "$WG_IF" && "$FF_CONF" != "$QBT_CONF" \
+     && "$FF_NS" =~ ^[A-Za-z0-9._-]{1,32}$ && "$FF_NS" != . && "$FF_NS" != .. ]]
+}
 
 select_torrent() {  # select_torrent <server name>
   local name="$1"
@@ -155,6 +240,14 @@ select_torrent() {  # select_torrent <server name>
   [[ -r "/etc/wireguard/$name.conf" ]] && kit_server "$name" || { echo "vpnkit-sync: no such server: $name" >&2; return 1; }
   if in_regular_use "$name"; then
     echo "vpnkit-sync: $name carries your regular traffic; pick another server for torrents, or switch regular traffic first" >&2
+    return 1
+  fi
+  if [[ "$(role_of "$name")" == firefox ]]; then
+    echo "vpnkit-sync: $name carries the Firefox tunnel; pick another server for torrents, or choose another Firefox server first" >&2
+    return 1
+  fi
+  if [[ -r "$FF_CONF" ]] && same_exit "/etc/wireguard/$name.conf" "$FF_CONF"; then
+    echo "vpnkit-sync: $name has the Firefox tunnel's exit (endpoint or key); pick a server on another endpoint for torrents" >&2
     return 1
   fi
   # Rebuilding the namespace under a running qBittorrent would leave it in the
@@ -173,6 +266,64 @@ select_torrent() {  # select_torrent <server name>
   echo "torrent: $name"
 }
 
+select_firefox() {  # select_firefox <server name>: turns the Firefox tunnel on
+  local name="$1" conf other
+  valid_name "$name" || { echo "vpnkit-sync: not a server name" >&2; return 2; }
+  conf="/etc/wireguard/$name.conf"
+  [[ -r "$conf" ]] && kit_server "$name" || { echo "vpnkit-sync: no such server: $name" >&2; return 1; }
+  ff_names_ok || { echo "vpnkit-sync: FF_NS, FF_WG_IF and FF_CONF in vpnkit.conf must differ from the torrent tunnel's" >&2; return 1; }
+  case "$(role_of "$name")" in
+    regular)
+      echo "vpnkit-sync: $name carries your regular traffic; pick another server for Firefox, or switch regular traffic first" >&2
+      return 1 ;;
+    torrent)
+      echo "vpnkit-sync: $name carries the torrent tunnel; pick another server for Firefox, or choose another torrent server first" >&2
+      return 1 ;;
+  esac
+  # A separate exit: websites must not be able to link browsing to the
+  # torrent address (and one key in two tunnels makes the provider drop both).
+  if same_exit "$conf" "$QBT_CONF"; then
+    echo "vpnkit-sync: $name has the torrent tunnel's exit (endpoint or key); pick a server on another endpoint for Firefox" >&2
+    return 1
+  fi
+  if other=$(key_used_by "$conf"); then
+    echo "vpnkit-sync: $name has the same key as the server $other; one key in two tunnels makes the provider drop both: use a config with its own key for Firefox" >&2
+    return 1
+  fi
+  # Rebuilding the namespace under a running Firefox would leave it in the old
+  # namespace, cut off. A Firefox outside the namespace is not affected (it is
+  # refused at its next start instead).
+  if [[ -n "$(firefox_pids inside)" ]]; then
+    echo "vpnkit-sync: close Firefox first, then switch its server" >&2
+    return 1
+  fi
+  install -d -m 700 /etc/wireguard
+  install -m 600 -o root -g root "$conf" "$FF_CONF"
+  printf '%s\n' "$name" > "$FF_SERVER_FILE"; chmod 644 "$FF_SERVER_FILE"
+  systemctl enable ff-netns.service >/dev/null 2>&1
+  systemctl restart ff-netns.service >/dev/null 2>&1 \
+    || { echo "vpnkit-sync: the Firefox tunnel did not start (journalctl -u ff-netns.service)" >&2; return 1; }
+  echo "firefox: $name"
+}
+
+firefox_off() {  # turn the Firefox tunnel off; the server itself stays
+  ff_names_ok || { echo "vpnkit-sync: FF_NS, FF_WG_IF and FF_CONF in vpnkit.conf must differ from the torrent tunnel's" >&2; return 1; }
+  if [[ -n "$(firefox_pids inside)" ]]; then
+    echo "vpnkit-sync: close Firefox first, then turn its tunnel off" >&2
+    return 1
+  fi
+  systemctl disable --now ff-netns.service >/dev/null 2>&1
+  # In case the unit was not running the namespace (ExecStop did nothing).
+  /usr/local/bin/ff-netns-down >/dev/null 2>&1
+  rm -f "$FF_CONF" "$FF_SERVER_FILE"
+  rm -rf "/etc/netns/$FF_NS"
+  if systemctl is-enabled --quiet ff-netns.service 2>/dev/null || [[ -e "/run/netns/$FF_NS" ]]; then
+    echo "vpnkit-sync: the Firefox tunnel could not be turned off completely (systemctl status ff-netns.service)" >&2
+    return 1
+  fi
+  echo "firefox: off"
+}
+
 do_remove() {
   local name="${1:-}"
   valid_name "$name" || { echo "vpnkit-sync: not a server name" >&2; exit 2; }
@@ -187,6 +338,10 @@ do_remove() {
     echo "vpnkit-sync: $name carries the torrent tunnel; choose another torrent server first" >&2
     exit 1
   fi
+  if [[ "$(head -1 "$FF_SERVER_FILE" 2>/dev/null)" == "$name" ]]; then
+    echo "vpnkit-sync: $name carries the Firefox tunnel; choose another Firefox server or turn the Firefox tunnel off first" >&2
+    exit 1
+  fi
   nmcli connection delete uuid "$(vpnkit_profile_uuid "$name")" >/dev/null 2>&1 || { echo "vpnkit-sync: could not delete $name" >&2; exit 1; }
   rm -f "/etc/wireguard/$name.conf"
   echo "removed: $name"
@@ -196,5 +351,9 @@ case "${1:-sync}" in
   sync)   do_sync ;;
   remove)  do_remove "${2:-}" ;;
   torrent) select_torrent "${2:-}"; exit $? ;;
-  *) echo "usage: vpnkit-sync [sync] | torrent <name> | remove <name>" >&2; exit 2 ;;
+  firefox)
+    (( $# == 2 )) || { echo "usage: vpnkit-sync firefox <name>|off" >&2; exit 2; }
+    if [[ "$2" == off ]]; then firefox_off; else select_firefox "$2"; fi
+    exit $? ;;
+  *) echo "usage: vpnkit-sync [sync] | torrent <name> | firefox <name>|off | remove <name>" >&2; exit 2 ;;
 esac
