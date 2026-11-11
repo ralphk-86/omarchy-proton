@@ -77,7 +77,7 @@
   - The `README.txt` in your drop folder is written only when it is missing, so an existing one
     does not mention `firefox/`; delete it to get the new one.
 - Tests: static checks pass; the marketplace security baseline is `review-required` with no
-  findings. VM suite: 1053 passed, 0 failed. VM tests added in this release: the DNS fix (UDP
+  findings. VM suite: 1122 passed, 0 failed. VM tests added in this release: the DNS fix (UDP
   and TCP to 53 and 853 from Chrome's slice to two resolvers off the link, the VPN's own among
   them, rejected and counted where the simulated internet begins, with a server selected and
   while blocked; the slice, the host, SSH direct and the two namespaces otherwise unchanged; an
