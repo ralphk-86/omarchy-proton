@@ -146,7 +146,7 @@ fi
 
 # Commands in /usr/local/bin: only the kit's (lib/owned.sh); files setup moved
 # aside (install.sh --move-aside) go back where they were.
-for f in qbt-netns-up qbt-netns-down qbt-netns-status qbt-launch qbittorrent ff-netns-up ff-netns-down \
+for f in qbt-netns-up qbt-netns-down qbt-netns-status qbt-launch qbittorrent ff-netns-up ff-netns-down ff-launch firefox \
          vpnkit-import vpnkit-killswitch vpnkit-sync vpnkit-pick vpnkit-direct vpnkit-direct-rules \
          vpn-direct direct-launch google-chrome-stable \
          vpn-status vpn-toggle vpn-import vpn-verify vpn-check vpn-rescue vpn-diagnose; do

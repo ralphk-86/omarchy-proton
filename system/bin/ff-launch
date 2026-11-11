@@ -1,0 +1,89 @@
+#!/usr/bin/bash
+# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
+# ============================================================================
+#  ff-launch - start Firefox INSIDE the Firefox tunnel's namespace.
+#
+#  Entering a network namespace requires root, so this is permitted
+#  passwordless via /etc/sudoers.d/99-vpnkit. It is written to be safe to
+#  grant, like qbt-launch:
+#
+#    * the executed binary is HARDCODED (FF_BIN, /usr/lib/firefox/firefox) -
+#      callers cannot substitute it
+#    * privileges are dropped to the desktop user with runuser BEFORE exec, so
+#      Firefox never runs as root
+#    * any arguments are passed only to the already-unprivileged Firefox;
+#      inside the namespace its only way out is the tunnel, so nothing it is
+#      asked to do, or to start, gets more network than that
+#    * it refuses while the Firefox tunnel is off or down, its resolver files
+#      are missing or unsafe, or a Firefox of the user runs outside the
+#      namespace (fail closed)
+#
+#  Called by /usr/local/bin/firefox (the PATH wrapper), which the launcher
+#  entry starts while the Firefox tunnel is on.
+# ============================================================================
+# Runs as root (through sudo, or systemd): a fixed PATH before any command,
+# because sudo hands the caller's PATH on when sudoers has no secure_path.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"
+set -euo pipefail
+
+. /usr/local/lib/vpnkit/common.sh   # FF_NS, FF_CONF, FF_BIN, TARGET_USER, TARGET_UID, ...
+
+[[ $EUID -eq 0 ]] || { echo "ff-launch: must run as root" >&2; exit 2; }
+refuse() { echo "ff-launch: $*" >&2; exit 1; }
+
+[[ -x "$FF_BIN" ]] || refuse "$FF_BIN not found"
+
+# The Firefox tunnel is opt-in: without its config it is off, and there is
+# nothing to start Firefox in.
+[[ -r "$FF_CONF" ]] \
+  || refuse "the Firefox tunnel is off - refusing. Start Firefox as usual: $FF_BIN"
+
+# Never the torrent tunnel's namespace (vpnkit.conf could name it), nor a name
+# that is not one.
+[[ "$FF_NS" != "$NS" && "$FF_NS" =~ ^[A-Za-z0-9._-]{1,32}$ && "$FF_NS" != . && "$FF_NS" != .. ]] \
+  || refuse "FF_NS in vpnkit.conf must be a namespace name other than the torrent tunnel's - refusing"
+
+if [[ ! -e "/run/netns/$FF_NS" ]]; then
+  echo "ff-launch: the Firefox namespace '$FF_NS' is not running." >&2
+  echo "Start it with: sudo systemctl start ff-netns.service" >&2
+  exit 1
+fi
+
+# FAIL CLOSED: refuse unless the namespace's resolver files are in place.
+# `ip netns exec` mounts them over /etc only if they exist when Firefox enters,
+# and it keeps whatever it got for its whole life; without them it would use
+# the host's nsswitch.conf, whose `resolve` module reaches systemd-resolved over
+# a Unix socket and resolves outside the tunnel. Checked before the route, so a
+# namespace still being built (or whose build failed) is refused.
+if ! vpnkit_resolver_safe "/etc/netns/$FF_NS"; then
+  echo "ff-launch: the Firefox namespace's DNS settings (/etc/netns/$FF_NS) are missing or unsafe - refusing." >&2
+  echo "Rebuild the tunnel: sudo systemctl restart ff-netns.service" >&2
+  exit 1
+fi
+
+# FAIL CLOSED: refuse to launch unless the tunnel actually has a route.
+if ! ip netns exec "$FF_NS" ip route show default 2>/dev/null | grep -q .; then
+  refuse "the Firefox tunnel is DOWN - refusing to launch Firefox."
+fi
+
+# FAIL CLOSED: a Firefox of the user running outside the namespace would be
+# handed whatever this one is asked to open (see vpnkit_ff_outside_pids).
+OUTSIDE=$(vpnkit_ff_outside_pids "$(stat -Lc '%i' "/run/netns/$FF_NS")" "$TARGET_USER" | paste -sd' ' -)
+if [[ -n "$OUTSIDE" ]]; then
+  echo "ff-launch: Firefox is already running outside the namespace (pid $OUTSIDE) - refusing." >&2
+  echo "It would open these pages itself, outside the tunnel. Close it first." >&2
+  exit 1
+fi
+
+# The window, clipboard, file dialogs, sound and notifications work as usual:
+# a network namespace isolates networking only, and the Wayland and session
+# bus sockets are filesystem sockets. The environment is vpnkit_gui_env's (the
+# same as qBittorrent's), plus MOZ_ENABLE_WAYLAND when the caller set it.
+vpnkit_gui_env "$TARGET_USER" "$TARGET_UID"
+ENVV=("${VPNKIT_GUI_ENV[@]}")
+[[ -n "${MOZ_ENABLE_WAYLAND:-}" ]] && ENVV+=(MOZ_ENABLE_WAYLAND="$MOZ_ENABLE_WAYLAND")
+
+cd "$(getent passwd "$TARGET_USER" | cut -d: -f6)" 2>/dev/null || cd /
+exec ip netns exec "$FF_NS" \
+  runuser -u "$TARGET_USER" -- \
+    env "${ENVV[@]}" "$FF_BIN" "$@"

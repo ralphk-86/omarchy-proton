@@ -210,23 +210,12 @@ key_used_by() {
   done
   return 1
 }
-# Processes of the desktop user running the real Firefox binary (also after an
-# update replaced it), one pid per line; with "inside", only those in the
-# Firefox namespace.
-firefox_pids() {  # firefox_pids [inside]
-  local pid ns="" pns
-  if [[ "${1:-}" == inside ]]; then
-    ns=$(stat -Lc '%i' "/run/netns/$FF_NS" 2>/dev/null) || return 0
-  fi
-  for pid in $(pgrep -u "$TARGET_USER" 2>/dev/null); do
-    [[ "$(readlink "/proc/$pid/exe" 2>/dev/null)" =~ ^"$FF_BIN"(\ \(deleted\))?$ ]] || continue
-    if [[ -n "$ns" ]]; then
-      pns=$(stat -Lc '%i' "/proc/$pid/ns/net" 2>/dev/null) || continue
-      [[ "$pns" == "$ns" ]] || continue
-    fi
-    printf '%s\n' "$pid"
-  done
-  return 0
+# Firefox processes of the desktop user inside the Firefox namespace, one pid
+# per line (vpnkit_ff_inside_pids, common.sh); none without the namespace.
+firefox_inside() {
+  local ns
+  ns=$(stat -Lc '%i' "/run/netns/$FF_NS" 2>/dev/null) || return 0
+  vpnkit_ff_inside_pids "$ns" "$TARGET_USER"
 }
 # The two tunnels must not be set up on each other's names (vpnkit.conf).
 ff_names_ok() {
@@ -293,7 +282,7 @@ select_firefox() {  # select_firefox <server name>: turns the Firefox tunnel on
   # Rebuilding the namespace under a running Firefox would leave it in the old
   # namespace, cut off. A Firefox outside the namespace is not affected (it is
   # refused at its next start instead).
-  if [[ -n "$(firefox_pids inside)" ]]; then
+  if [[ -n "$(firefox_inside)" ]]; then
     echo "vpnkit-sync: close Firefox first, then switch its server" >&2
     return 1
   fi
@@ -308,7 +297,7 @@ select_firefox() {  # select_firefox <server name>: turns the Firefox tunnel on
 
 firefox_off() {  # turn the Firefox tunnel off; the server itself stays
   ff_names_ok || { echo "vpnkit-sync: FF_NS, FF_WG_IF and FF_CONF in vpnkit.conf must differ from the torrent tunnel's" >&2; return 1; }
-  if [[ -n "$(firefox_pids inside)" ]]; then
+  if [[ -n "$(firefox_inside)" ]]; then
     echo "vpnkit-sync: close Firefox first, then turn its tunnel off" >&2
     return 1
   fi

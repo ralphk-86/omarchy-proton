@@ -183,6 +183,40 @@ TORRENT_CLIENTS="qbittorrent-nox transmission-gtk transmission-qt transmission-d
 transmission-cli deluge deluge-gtk deluged rtorrent ktorrent fragments tixati biglybt
 frostwire webtorrent"
 
+vpnkit_app_pids() {  # vpnkit_app_pids <user> <exe ERE> <inside|outside> <netns:INODE | slice:NAME> [<names ERE>]
+  # Prints each process of <user> whose program (/proc/<pid>/exe) matches
+  # <exe ERE> and that is inside (or outside) <place>: the network namespace
+  # with that inode (with an empty inode nothing is inside), or the systemd
+  # slice of that name (the process's cgroup). With <names ERE>, only
+  # processes of exactly those names (pgrep -x) are looked at. A process that
+  # vanished, or whose place cannot be read, is skipped. The one check behind
+  # "is this app running outside its tunnel or slice" for qBittorrent,
+  # Firefox and Chrome.
+  local user="$1" re="$2" want="$3" place="$4" pid v ins
+  local pids
+  if [[ -n "${5:-}" ]]; then pids=$(pgrep -x "$5" -u "$user" 2>/dev/null) || pids=""
+  else pids=$(pgrep -u "$user" 2>/dev/null) || pids=""; fi
+  for pid in $pids; do
+    [[ "$(readlink "/proc/$pid/exe" 2>/dev/null)" =~ $re ]] || continue
+    case "$place" in
+      netns:*)
+        v=$(stat -Lc '%i' "/proc/$pid/ns/net" 2>/dev/null) || continue
+        ins=0; [[ -n "${place#netns:}" && "$v" == "${place#netns:}" ]] && ins=1 ;;
+      slice:*)
+        v=$(cat "/proc/$pid/cgroup" 2>/dev/null) || continue
+        [[ -n "$v" ]] || continue
+        ins=0; [[ "$v" == "0::/${place#slice:}/"* ]] && ins=1 ;;
+      *) return 1 ;;
+    esac
+    if [[ "$want" == inside ]]; then
+      (( ins == 1 )) && printf '%s\n' "$pid"
+    else
+      (( ins == 0 )) && printf '%s\n' "$pid"
+    fi
+  done
+  return 0
+}
+
 vpnkit_qbt_outside_pids() {  # vpnkit_qbt_outside_pids <namespace inode or ""> <user>
   # Prints each qBittorrent (GUI or qbittorrent-nox) of <user> that is NOT
   # inside the torrent namespace. A second qBittorrent of the same user hands
@@ -191,13 +225,21 @@ vpnkit_qbt_outside_pids() {  # vpnkit_qbt_outside_pids <namespace inode or ""> <
   # default. So while one of these runs, starting another inside the namespace
   # would still download outside it. Only the real binaries count: the wrapper
   # is a script with the same process name. A process that vanished is skipped.
-  local ns_inode="$1" pid pns
-  for pid in $(pgrep -x 'qbittorrent|qbittorrent-nox' -u "$2" 2>/dev/null); do
-    [[ "$(readlink "/proc/$pid/exe" 2>/dev/null)" =~ ^/usr/bin/qbittorrent(-nox)?(\ \(deleted\))?$ ]] || continue
-    pns=$(stat -Lc '%i' "/proc/$pid/ns/net" 2>/dev/null) || continue
-    [[ -n "$ns_inode" && "$pns" == "$ns_inode" ]] || printf '%s\n' "$pid"
-  done
-  return 0
+  vpnkit_app_pids "$2" '^/usr/bin/qbittorrent(-nox)?( \(deleted\))?$' outside "netns:$1" 'qbittorrent|qbittorrent-nox'
+}
+
+# The real Firefox binary (FF_BIN), also after an update replaced it.
+VPNKIT_FF_EXE_RE="^${FF_BIN}( \\(deleted\\))?\$"
+vpnkit_ff_outside_pids() {  # vpnkit_ff_outside_pids <namespace inode or ""> <user>
+  # Prints each Firefox process of <user> that is NOT inside the Firefox
+  # namespace. A new Firefox hands the URLs it is asked to open to a running
+  # one of the same profile (over the session bus or a socket file, both of
+  # which cross network namespaces), so while one of these runs, a Firefox
+  # started inside the namespace would open its pages outside the tunnel.
+  vpnkit_app_pids "$2" "$VPNKIT_FF_EXE_RE" outside "netns:$1"
+}
+vpnkit_ff_inside_pids() {  # vpnkit_ff_inside_pids <namespace inode or ""> <user>
+  vpnkit_app_pids "$2" "$VPNKIT_FF_EXE_RE" inside "netns:$1"
 }
 
 vpnkit_ns_nsswitch() {  # vpnkit_ns_nsswitch: prints the nsswitch.conf for a private namespace

@@ -606,7 +606,7 @@ The engine underneath is called `vpnkit`; that is the name you will see in paths
 | `/usr/local/bin/vpn-*`, `vpnkit-*`, `qbt-*`, `direct-launch`, `qbittorrent`, `google-chrome-stable` | the commands and helpers, each with the marker line `# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).`; `qbittorrent` and `google-chrome-stable` are wrappers that come first in `PATH` (the Chrome one starts Chrome unchanged while Chrome direct is off) |
 | `/usr/local/lib/vpnkit/` | shared libraries, version stamp (written last, once setup succeeded), a copy of the uninstaller, the `diagnose-vpn` skill for AI troubleshooting; `moved-aside/` only with `install.sh --move-aside` |
 | `/etc/vpnkit/` | settings (no secrets); `vpnkit.conf.bak.<time>`, the settings before `install.sh --keep-ipv6` changed them; `ipv6-profiles.saved`, your profiles' IPv6 settings from before setup, and `ipv6-profiles.superseded`, saved settings set aside because their profile is gone (see [IPv6](#ipv6-and-your-network-profiles)) |
-| `/etc/sudoers.d/99-vpnkit` | passwordless rules for seven specific helpers, validated with `visudo -c` before install |
+| `/etc/sudoers.d/99-vpnkit` | passwordless rules for eight specific helpers, validated with `visudo -c` before install |
 | `/etc/NetworkManager/dispatcher.d/50-vpnkit` | arms the kill switch, reconnects after resume |
 | `/etc/systemd/system/qbt-netns.service` | builds the torrent namespace at boot |
 | `/etc/systemd/system/vpnkit-direct.service`, `vpnkitdirect.slice` | Chrome direct's slice and rules; installed always, enabled only while it is on |
@@ -691,7 +691,7 @@ you, not as root), putting back any of yours.
   your own machine) one question at most every 30 seconds, to see that it answers.
 - **Keys:** your configs contain private keys. They are removed from the drop folder once
   imported and kept only in root-owned files with mode 0600.
-- **Root:** setup and uninstall run as root once, when you enter your password. Seven
+- **Root:** setup and uninstall run as root once, when you enter your password. Eight
   purpose-built helpers may be run by your user without a password; each takes no paths and
   validates its arguments. The full list, and how to report a vulnerability, is in
   [SECURITY.md](SECURITY.md).

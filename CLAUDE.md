@@ -25,8 +25,9 @@ Design notes, plans and agent working files are kept outside it (`docs/superpowe
 
 1. `VpnWidget.qml` shows `vpn-status --json` and runs commands. No VPN logic in QML.
 2. `system/bin/*` are installed to `/usr/local/bin`. `vpn-*` are user commands; `vpnkit-*`,
-   `qbt-*` and `direct-launch` are helpers; `qbittorrent` and `google-chrome-stable` are PATH
-   wrappers. Seven commands are callable through passwordless sudo (the table in `SECURITY.md`).
+   `qbt-*`, `ff-launch` and `direct-launch` are helpers; `qbittorrent`, `firefox` and
+   `google-chrome-stable` are PATH wrappers. Eight commands are callable through passwordless
+   sudo (the table in `SECURITY.md`).
 3. Desktop VPN = NetworkManager WireGuard profiles named `<prefix>-<tag>`, written as keyfiles
    by `vpnkit-import`, never connected automatically. Kill switch = nftables table
    `inet vpnkit_kill`, armed by `vpn-toggle <server>` and by the dispatcher hook, removed only

@@ -25,13 +25,14 @@ outside its namespace.
   `vpnkit-import` gives them, launcher entries in your home folder by a marker line, and
   those are handled as you (`runuser`), never as root. Setup stops before changing anything
   when it is run by a user other than the one the kit is set up for.
-- Seven helpers the desktop user may run through `sudo` without a password
+- Eight helpers the desktop user may run through `sudo` without a password
   (`/etc/sudoers.d/99-vpnkit`):
 
 | Helper | Arguments | What it can do |
 |---|---|---|
 | `qbt-netns-status` | none allowed | read the namespace and kill switch state, and Chrome direct's: its unit and rules, which programs run in its slice (it reads Chrome's native-messaging manifests in `/etc/opt/chrome` as root and the ones in your home folder with your permissions), and whether Chrome's resolver files still name `DIRECT_DNS` only (read through `/proc/<pid>/root`, nothing is run there); it writes only its own caches in `/run`, including whether `DIRECT_DNS` answered (asked at most every 30 s) |
 | `qbt-launch` | passed to qBittorrent only | start `/usr/bin/qbittorrent` inside the namespace, as the desktop user; refuses while the tunnel is down or a qBittorrent (GUI or `qbittorrent-nox`) of that user runs outside the namespace |
+| `ff-launch` | passed to Firefox only | start `/usr/lib/firefox/firefox` inside the Firefox namespace, as the desktop user (`runuser` before exec); refuses while the tunnel is off (no Firefox config) or down, the namespace's resolver files are missing or unsafe, `FF_NS` names the torrent namespace, or a Firefox of that user runs outside the namespace. Whatever the arguments make Firefox do, it does as you, with only the tunnel for network |
 | `vpnkit-killswitch` | `on <profile>`, `off`, `status`; validated | load or remove one nftables table |
 | `vpnkit-sync` | `sync`, `torrent <name>`, `firefox <name>`, `firefox off`, `remove <name>`; validated | import configs from the fixed drop folder, choose the torrent server, choose the Firefox server (which turns the Firefox tunnel on: its fixed config file, record and unit) or turn that tunnel off, delete a server; `torrent`, `firefox` and `remove` act only on a server the kit imported (its uuid), never on a WireGuard profile or config of yours with the same prefix, and an import never overwrites one. A server serves one of regular traffic, torrents and Firefox at a time, and the torrent and Firefox tunnels never share an endpoint or a key |
 | `vpnkit-direct` | exactly `on`, `off` or `status` | turn Chrome direct on or off (start or stop `vpnkit-direct.service`, write or delete `/etc/vpnkit/direct-apps`, re-arm the kill switch for the same server), or read its state; `on` refuses a `DIRECT_DNS` outside 127.0.0.0/8 or one that does not answer, `off` refuses while anything runs in its slice |
@@ -43,7 +44,7 @@ user's permissions, not root's. The helpers are installed root-owned in `/usr/lo
 
 **The environment is not trusted either.** With `env_reset`, sudo replaces the caller's `PATH`
 only when sudoers sets `secure_path`; without it (an older or edited `/etc/sudoers`) the
-caller's `PATH` reaches root. So every script that runs as root, the seven above and
+caller's `PATH` reaches root. So every script that runs as root, the eight above and
 everything they, systemd or NetworkManager start (`vpnkit-import`, `vpnkit-direct-rules`,
 `qbt-netns-up`, `qbt-netns-down`, `ff-netns-up`, `ff-netns-down`, the dispatcher hook, setup and the uninstaller), sets
 `PATH=/usr/local/sbin:/usr/local/bin:/usr/bin` before it runs any command; `tests/check.sh`
@@ -51,7 +52,7 @@ fails otherwise. As root, the settings folder is always `/etc/vpnkit`, whatever 
 environment says. Setup warns (and changes nothing) when sudo has no `secure_path`, because
 other sudo rules on the machine may depend on it. The VM suite switches `secure_path` off,
 puts a fake of every command in `/usr/bin` first in the caller's `PATH`, and checks that none
-of the seven helpers runs one as root, against a control script without its own `PATH` that
+of the eight helpers runs one as root, against a control script without its own `PATH` that
 does.
 
 ## Troubleshoot with AI

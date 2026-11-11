@@ -31,15 +31,8 @@ vpnkit_chrome_outside_pids() {  # vpnkit_chrome_outside_pids <user>
   # that is NOT in Chrome direct's slice. A new Chrome hands its window to a
   # running one over a socket in the profile, so while one of these runs, a
   # Chrome started in the slice would open its window there instead. A process
-  # that vanished is skipped.
-  local pid cg
-  for pid in $(pgrep -u "$1" 2>/dev/null); do
-    [[ "$(readlink "/proc/$pid/exe" 2>/dev/null)" == /opt/google/chrome/* ]] || continue
-    cg=$(cat "/proc/$pid/cgroup" 2>/dev/null) || continue
-    [[ -n "$cg" ]] || continue
-    [[ "$cg" == "0::/$DIRECT_SLICE/"* ]] || printf '%s\n' "$pid"
-  done
-  return 0
+  # that vanished is skipped. (vpnkit_app_pids is in common.sh.)
+  vpnkit_app_pids "$1" '^/opt/google/chrome/' outside "slice:$DIRECT_SLICE"
 }
 
 vpnkit_chrome_flag_refused() {  # vpnkit_chrome_flag_refused <argument>

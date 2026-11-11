@@ -619,6 +619,80 @@ yes "firefox off again changes nothing and succeeds" as_user sudo -n /usr/local/
 is "a server can be chosen for Firefox directly" "$(as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-se-4 2>&1)" "firefox: proton-se-4"
 is "Firefox exits through it again" "$(ip netns exec ffvpn curl -4 -s --max-time 6 $LOOKUP)" "10.3.0.4"
 
+# Starting Firefox: the wrapper (/usr/local/bin/firefox) and the root launcher
+# (ff-launch). Stand-in binary again; processes are found by their program.
+FFBAK=""; [[ -e /usr/lib/firefox/firefox ]] && { FFBAK=$(mktemp); cp -a /usr/lib/firefox/firefox "$FFBAK"; }
+install -D -m 755 /usr/bin/sleep /usr/lib/firefox/firefox
+ffpids() { local p; for p in $(pgrep -u $U); do [[ "$(readlink /proc/$p/exe 2>/dev/null)" == /usr/lib/firefox/firefox ]] && echo "$p"; done; return 0; }
+ffkill() { local p; for p in $(ffpids); do kill "$p" 2>/dev/null; done; sleep 1; }
+FFNSINO=$(stat -Lc %i /run/netns/ffvpn)
+HOSTINO=$(stat -Lc %i /proc/self/ns/net)
+as_user /usr/local/bin/firefox 600 </dev/null >/dev/null 2>&1 &
+sleep 2
+P=$(ffpids | head -1)
+is "Firefox started through the wrapper is inside the namespace" "$(stat -Lc %i /proc/${P:-none}/ns/net 2>/dev/null)" "$FFNSINO"
+is "and runs as the desktop user, not root" "$(ps -o user= -p "${P:-1}" | tr -d ' ')" "$U"
+yes "and sees the namespace's resolver files" bash -c '. /usr/local/lib/vpnkit/common.sh; vpnkit_resolver_safe "/proc/$1/root/etc"' _ "${P:-none}"
+as_user /usr/local/bin/firefox 600 </dev/null >/dev/null 2>&1 &
+sleep 2
+is "a second start lands inside too (nothing outside)" "$(for p in $(ffpids); do stat -Lc %i /proc/$p/ns/net; done | sort -u | paste -sd, -)" "$FFNSINO"
+ffkill
+# A Firefox already outside the namespace would be handed what a new one opens.
+as_user /usr/lib/firefox/firefox 600 </dev/null >/dev/null 2>&1 &
+sleep 1
+P=$(ffpids | head -1)
+OUT=$(as_user /usr/local/bin/firefox 5 2>&1); rc=$?
+is "with one outside, the wrapper refuses" "$rc" "1"
+yes "and names its pid" grep -q "pid $P" <<<"$OUT"
+no "with one outside, ff-launch refuses" as_user sudo -n /usr/local/bin/ff-launch 5
+no "with one outside, the wrapper refuses even from inside the namespace" ip netns exec ffvpn runuser -u "$U" -- /usr/local/bin/firefox 5
+is "(no second Firefox was started)" "$(ffpids | wc -l)" "1"
+ffkill
+# Fail closed: no route, no resolver files, no namespace: no Firefox.
+ip -n ffvpn link set pff0 down
+no "tunnel down: Firefox refuses to start" as_user /usr/local/bin/firefox 5
+no "tunnel down: ff-launch refuses" as_user sudo -n /usr/local/bin/ff-launch 5
+ip -n ffvpn link set pff0 up; ip -n ffvpn route replace default dev pff0
+is "(tunnel restored)" "$(ip netns exec ffvpn curl -4 -s --max-time 4 $LOOKUP)" "10.3.0.4"
+NSBAK=$(mktemp -d); mv /etc/netns/ffvpn/nsswitch.conf "$NSBAK/"
+no "without the namespace's nsswitch.conf, ff-launch refuses" as_user sudo -n /usr/local/bin/ff-launch 5
+no "and so does the wrapper" as_user /usr/local/bin/firefox 5
+no "and the wrapper refuses inside a namespace entered without them" ip netns exec ffvpn runuser -u "$U" -- /usr/local/bin/firefox 5
+mv "$NSBAK/nsswitch.conf" /etc/netns/ffvpn/; rm -rf "$NSBAK"
+yes "inside the namespace, the wrapper starts Firefox directly" ip netns exec ffvpn runuser -u "$U" -- /usr/local/bin/firefox 1
+systemctl stop ff-netns.service
+OUT=$(as_user /usr/local/bin/firefox 5 2>&1); rc=$?
+is "no namespace (tunnel on): the wrapper refuses" "$rc" "1"
+yes "and says how to start it" grep -q "systemctl start ff-netns.service" <<<"$OUT"
+no "and so does ff-launch" as_user sudo -n /usr/local/bin/ff-launch 5
+is "(nothing was started)" "$(ffpids | wc -l)" "0"
+systemctl start ff-netns.service
+is "(namespace back)" "$(ip netns exec ffvpn curl -4 -s --max-time 6 $LOOKUP)" "10.3.0.4"
+FFNSINO=$(stat -Lc %i /run/netns/ffvpn)
+# The passwordless rule: the binary is fixed, and it runs as the user. A
+# stand-in that takes any arguments and keeps running (yes) shows what ran.
+install -m 755 /usr/bin/yes /usr/lib/firefox/firefox
+as_user sudo -n /usr/local/bin/ff-launch -- /usr/bin/touch /root/suite-ff-abuse </dev/null >/dev/null 2>&1 &
+sleep 2
+P=$(ffpids | head -1)
+is "ff-launch cannot run another binary" "$(readlink /proc/${P:-none}/exe 2>/dev/null)" "/usr/lib/firefox/firefox"
+is "(it runs as the desktop user, not root)" "$(ps -o user= -p "${P:-1}" | tr -d ' ')" "$U"
+is "(inside the namespace)" "$(stat -Lc %i /proc/${P:-none}/ns/net 2>/dev/null)" "$FFNSINO"
+no "(the program it was given did not run)" test -e /root/suite-ff-abuse
+ffkill
+install -m 755 /usr/bin/sleep /usr/lib/firefox/firefox
+# Opted out: Firefox is plain Firefox again, as before the kit.
+as_user sudo -n /usr/local/bin/vpnkit-sync firefox off >/dev/null 2>&1
+as_user /usr/local/bin/firefox 600 </dev/null >/dev/null 2>&1 &
+sleep 1
+P=$(ffpids | head -1)
+is "firefox off: the wrapper execs the real binary" "$(stat -Lc %i /proc/${P:-none}/ns/net 2>/dev/null)" "$HOSTINO"
+is "(directly, as the user)" "$(ps -o user= -p "${P:-1}" | tr -d ' ')" "$U"
+ffkill
+no "firefox off: ff-launch refuses" as_user sudo -n /usr/local/bin/ff-launch 5
+is "(back on for the rest of the suite)" "$(as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-se-4 2>&1)" "firefox: proton-se-4"
+if [[ -n "$FFBAK" ]]; then cp -a "$FFBAK" /usr/lib/firefox/firefox; rm -f "$FFBAK"; else rm -rf /usr/lib/firefox; fi
+
 # ---------------------------------------------------------------------------
 section "4. Desktop VPN and kill switch"
 nft -f - <<EOF
@@ -1382,6 +1456,11 @@ fake_free "direct-launch neither (it refuses: Chrome direct is off)" '(( rc == 1
   /usr/local/bin/direct-launch
 fake_free "vpn-verify neither" 'grep -q "^Result: " <<<"$OUT"' \
   /usr/local/bin/vpn-verify
+FFBAK=""; [[ -e /usr/lib/firefox/firefox ]] && { FFBAK=$(mktemp); cp -a /usr/lib/firefox/firefox "$FFBAK"; }
+install -D -m 755 /usr/bin/sleep /usr/lib/firefox/firefox     # stand-in
+fake_free "ff-launch neither (it started Firefox in its namespace)" '(( rc == 0 ))' \
+  /usr/local/bin/ff-launch 1
+if [[ -n "$FFBAK" ]]; then cp -a "$FFBAK" /usr/lib/firefox/firefox; rm -f "$FFBAK"; else rm -rf /usr/lib/firefox; fi
 rm -rf "$FAKE" /usr/local/sbin/suite-path-probe /run/suite-fake-ran
 # secure_path stays off until the reinstall in section 6, which must say so.
 

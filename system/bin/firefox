@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
+# ============================================================================
+#  /usr/local/bin/firefox - the Firefox tunnel's wrapper
+#
+#  /usr/local/bin precedes /usr/bin in PATH, so `firefox` typed anywhere lands
+#  here, and so does the launcher entry while the Firefox tunnel is on
+#  (vpn-firefox-launcher points it here).
+#
+#    Firefox tunnel off  -> the real Firefox, exactly as without the kit
+#    Firefox tunnel on   -> Firefox inside its namespace, through the root
+#                           launcher ff-launch; REFUSED while a Firefox of
+#                           yours runs outside the namespace (it would be
+#                           handed these pages, and open them outside the
+#                           tunnel), and while the namespace is missing
+#
+#  The package's binary is never touched. To deliberately bypass this (you
+#  almost never should), call the real path: /usr/lib/firefox/firefox
+# ============================================================================
+set -uo pipefail
+REAL="/usr/lib/firefox/firefox"
+
+# Without the kit's library the Firefox tunnel cannot be on: plain Firefox.
+. /usr/local/lib/vpnkit/common.sh 2>/dev/null || exec "$REAL" "$@"
+REAL="$FF_BIN"
+
+if [[ ! -x "$REAL" ]]; then
+  echo "firefox: Firefox is not installed ($REAL is missing)" >&2
+  exit 127
+fi
+
+# Is the tunnel on? The record of its server (written when a Firefox server is
+# chosen, removed when the tunnel is turned off), its boot unit and its
+# namespace say so; the config itself is root-only. Any one of them means on:
+# a half-made or half-removed tunnel refuses rather than lets Firefox out.
+tunnel_on() {
+  [[ -s "$FF_SERVER_FILE" || -e "/run/netns/$FF_NS" ]] && return 0
+  systemctl is-enabled --quiet ff-netns.service 2>/dev/null
+}
+tunnel_on || exec "$REAL" "$@"
+
+# Started from the launcher, nobody sees stderr.
+say_refused() {  # say_refused <one line for the notification>
+  [[ -t 2 ]] || timeout 3 notify-send -a Firefox "Firefox was not started" "$1" >/dev/null 2>&1 || true
+}
+
+NS_INODE=$(stat -Lc '%i' "/run/netns/$FF_NS" 2>/dev/null) || NS_INODE=""
+
+# A Firefox already running outside the namespace would receive whatever this
+# one was asked to open (see vpnkit_ff_outside_pids), so refuse first.
+OUTSIDE=$(vpnkit_ff_outside_pids "$NS_INODE" "$(id -un)" | paste -sd' ' -)
+if [[ -n "$OUTSIDE" ]]; then
+  cat >&2 <<EOF
+Firefox was NOT started: a Firefox is already running outside the Firefox
+tunnel (pid $OUTSIDE).
+
+A new Firefox hands its pages to the one already running, which would open
+them on your regular connection. Close that Firefox (or: kill $OUTSIDE), then
+start it again.
+EOF
+  say_refused "A Firefox is already running outside the Firefox tunnel (pid $OUTSIDE). Close it, then start Firefox again."
+  exit 1
+fi
+
+# Already inside the namespace? Compare namespace inodes: kernel ground truth.
+MINE=$(stat -Lc '%i' /proc/self/ns/net 2>/dev/null) || MINE=""
+if [[ -n "$NS_INODE" && "$MINE" == "$NS_INODE" ]]; then
+  # Inside, /etc is what `ip netns exec` mounted when this process (or its
+  # parent) entered. If it entered before the namespace's resolver files
+  # existed, /etc still holds the host's nsswitch.conf, and lookups would
+  # reach systemd-resolved outside the tunnel. Refuse then.
+  if ! vpnkit_resolver_safe /etc; then
+    cat >&2 <<EOF
+Firefox was NOT started: this shell is inside the Firefox namespace '$FF_NS',
+but it entered before the namespace's DNS settings existed, so name lookups
+would go around the tunnel. Close this shell and start Firefox again from the
+launcher or a new terminal.
+EOF
+    exit 1
+  fi
+  exec "$REAL" "$@"
+fi
+
+# Outside the namespace. Refuse unless we can get inside it.
+if [[ -z "$NS_INODE" ]]; then
+  cat >&2 <<EOF
+Firefox was NOT started: the Firefox tunnel is on, but its namespace '$FF_NS'
+is not running.
+
+Starting Firefox outside it would put your browsing on your regular
+connection, so this wrapper refuses.
+
+  Start the tunnel:  sudo systemctl start ff-netns.service
+  Then:              firefox
+  Check status:      vpn-status
+  Turn it off:       sudo vpnkit-sync firefox off
+EOF
+  say_refused "The Firefox tunnel is not running. Start it: sudo systemctl start ff-netns.service"
+  exit 1
+fi
+
+[[ -t 2 ]] && echo "firefox: entering the Firefox namespace '$FF_NS'..." >&2
+exec sudo -n /usr/local/bin/ff-launch "$@"
