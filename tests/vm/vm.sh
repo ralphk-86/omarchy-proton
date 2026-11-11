@@ -139,7 +139,8 @@ start_fresh() {
     while IFS= read -r tag; do
       [[ "$tag" =~ ^[A-Za-z0-9._-]+$ ]] || continue
       if git -C "$REPO" rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null; then
-        vssh "sudo -u tester mkdir -p /home/tester/releases/$tag"
+        # </dev/null: ssh would otherwise read the rest of upgrade-from.
+        vssh "sudo -u tester mkdir -p /home/tester/releases/$tag" </dev/null
         git -C "$REPO" archive "refs/tags/$tag" | vssh "sudo -u tester tar -C /home/tester/releases/$tag -xf -"
       else
         echo "no tag $tag in this clone (git fetch --tags); the upgrade test will miss it"

@@ -1054,12 +1054,14 @@ is "the bypass address still uses the normal connection" "$(curl -4 -s --max-tim
 is "the torrent tunnel is untouched" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "10.2.0.3"
 is "the Firefox tunnel is untouched" "$(ip netns exec ffvpn curl -4 -s --max-time 4 $LOOKUP)" "10.3.0.4"
 
-# Switching servers must have no moment on the home address.
-( end=$((SECONDS+12)); while (( SECONDS < end )); do myip; echo; sleep 0.05; done ) > /tmp/switch.log &
+# Switching servers must have no moment on the home address. Each probe
+# gives up after 1 s, so one caught in the switch cannot outlast the time on
+# server B (with 3 s, one sometimes did, and server B went unseen).
+( end=$((SECONDS+14)); while (( SECONDS < end )); do myip --max-time 1; echo; sleep 0.05; done ) > /tmp/switch.log &
 probe=$!
 sleep 1
 yes "vpn-toggle switches to server B" as_user /usr/local/bin/vpn-toggle proton-se-2
-sleep 1
+sleep 2
 yes "and back to server A" as_user /usr/local/bin/vpn-toggle proton-ca-1
 wait "$probe"
 is "requests seen from the home address while switching" "$(grep -c "^$HOME_IP$" /tmp/switch.log)" "0"
