@@ -2766,12 +2766,16 @@ else
   is "$OLD: its install.sh exits 0" "$rc" "0"
   (( rc == 0 )) || sed 's/^/      /' /tmp/old-install.log | tail -15
   is "$OLD: it is installed" "$(cat /usr/local/lib/vpnkit/VERSION 2>/dev/null)" "$OLDV"
-  if grep -q '^VPNKIT_QBT_DESK_MARK=' "$OLDTREE/system/lib/owned.sh" 2>/dev/null; then
-    is "$OLD: its qBittorrent entry (with its marker) replaced the user's" "$(head -1 "$QDESK" 2>/dev/null)" "$QMARK"
-  else
+  # Up to 0.4.0 setup replaced the user's own qBittorrent entry (backed up,
+  # no marker); from 0.4.1 on it leaves one that starts the wrapper alone.
+  if grep -q '^VPNKIT_QBT_DESK_MARK=' "$OLDTREE/system/lib/owned.sh" 2>/dev/null; then QERA=marked; else QERA=legacy; fi
+  if [[ "$QERA" == legacy ]]; then
     is "$OLD: its qBittorrent entry (no marker) replaced the user's" "$(sha256sum < "$QDESK")" "$(sha256sum < "$OLDTREE/applications/org.qbittorrent.qBittorrent.desktop")"
+    is "$OLD: the user's entry is backed up next to it" "$(cat "$QDESK".bak.* 2>/dev/null | sha256sum)" "$QDESK_SUM"
+  else
+    is "$OLD: the user's own qBittorrent entry (it starts the wrapper) is left alone" "$(sha256sum < "$QDESK")" "$QDESK_SUM"
+    no "$OLD: (so nothing is backed up)" bash -c "ls '$QDESK'.bak.* 2>/dev/null | grep -q ."
   fi
-  is "$OLD: the user's entry is backed up next to it" "$(cat "$QDESK".bak.* 2>/dev/null | sha256sum)" "$QDESK_SUM"
   is "$OLD: IPv6 is off on the physical profile" "$(nmcli -g ipv6.method connection show "$PPROF")" "disabled"
   # Two servers imported by the earlier release.
   conf "$DROP/wg-CA-1.conf" "$WG/deskA.key" 10.2.0.2 10.2.0.1 "CA#1" "$WG/srvA.pub" 51820
@@ -2791,7 +2795,12 @@ else
   (( rc == 0 )) || sed 's/^/      /' /tmp/upgrade.log | tail -25
   yes "and gets to the end" grep -q "==> Done" /tmp/upgrade.log
   no "it refuses nothing as not the kit's" grep -qiE "not omarchy-proton's|--move-aside" /tmp/upgrade.log
-  no "it leaves no launcher entry to the user (no warning, no --qbt-launcher)" grep -qiE "your own|--qbt-launcher|skips the torrent tunnel" /tmp/upgrade.log
+  if [[ "$QERA" == legacy ]]; then
+    no "it leaves no launcher entry to the user (no warning, no --qbt-launcher)" grep -qiE "your own|--qbt-launcher|skips the torrent tunnel" /tmp/upgrade.log
+  else
+    yes "it keeps the user's own launcher entry, which starts the wrapper" grep -q "your own qBittorrent launcher entry is kept; it starts qbittorrent, which reaches the tunnel" /tmp/upgrade.log
+    no "(no warning, no --qbt-launcher)" grep -qiE "\[!\].*qBittorrent launcher|--qbt-launcher|skips the torrent tunnel" /tmp/upgrade.log
+  fi
   no "it moves nothing aside" test -e /usr/local/lib/vpnkit/moved-aside
   is "it is installed" "$(cat /usr/local/lib/vpnkit/VERSION 2>/dev/null)" "$(cat "$PLUGIN/VERSION")"
   no "the update does not turn the Firefox tunnel on (opt-in)" systemctl is-enabled --quiet ff-netns.service
@@ -2800,8 +2809,12 @@ else
     [[ "$(sed -n 2p "/usr/local/bin/${f##*/}" 2>/dev/null)" == "$BIN_MARK" ]] || unmarked+=" ${f##*/}"
   done
   is "every command is replaced by this release's (marker line)" "$unmarked" ""
-  is "the earlier release's qBittorrent entry is taken over" "$(head -1 "$QDESK" 2>/dev/null)" "$QMARK"
-  is "and the user's backup is kept, the only one" "$(ls "$QDESK".bak.* 2>/dev/null | wc -l):$(cat "$QDESK".bak.* 2>/dev/null | sha256sum)" "1:$QDESK_SUM"
+  if [[ "$QERA" == legacy ]]; then
+    is "the earlier release's qBittorrent entry is taken over" "$(head -1 "$QDESK" 2>/dev/null)" "$QMARK"
+    is "and the user's backup is kept, the only one" "$(ls "$QDESK".bak.* 2>/dev/null | wc -l):$(cat "$QDESK".bak.* 2>/dev/null | sha256sum)" "1:$QDESK_SUM"
+  else
+    is "the user's own qBittorrent entry is still as it was, with no backup" "$(ls "$QDESK".bak.* 2>/dev/null | wc -l):$(sha256sum < "$QDESK")" "0:$QDESK_SUM"
+  fi
   is "IPv6 stays off on the physical profile" "$(nmcli -g ipv6.method connection show "$PPROF")" "disabled"
   is "the servers $OLD imported are listed" "$(as_user /usr/local/bin/vpn-status --json | jq -r '.profiles | sort | join(",")' 2>/dev/null)" "proton-ca-1,proton-se-2"
   yes "a server $OLD imported is the kit's: it can be deleted" as_user sudo -n /usr/local/bin/vpnkit-sync remove proton-se-2
