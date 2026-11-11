@@ -339,6 +339,9 @@ select_firefox() {  # select_firefox <server name>: turns the Firefox tunnel on
     || { echo "vpnkit-sync: could not write $FF_CONF; the Firefox tunnel was not changed" >&2; return 1; }
   { printf '%s\n' "$name" > "$FF_SERVER_FILE" && chmod 644 "$FF_SERVER_FILE"; } \
     || { echo "vpnkit-sync: could not record the Firefox server in $FF_SERVER_FILE" >&2; return 1; }
+  # The exit address measured on the previous server must not be shown next
+  # to this one (qbt-netns-status also checks which server it belongs to).
+  rm -f /run/ff-netns-exit-ip 2>/dev/null
   systemctl enable ff-netns.service >/dev/null 2>&1 \
     || { echo "vpnkit-sync: could not enable ff-netns.service, so the Firefox tunnel would not start at boot" >&2; return 1; }
   ff_launcher
@@ -356,7 +359,7 @@ firefox_off() {  # turn the Firefox tunnel off; the server itself stays
   systemctl disable --now ff-netns.service >/dev/null 2>&1
   # In case the unit was not running the namespace (ExecStop did nothing).
   /usr/local/bin/ff-netns-down >/dev/null 2>&1
-  rm -f "$FF_CONF" "$FF_SERVER_FILE"
+  rm -f "$FF_CONF" "$FF_SERVER_FILE" /run/ff-netns-exit-ip
   rm -rf "/etc/netns/$FF_NS"
   if systemctl is-enabled --quiet ff-netns.service 2>/dev/null || [[ -e "/run/netns/$FF_NS" ]]; then
     echo "vpnkit-sync: the Firefox tunnel could not be turned off completely (systemctl status ff-netns.service)" >&2

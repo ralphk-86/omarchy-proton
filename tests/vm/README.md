@@ -42,10 +42,11 @@ the stand-in Chrome it uses for most of those checks. The same for the Firefox t
 Firefox (from the official repositories) runs headed inside its namespace, besides a stand-in.
 That needs the internet during section 1, like the installer's own packages.
 
-The last section is an upgrade: the release named in `upgrade-from` (a git tag) is installed
-from its own files, then updated to the tree under test and uninstalled. `vm.sh` copies that
-tag's tree into the VM with `git archive`, so the clone needs its tags (`git fetch --tags`);
-without it the suite reports the release missing.
+The last section is an upgrade, once for each release named in `upgrade-from` (git tags; now
+v0.4.0, whose commands had no marker line yet, and v0.4.2, whose had): it is installed from its
+own files, then updated to the tree under test and uninstalled. `vm.sh` copies each tag's tree
+into the VM with `git archive`, so the clone needs its tags (`git fetch --tags`); without them
+the suite reports the release missing.
 
 ## Reusing it for another plugin
 

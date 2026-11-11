@@ -4,7 +4,8 @@
 #  vpnkit-killswitch - the desktop VPN's kill switch.
 #
 #  While it is ON, the only traffic allowed out of this machine is:
-#    * through a desktop VPN interface (<prefix>-*)
+#    * through a desktop VPN interface (<prefix>-*), unless DIRECT_FWMARK
+#      routed it elsewhere (see below)
 #    * WireGuard's own encrypted packets (they carry VPN_FWMARK), which is what
 #      keeps the desktop tunnel and the torrent tunnel themselves alive
 #    * the BYPASS_CIDRS (servers that must see the home IP, e.g. SSH allowlists)
@@ -67,7 +68,22 @@ case "${1:-}" in
       echo "  chain output {"
       echo "    type filter hook output priority filter; policy drop;"
       echo "    oifname \"lo\" accept"
-      echo "    oifname \"${PROFILE_PREFIX}-*\" accept"
+      # The tunnel's interface, except for packets carrying DIRECT_FWMARK.
+      # vpnkit_direct (Chrome direct, SSH direct) sets that mark in a route
+      # hook, which makes the kernel route the packet again, to the normal
+      # connection; but `oifname` here is still the device of the FIRST route,
+      # the tunnel. Without the exception such a packet would be accepted
+      # right here, before the DNS reject below, and plain DNS from Chrome's
+      # slice would leave from the home address while a server is selected
+      # (0.4.0 to 0.4.2 did that). Marked packets go on to the DNS reject and
+      # then to their own line, which lets them out wherever they now go
+      # (the mark's policy rules send them to table main, or Tailscale's).
+      # Unmarked packets are not affected.
+      if [[ "$DIRECT_FWMARK" =~ ^[1-9][0-9]{0,9}$ ]]; then
+        echo "    meta mark != ${DIRECT_FWMARK} oifname \"${PROFILE_PREFIX}-*\" accept"
+      else
+        echo "    oifname \"${PROFILE_PREFIX}-*\" accept"
+      fi
       echo "    meta mark ${VPN_FWMARK} accept"
       # DNS never leaves outside a tunnel, not even to a resolver on the LAN
       # (a home router would forward the question to the ISP).
@@ -75,7 +91,8 @@ case "${1:-}" in
       # Chrome direct or SSH direct, while either is turned on: packets
       # vpnkit_direct marked (sockets in Chrome's slice, new connections to
       # the SSH ports) may leave directly. After the DNS reject, so plain DNS
-      # still cannot.
+      # still cannot, with a server selected (see the tunnel line above) or
+      # while blocked.
       vpnkit_direct_any_on && [[ "$DIRECT_FWMARK" =~ ^[1-9][0-9]{0,9}$ ]] && echo "    meta mark ${DIRECT_FWMARK} accept"
       (( ${#bypass[@]} )) && echo "    ip daddr { $(csv "${bypass[@]}") } accept"
       (( ${#lan[@]} ))    && echo "    ip daddr { $(csv "${lan[@]}") } accept"

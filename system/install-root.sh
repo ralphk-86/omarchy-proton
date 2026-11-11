@@ -394,6 +394,18 @@ if vpnkit_direct_any_on; then
   fi
 fi
 
+# An armed kill switch keeps the rules of the release that armed it until it
+# is armed again (one from 0.4.0 to 0.4.2 lets plain DNS from Chrome direct's
+# slice out while a server is selected). Arm it again now, for the same
+# server, with this release's rules; the table is replaced atomically.
+ks=$(/usr/local/bin/vpnkit-killswitch status 2>/dev/null) || ks=""
+if [[ "$ks" == "on "?* ]]; then
+  say "Arming the kill switch again with this release's rules (${ks#on })"
+  /usr/local/bin/vpnkit-killswitch on "${ks#on }" >/dev/null \
+    || { warn "could not arm the kill switch again; choose your server again in the panel"
+         INCOMPLETE+=("arming the kill switch again"); }
+fi
+
 # ------------------------------------------------------------ drop folder --
 say "Reading the drop folder: $CONFIG_DIR"
 /usr/local/bin/vpnkit-sync sync | jq -r '

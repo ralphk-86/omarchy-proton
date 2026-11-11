@@ -84,7 +84,7 @@ fi
 if nft list table inet vpnkit_kill >/dev/null 2>&1; then
   nft delete table inet vpnkit_kill || fail "could not remove the kill switch (nft table inet vpnkit_kill)"
 fi
-rm -rf /run/vpnkit /run/qbt-netns-exit-ip
+rm -rf /run/vpnkit /run/qbt-netns-exit-ip /run/ff-netns-exit-ip
 if [[ -e /etc/systemd/system/qbt-netns.service ]]; then
   systemctl disable --now qbt-netns.service >/dev/null 2>&1 || fail "could not stop and disable qbt-netns.service"
 fi
@@ -171,7 +171,7 @@ for f in qbt-netns-up qbt-netns-down qbt-netns-status qbt-launch qbittorrent ff-
     fi
   fi
 done
-[[ "$NS" =~ ^[A-Za-z0-9._-]{1,32}$ ]] && rm -rf "/etc/netns/$NS"
+[[ "$NS" =~ ^[A-Za-z0-9._-]{1,32}$ && "$NS" != . && "$NS" != .. ]] && rm -rf "/etc/netns/$NS"
 [[ "$FF_NS" =~ ^[A-Za-z0-9._-]{1,32}$ && "$FF_NS" != . && "$FF_NS" != .. ]] && rm -rf "/etc/netns/$FF_NS"
 rm -rf /etc/netns/.vpnkit-* /etc/vpnkit/providers
 

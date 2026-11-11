@@ -147,10 +147,26 @@ vpnkit_ssh_rules_loaded() {  # vpnkit_ssh_rules_loaded <ports "22,2222">: SSH di
 }
 
 vpnkit_kill_lets_direct_out() {  # the armed kill switch has its line for DIRECT_FWMARK (root)
+  # A rule that accepts on "mark is DIRECT_FWMARK" and nothing else (the
+  # tunnel line's "mark is not DIRECT_FWMARK" does not count).
   local t
   t=$(nft -j list chain inet vpnkit_kill output 2>/dev/null) || return 1
   jq -e --argjson m "$DIRECT_FWMARK" '[.nftables[]? | .rule? | select(type == "object")]
-    | any(any(.expr[]?; .match?.left?.meta?.key? == "mark" and .match?.right? == $m) and any(.expr[]?; has("accept")))' \
+    | any([.expr[]? | .match? | select(. != null)] == [{op: "==", left: {meta: {key: "mark"}}, right: $m}]
+          and any(.expr[]?; has("accept")))' \
+    >/dev/null 2>&1 <<<"$t"
+}
+
+vpnkit_kill_tunnel_skips_direct() {  # the armed kill switch's tunnel line leaves DIRECT_FWMARK out (root)
+  # A marked packet is routed again, to the normal connection, but the output
+  # hook still names the tunnel as its device: a tunnel line that accepted it
+  # would let it out before the DNS reject. (A kill switch armed by 0.4.0 to
+  # 0.4.2 has such a line until it is armed again.)
+  local t
+  t=$(nft -j list chain inet vpnkit_kill output 2>/dev/null) || return 1
+  jq -e --argjson m "$DIRECT_FWMARK" --arg dev "$PROFILE_PREFIX-*" '[.nftables[]? | .rule? | select(type == "object")
+      | select(any(.expr[]?; .match?.left?.meta?.key? == "oifname" and .match?.right? == $dev) and any(.expr[]?; has("accept")))]
+    | length > 0 and all(any(.expr[]?; .match? == {op: "!=", left: {meta: {key: "mark"}}, right: $m}))' \
     >/dev/null 2>&1 <<<"$t"
 }
 

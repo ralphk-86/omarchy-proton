@@ -936,6 +936,27 @@ yes "(one line says it is off)" grep -q "SKIP.*no Firefox tunnel" <<<"$OUT"
 ffkill
 no "firefox off: ff-launch refuses" as_user sudo -n /usr/local/bin/ff-launch 5
 is "(back on for the rest of the suite)" "$(as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-se-4 2>&1)" "firefox: proton-se-4"
+# The exit address shown belongs to the server it was measured on: after a
+# switch, the status shows the new server's exit or none, never the old one's
+# (it is cached for 60 s), and turning the tunnel off drops it.
+ffnew() { local a; a=$(status .ff_ip); case "$a" in "$1"|"") echo ok ;; *) echo "$a" ;; esac; }
+is "status: Firefox exit on proton-se-4" "$(status .ff_ip)" "10.3.0.4"
+yes "(and it is cached)" test -s /run/ff-netns-exit-ip
+is "Firefox switched to proton-se-2" "$(as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-se-2 2>&1)" "firefox: proton-se-2"
+is "right after the switch, the status shows proton-se-2's exit or none, never proton-se-4's" "$(ffnew 10.3.0.2)" "ok"
+is "(next to the new server's name)" "$(status .ff_conn)" "proton-se-2"
+is "(the namespace really exits there)" "$(ip netns exec ffvpn curl -4 -s --max-time 6 $LOOKUP)" "10.3.0.2"
+is "and then shows the new exit" "$(status .ff_ip)" "10.3.0.2"
+# A cached address measured on another server (or by a release that did not
+# record which) is never served.
+printf '10.3.0.4\n' > /run/ff-netns-exit-ip
+is "a cached address that does not name this server and namespace is not shown" "$(ffnew 10.3.0.2)" "ok"
+is "back to proton-se-4" "$(as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-se-4 2>&1)" "firefox: proton-se-4"
+is "right after switching back, never proton-se-2's exit" "$(ffnew 10.3.0.4)" "ok"
+is "(then proton-se-4's)" "$(status .ff_ip)" "10.3.0.4"
+as_user sudo -n /usr/local/bin/vpnkit-sync firefox off >/dev/null 2>&1
+no "turning the Firefox tunnel off drops its cached exit" test -e /run/ff-netns-exit-ip
+is "(back on again)" "$(as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-se-4 2>&1)" "firefox: proton-se-4"
 if [[ -n "$FFBAK" ]]; then cp -a "$FFBAK" /usr/lib/firefox/firefox; rm -f "$FFBAK"; else rm -rf /usr/lib/firefox; fi
 
 # Real Firefox, headed on a virtual X display, started the way the user
@@ -1004,6 +1025,9 @@ table inet suite_dns {
   # postrouting, after every filter: counts only packets that really leave.
   chain out { type filter hook postrouting priority 300;
     oifname "$PHYS" meta l4proto { tcp, udp } th dport 53 counter comment "dns-on-physical"
+    # The simulated internet is behind veth-h (the home router), where a
+    # resolver off the link is reached: DNS and DNS over TLS that leave there.
+    oifname "veth-h" meta l4proto { tcp, udp } th dport { 53, 853 } counter comment "dns-to-home-router"
   }
 }
 EOF
@@ -1137,10 +1161,34 @@ yes "the kill switch has the direct line after the DNS reject" bash -c \
 before=$(dns_leaks)
 in_slice bash -c 'printf x > /dev/udp/10.0.2.3/53'
 is "plain DNS from the slice still cannot leave outside a tunnel" "$(( $(dns_leaks) - before ))" "0"
+# A resolver off the link, reached through the default route like a real one
+# (192.0.2.53 here, and the tunnel's own resolver 10.2.0.1): its first route
+# is the tunnel, and the slice's mark routes it again, to the home router.
+# The kill switch must still reject it (0.4.0 to 0.4.2 let it out from the
+# home address while a server was selected).
+ks_dns_rejected() { nft list chain inet vpnkit_kill output 2>/dev/null | awk '/dport \{ 53, 853 \}.*reject/ {for (i = 1; i < NF; i++) if ($i == "packets") {print $(i+1); exit}}'; }
+slice_dns() {  # UDP and TCP to 53 and 853 of each address, from the slice
+  local a
+  for a in "$@"; do
+    in_slice bash -c "printf x > /dev/udp/$a/53; printf x > /dev/udp/$a/853; timeout 3 bash -c 'exec 3<>/dev/tcp/$a/53'; timeout 3 bash -c 'exec 3<>/dev/tcp/$a/853'; true"
+  done
+}
+before=$(dns_leaks); rej=$(ks_dns_rejected)
+slice_dns 192.0.2.53 10.2.0.1
+is "server selected: no DNS from the slice leaves (UDP/TCP 53 and 853, off-link resolvers)" "$(( $(dns_leaks) - before ))" "0"
+yes "the kill switch's DNS reject turned them away" test "$(( $(ks_dns_rejected) - ${rej:-0} ))" -ge 8
+is "and the slice still gets out from home" "$(slice_ip)" "$HOME_IP"
+is "while the host still exits through the server" "$(myip)" "10.2.0.2"
+resolvectl flush-caches
+yes "and the host still resolves through the tunnel" resolves only-in-tunnel.test
 
 nmcli connection down proton-ca-1 >/dev/null 2>&1; sleep 1
 is "blocked: the host does not get out" "$(myip)" "none"
 is "blocked: the slice still gets out" "$(slice_ip)" "$HOME_IP"
+before=$(dns_leaks); rej=$(ks_dns_rejected)
+slice_dns 192.0.2.53 10.2.0.1
+is "blocked: no DNS from the slice leaves either" "$(( $(dns_leaks) - before ))" "0"
+yes "(the DNS reject turned them away)" test "$(( $(ks_dns_rejected) - ${rej:-0} ))" -ge 8
 as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
 is "server A again" "$(myip)" "10.2.0.2"
 yes "the re-armed kill switch keeps the direct line" ks_line
@@ -1347,6 +1395,21 @@ yes "it proves a probe in the slice leaves from the normal connection" grep -q "
 yes "that only Chrome runs in the slice" grep -q "PASS.*only Chrome runs in Chrome direct's slice" <<<"$OUT"
 yes "that Chrome's resolver override holds" grep -q "PASS.*Chrome uses DIRECT_DNS (127.0.0.1) only" <<<"$OUT"
 yes "and that DIRECT_DNS answers" grep -q "PASS.*the resolver at DIRECT_DNS (127.0.0.1) answers" <<<"$OUT"
+yes "and that the kill switch rejects DNS from the slice with a server selected" grep -q "PASS.*the kill switch rejects plain DNS from Chrome direct's slice, also while a server is selected" <<<"$OUT"
+# A kill switch armed by 0.4.0 to 0.4.2 (its tunnel line takes marked packets
+# too): the leak check fails on it, and arming it again fixes it.
+h=$(nft -a list chain inet vpnkit_kill output | awk '/meta mark != 0x0000ca6d oifname/ {print $NF; exit}')
+nft replace rule inet vpnkit_kill output handle "${h:-0}" oifname '"proton-*"' accept
+before=$(dns_leaks)
+slice_dns 192.0.2.53
+yes "(control: with that old line, DNS from the slice does leave)" test "$(( $(dns_leaks) - before ))" -ge 1
+OUT=$(vpn-verify 2>&1); rc=$?
+is "the leak check fails on the old kill switch line" "$rc" "1"
+yes "and says how to fix it" grep -q "FAIL.*the kill switch lets plain DNS from Chrome direct's slice out from your own IP while a server is selected" <<<"$OUT"
+as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
+before=$(dns_leaks)
+slice_dns 192.0.2.53
+is "choosing the server again re-arms it: no DNS from the slice leaves" "$(( $(dns_leaks) - before ))" "0"
 # A scan of the slice that cannot finish says nothing, not "only Chrome": with
 # no writable /tmp the resolver check cannot stage Chrome's files.
 mount -t tmpfs -o ro,size=64k tmpfs /tmp
@@ -1882,12 +1945,16 @@ yes "and that a marked connection would not leave outside the tunnel" grep -q "F
 /etc/NetworkManager/dispatcher.d/50-vpnkit "$PHYS" up
 is "a link coming up loads them again" "$(status .ssh_direct_rules)" "true"
 # An armed kill switch without its line: the status must not say SSH direct
-# works. (While the server is up, the tunnel interface's own accept still lets
-# a rerouted connection out: the output hook keeps the device the first route
-# chose. Once the bar says blocked, the line is all there is.)
+# works. (The output hook keeps the device the first route chose, the tunnel,
+# for a connection the mark routed again; the tunnel line leaves marked
+# packets out, so the mark's own line is all that lets them out, with a
+# server selected as well as while blocked.)
 h=$(nft -a list chain inet vpnkit_kill output 2>/dev/null | awk '/meta mark 0x0000ca6d accept/ {print $NF; exit}')
 nft delete rule inet vpnkit_kill output handle "${h:-0}"
 no "the kill switch is armed without its line" ks_line
+yes "(its tunnel line still leaves the mark out)" bash -c 'nft list chain inet vpnkit_kill output | grep -q "meta mark != 0x0000ca6d oifname \"proton-\*\" accept"'
+is "with a server selected and no line, port 22 does not get out" "$(portip 22)" "none"
+is "(port 443 still goes through server A)" "$(portip 443)" "10.2.0.2"
 is "status: not working" "$(status .ssh_direct_rules)" "false"
 is "and the helper's own status agrees" "$(direct status | jq -c .ssh.rules)" "false"
 yes "vpn-status says so" grep -q "NOT WORKING: its rules, or the kill switch line for them, are missing" <<<"$(as_user /usr/local/bin/vpn-status)"
@@ -2477,11 +2544,14 @@ printf '#!/bin/sh\n# the user own vpnkit-pick (suite)\n' > /usr/local/bin/vpnkit
 # The README's way when the plugin folder is already gone: the system part's
 # own copy of the uninstaller, as root. It also switches to the normal
 # connection, and removes the launcher entries (as the user).
+# Both exit-address caches, as a status poll leaves them.
+printf '10.2.0.3 x\n' > /run/qbt-netns-exit-ip; printf '10.3.0.4 x\n' > /run/ff-netns-exit-ip
 bash /usr/local/lib/vpnkit/uninstall-root.sh --restore-ipv6 > /tmp/uninstall.log 2>&1; rc=$?
 is "the installed uninstaller (plugin folder gone) exits 0" "$rc" "0"
 (( rc == 0 )) || sed 's/^/      /' /tmp/uninstall.log | tail -15
 is "home address after uninstall" "$(myip)" "$HOME_IP"
 no "kill switch gone" nft list table inet vpnkit_kill
+no "the torrent and Firefox exit caches are gone" bash -c 'ls /run/qbt-netns-exit-ip /run/ff-netns-exit-ip 2>/dev/null | grep -q .'
 no "Chrome direct rules gone" nft list table inet vpnkit_direct
 no "Chrome direct fwmark rules gone" direct_rule
 no "Chrome direct slice gone" test -d "$DSLICE"
@@ -2677,10 +2747,14 @@ section "7. Upgrade from an earlier release, then uninstall"
 # options; later the README's uninstall. Nothing the earlier release installed
 # may count as someone else's: no refusal, no launcher left to the user, and
 # nothing kept as "not omarchy-proton's".
-OLD=$(grep -m1 -E '^[A-Za-z0-9._-]+$' "$PLUGIN/tests/vm/upgrade-from" 2>/dev/null)
+# Each release named in tests/vm/upgrade-from, in turn: one from before the
+# kit marked its files (checksums, released-bin.sha256) and one after.
+OLDS=$(grep -E '^[A-Za-z0-9._-]+$' "$PLUGIN/tests/vm/upgrade-from" 2>/dev/null)
+[[ -n "$OLDS" ]] || bad "tests/vm/upgrade-from names an earlier release"
+for OLD in $OLDS; do
 OLDTREE=$UHOME/releases/$OLD
-if [[ -z "$OLD" || ! -f "$OLDTREE/install.sh" ]]; then
-  bad "the earlier release ${OLD:-(none named)} is in the VM (vm.sh copies it from its git tag)"
+if [[ ! -f "$OLDTREE/install.sh" ]]; then
+  bad "the earlier release $OLD is in the VM (vm.sh copies it from its git tag)"
 else
   OLDV=$(cat "$OLDTREE/VERSION")
   cp "$PLUGIN/tests/vm/with-password.py" /tmp/with-password.py
@@ -2690,16 +2764,27 @@ else
   is "$OLD: its install.sh exits 0" "$rc" "0"
   (( rc == 0 )) || sed 's/^/      /' /tmp/old-install.log | tail -15
   is "$OLD: it is installed" "$(cat /usr/local/lib/vpnkit/VERSION 2>/dev/null)" "$OLDV"
-  is "$OLD: its qBittorrent entry (no marker) replaced the user's" "$(sha256sum < "$QDESK")" "$(sha256sum < "$OLDTREE/applications/org.qbittorrent.qBittorrent.desktop")"
+  if grep -q '^VPNKIT_QBT_DESK_MARK=' "$OLDTREE/system/lib/owned.sh" 2>/dev/null; then
+    is "$OLD: its qBittorrent entry (with its marker) replaced the user's" "$(head -1 "$QDESK" 2>/dev/null)" "$QMARK"
+  else
+    is "$OLD: its qBittorrent entry (no marker) replaced the user's" "$(sha256sum < "$QDESK")" "$(sha256sum < "$OLDTREE/applications/org.qbittorrent.qBittorrent.desktop")"
+  fi
   is "$OLD: the user's entry is backed up next to it" "$(cat "$QDESK".bak.* 2>/dev/null | sha256sum)" "$QDESK_SUM"
   is "$OLD: IPv6 is off on the physical profile" "$(nmcli -g ipv6.method connection show "$PPROF")" "disabled"
   # Two servers imported by the earlier release.
   conf "$DROP/wg-CA-1.conf" "$WG/deskA.key" 10.2.0.2 10.2.0.1 "CA#1" "$WG/srvA.pub" 51820
   conf "$DROP/wg-SE-2.conf" "$WG/deskB.key" 10.3.0.2 10.3.0.1 "SE#2" "$WG/srvB.pub" 51821
   is "$OLD: imports two servers" "$(as_user sudo -n /usr/local/bin/vpnkit-sync sync | jq -r '.imported | sort | join(",")')" "proton-ca-1,proton-se-2"
+  # A kill switch the earlier release armed (its tunnel line takes packets
+  # Chrome direct marks too): the update arms it again with this release's.
+  /usr/local/bin/vpnkit-killswitch on proton-ca-1 >/dev/null
+  yes "$OLD: its kill switch is armed" nft list table inet vpnkit_kill
   # omarchy plugin update: the folder now holds this release.
   rm -rf "$PLUGIN"; mv "$PLUGIN.suite-new" "$PLUGIN"
   in_terminal "$PLUGIN/install.sh" > /tmp/upgrade.log 2>&1; rc=$?
+  yes "the update arms the kill switch again, for the same server" grep -q "Arming the kill switch again with this release's rules (proton-ca-1)" /tmp/upgrade.log
+  yes "with this release's tunnel line" bash -c 'nft list chain inet vpnkit_kill output | grep -q "meta mark != 0x0000ca6d oifname \"proton-\*\" accept"'
+  /usr/local/bin/vpnkit-killswitch off >/dev/null
   is "the update from $OLD (install.sh, no options) exits 0" "$rc" "0"
   (( rc == 0 )) || sed 's/^/      /' /tmp/upgrade.log | tail -25
   yes "and gets to the end" grep -q "==> Done" /tmp/upgrade.log
@@ -2743,6 +2828,7 @@ else
   is "and its IPv6 DNS server" "$(nmcli -g ipv6.dns connection show "$PPROF" | sed 's/\\:/:/g')" "2606:4700:4700::1111"
   yes "real internet still works after the upgrade and the uninstall" curl -4 -s --max-time 8 -o /tmp/out https://archlinux.org
 fi
+done
 
 pkill -f whoami.py; pkill -x dnsmasq
 printf '\nResult: %d passed, %d failed\n' "$pass" "$fail"

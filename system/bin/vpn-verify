@@ -576,6 +576,16 @@ if vpnkit_direct_on; then
   else
     meh "no server selected: Chrome uses the normal connection like everything else"
   fi
+  # The slice's packets are routed again by their mark, but the kill switch
+  # still sees the tunnel as their device: its tunnel line must leave them
+  # out, or plain DNS from the slice gets past the DNS reject.
+  if $SUDO nft list table inet vpnkit_kill >/dev/null 2>&1; then
+    if $SUDO bash -c '. /usr/local/lib/vpnkit/common.sh; . /usr/local/lib/vpnkit/direct.sh; vpnkit_kill_tunnel_skips_direct'; then
+      ok "the kill switch rejects plain DNS from Chrome direct's slice, also while a server is selected"
+    else
+      no "the kill switch lets plain DNS from Chrome direct's slice out from your own IP while a server is selected (armed by an earlier release) - choose the server again to re-arm it"
+    fi
+  fi
 
   if [[ -z "$DIRECT_DNS" ]]; then
     ok "Chrome uses the system resolver (DIRECT_DNS is empty)"

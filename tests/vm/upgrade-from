@@ -1,2 +1,4 @@
-# Earlier releases the VM suite upgrades from (section 7): one git tag per line.
+# Earlier releases the VM suite upgrades from (section 7): one git tag per line,
+# each in turn. v0.4.0: commands without the marker line (checksums); v0.4.2: marked.
 v0.4.0
+v0.4.2

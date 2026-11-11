@@ -49,15 +49,23 @@ tunnel_probe() {  # tunnel_probe <ns> <wg_if>
 }
 
 # A namespace's actual exit IP (cached, this is the real proof), or empty.
-# Without a working tunnel there is none, and the cache is dropped.
-ns_exit_ip() {  # ns_exit_ip <ns> <cache file> <tunnel up: true|false>
-  local ns="$1" cache="$2" addr="" age
+# Without a working tunnel there is none, and the cache is dropped. The cache
+# names the server and the namespace (its inode) it was measured in, both
+# read before the measurement, and is used only while both are still the
+# same: after a switch of server (or a rebuilt namespace) the address is
+# measured again, never taken from the previous server. vpnkit-sync also
+# deletes it when it switches or turns a tunnel off.
+ns_exit_ip() {  # ns_exit_ip <ns> <cache file> <tunnel up: true|false> <server>
+  local ns="$1" cache="$2" addr="" age key line
   if [[ "$3" != true ]]; then rm -f "$cache" 2>/dev/null; return 0; fi
+  key="${4:--}:$(stat -Lc %i "/run/netns/$ns" 2>/dev/null)"
   if [[ -r "$cache" ]]; then
     age=$(( now - $(stat -c %Y "$cache" 2>/dev/null || echo 0) ))
     if (( age < IPCACHE_TTL )); then
-      { IFS= read -r addr < "$cache"; } 2>/dev/null || true
-      [[ "$addr" =~ ^[0-9.]+$ ]] && { printf '%s' "$addr"; return 0; }
+      { IFS= read -r line < "$cache"; } 2>/dev/null || line=""
+      addr="${line%% *}"
+      [[ "$addr" =~ ^[0-9.]+$ && "$line" == "$addr $key" ]] && { printf '%s' "$addr"; return 0; }
+      addr=""
     fi
   fi
   # Bounded like vpnkit_fetch (see common.sh); a function cannot be run
@@ -66,7 +74,7 @@ ns_exit_ip() {  # ns_exit_ip <ns> <cache file> <tunnel up: true|false>
   addr="${addr//[[:space:]]/}"
   # Only ever cache something that looks like an address.
   [[ "$addr" =~ ^[0-9.]+$ ]] || addr=""
-  [[ -n "$addr" ]] && printf '%s' "$addr" > "$cache" 2>/dev/null
+  [[ -n "$addr" ]] && printf '%s %s\n' "$addr" "$key" > "$cache" 2>/dev/null
   printf '%s' "$addr"
 }
 
@@ -121,7 +129,7 @@ done
 other_clients=$(vpnkit_outside_clients "$NS_INODE" | paste -sd, -)
 
 # --- the namespace's actual exit IP (cached, this is the real proof) --------
-exit_ip=$(ns_exit_ip "$NS" "$IPCACHE" "$tunnel_up")
+exit_ip=$(ns_exit_ip "$NS" "$IPCACHE" "$tunnel_up" "$conn")
 
 # --- the desktop user's programs, read once ------------------------------------
 # The Firefox and Chrome checks below both look at every process of the
@@ -152,7 +160,7 @@ firefox_json() {
   if [[ -n "$conn" ]]; then server="${conn#"$PROFILE_PREFIX"-}"
   elif [[ -r "$FF_CONF" ]]; then server=$(vpnkit_server_tag "$FF_CONF"); fi
   if [[ "$route" == true && "$hs" -gt 0 ]] && (( now - hs < HANDSHAKE_MAX_AGE )); then up=true; fi
-  addr=$(ns_exit_ip "$FF_NS" "$FF_IPCACHE" "$up")
+  addr=$(ns_exit_ip "$FF_NS" "$FF_IPCACHE" "$up" "$conn")
   scan=""
   [[ "$configured" == true ]] && scan=$(vpnkit_ff_pids "$ino" "$TARGET_USER" both)
   jq -Rsc --argjson configured "$configured" --argjson exists "$exists" --argjson route "$route" \
