@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
+# ============================================================================
+#  ff-netns-up - build an isolated network namespace containing ONLY a
+#                WireGuard tunnel, for Firefox to run inside.
+#
+#  The same builder as the torrent tunnel's (vpnkit_netns_up in
+#  /usr/local/lib/vpnkit/netns.sh), with Firefox's own namespace, interface,
+#  config and nftables table: no tunnel means no route and no resolver, so
+#  nothing inside can escape, including DNS. Independent of the desktop VPN
+#  and of the torrent tunnel.
+#
+#  Opt-in: FF_CONF exists only once a Firefox server has been chosen
+#  (vpnkit-sync firefox <name>, or a config put in the drop folder's
+#  firefox/). Without it this fails, and the unit is not enabled.
+#
+#  Run via: systemctl start ff-netns.service
+# ============================================================================
+# Runs as root (through sudo, or systemd): a fixed PATH before any command,
+# because sudo hands the caller's PATH on when sudoers has no secure_path.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"
+set -euo pipefail
+
+# All names and paths come from /etc/vpnkit/vpnkit.conf.
+. /usr/local/lib/vpnkit/common.sh   # FF_NS, FF_WG_IF, FF_CONF, NS, WG_IF, QBT_CONF, ...
+. /usr/local/lib/vpnkit/netns.sh    # vpnkit_netns_up
+
+log() { echo "[ff-netns] $*"; }
+
+# The two tunnels must never share a namespace, an interface or a config:
+# building one would tear the other down.
+if [[ "$FF_NS" == "$NS" || "$FF_WG_IF" == "$WG_IF" || "$FF_CONF" == "$QBT_CONF" ]]; then
+  log "ERROR: FF_NS, FF_WG_IF and FF_CONF in /etc/vpnkit/vpnkit.conf must differ from NS, WG_IF and QBT_CONF."
+  exit 1
+fi
+
+# A plain statement (see netns.sh): set -e stays in force inside the function.
+vpnkit_netns_up "$FF_NS" "$FF_WG_IF" "$FF_CONF" ffguard

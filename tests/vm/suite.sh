@@ -13,6 +13,7 @@
 #                         10.2.0.2      desktop server A (CA#1)
 #                         10.3.0.2      desktop server B (SE#2)
 #                         10.2.0.3      the torrent tunnel
+#                         10.3.0.4      the Firefox tunnel (server B)
 #    198.51.100.80:8080 the same service on a second address, used as a
 #                       BYPASS_CIDRS target
 #    10.2.0.1 / 10.3.0.1  the in-tunnel DNS resolvers, the only ones that know
@@ -89,7 +90,7 @@ pacman -Sw --noconfirm wireguard-tools >/dev/null 2>&1
 bsdtar -xOf "$(ls /var/cache/pacman/pkg/wireguard-tools-*.pkg.tar.zst | head -1)" usr/bin/wg > /tmp/wg-static
 chmod 755 /tmp/wg-static
 WG=$(mktemp -d)
-for k in srvA srvB deskA deskB torrent; do
+for k in srvA srvB deskA deskB torrent ff ffx; do
   /tmp/wg-static genkey > "$WG/$k.key"; /tmp/wg-static pubkey < "$WG/$k.key" > "$WG/$k.pub"
 done
 
@@ -103,8 +104,10 @@ mk_server() {  # mk_server <if> <port> <key> <addr> <peer-pub>@<peer-ip>...
   for p in "$@"; do ip netns exec provider /tmp/wg-static set "$ifn" peer "${p%@*}" allowed-ips "${p#*@}" || echo "SETUP ERROR: peer $p"; done
   ip -n provider link set "$ifn" up
 }
-mk_server wgA 51820 "$WG/srvA.key" 10.2.0.1/24 "$(cat $WG/deskA.pub)@10.2.0.2/32" "$(cat $WG/torrent.pub)@10.2.0.3/32"
-mk_server wgB 51821 "$WG/srvB.key" 10.3.0.1/24 "$(cat $WG/deskB.pub)@10.3.0.2/32"
+# ffx: a server on the torrent tunnel's endpoint (server A), refused for Firefox.
+mk_server wgA 51820 "$WG/srvA.key" 10.2.0.1/24 "$(cat $WG/deskA.pub)@10.2.0.2/32" "$(cat $WG/torrent.pub)@10.2.0.3/32" \
+  "$(cat $WG/ffx.pub)@10.2.0.5/32"
+mk_server wgB 51821 "$WG/srvB.key" 10.3.0.1/24 "$(cat $WG/deskB.pub)@10.3.0.2/32" "$(cat $WG/ff.pub)@10.3.0.4/32"
 
 cat > /tmp/whoami.py <<'PY'
 import http.server, socketserver, sys
@@ -262,9 +265,11 @@ yes "missing dependency was installed (nft)" command -v nft
 yes "Chrome direct's dependency is installed (xdg-dbus-proxy${XDBUS_BEFORE:+, was there before})" command -v xdg-dbus-proxy
 yes "Chrome direct's xdg-open is installed, outside PATH" test -x /usr/local/lib/vpnkit/direct-bin/xdg-open
 yes "Chrome direct's library is installed" test -r /usr/local/lib/vpnkit/direct.sh
-for f in vpn-status vpn-toggle vpn-import vpn-verify vpn-check vpn-rescue vpn-diagnose vpnkit-pick vpnkit-sync vpnkit-import vpnkit-killswitch vpnkit-direct vpnkit-direct-rules vpn-direct direct-launch google-chrome-stable qbt-netns-up qbt-launch qbittorrent; do
+for f in vpn-status vpn-toggle vpn-import vpn-verify vpn-check vpn-rescue vpn-diagnose vpnkit-pick vpnkit-sync vpnkit-import vpnkit-killswitch vpnkit-direct vpnkit-direct-rules vpn-direct direct-launch google-chrome-stable qbt-netns-up qbt-launch qbittorrent ff-netns-up ff-netns-down; do
   yes "installed /usr/local/bin/$f" test -x /usr/local/bin/$f
 done
+yes "the Firefox tunnel's library and unit are installed" test -r /usr/local/lib/vpnkit/netns.sh -a -f /etc/systemd/system/ff-netns.service
+no "and the Firefox tunnel is not enabled: it is opt-in" systemctl is-enabled --quiet ff-netns.service
 yes "the Chrome direct units are installed" test -f /etc/systemd/system/vpnkit-direct.service -a -f /etc/systemd/system/vpnkitdirect.slice
 no "and Chrome direct is not enabled: it is opt-in" systemctl is-enabled --quiet vpnkit-direct.service
 yes "sudoers file is valid" visudo -c -f /etc/sudoers.d/99-vpnkit
@@ -492,6 +497,47 @@ no "(nothing was built for it)" bash -c 'ip netns list | grep -qw suitebad || [[
 systemctl restart qbt-netns.service
 is "(rebuilt the normal way)" "$(ip netns exec qbtvpn curl -4 -s --max-time 6 $LOOKUP)" "10.2.0.3"
 no "no temporary folder is left in /etc/netns" bash -c 'ls -d /etc/netns/.vpnkit-* 2>/dev/null | grep -q .'
+
+# ---------------------------------------------------------------------------
+section "3b. Firefox namespace"
+# Opt-in: nothing exists for Firefox until a Firefox server is chosen.
+no "no Firefox namespace before opt-in" ip netns exec ffvpn true
+is "unit not enabled before opt-in" "$(systemctl is-enabled ff-netns.service 2>/dev/null)" "disabled"
+no "no Firefox config before opt-in" test -e /etc/wireguard/vpnkit-firefox.conf
+# The builder on its own: a config put where a chosen Firefox server goes.
+conf /root/suite-ff.conf "$WG/ff.key" 10.3.0.4 10.3.0.1 "SE#4" "$WG/srvB.pub" 51821
+install -m 600 /root/suite-ff.conf /etc/wireguard/vpnkit-firefox.conf; rm -f /root/suite-ff.conf
+yes "with a Firefox config, ff-netns.service builds the namespace" systemctl start ff-netns.service
+is "only lo and the tunnel are inside" "$(ip -n ffvpn -o link show | awk -F': ' '{print $2}' | sort | paste -sd,)" "lo,pff0"
+is "Firefox namespace exits through its own server" "$(ip netns exec ffvpn curl -4 -s --max-time 4 $LOOKUP)" "10.3.0.4"
+yes "DNS inside uses the in-tunnel resolver" ip netns exec ffvpn getent hosts only-in-tunnel.test
+yes "its own default-deny table is loaded inside" ip netns exec ffvpn nft list table inet ffguard
+is "its resolver files are in place, and nothing else" "$(ls -A /etc/netns/ffvpn | sort | paste -sd,)" "nsswitch.conf,resolv.conf"
+is "unit retries" "$(systemctl show -p Restart --value ff-netns.service)" "on-failure"
+is "the torrent tunnel is untouched" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "10.2.0.3"
+is "the host still exits from the home address" "$(myip)" "$HOME_IP"
+ip -n ffvpn link set pff0 down
+is "tunnel down: nothing leaves" "$(ip netns exec ffvpn curl -4 -s --max-time 3 $LOOKUP || echo none)" "none"
+no "tunnel down: no DNS" ip netns exec ffvpn timeout 4 getent hosts only-in-tunnel.test
+ip -n ffvpn link set pff0 up; ip -n ffvpn route replace default dev pff0
+is "tunnel restored" "$(ip netns exec ffvpn curl -4 -s --max-time 4 $LOOKUP)" "10.3.0.4"
+# Settings that would make the Firefox tunnel the torrent tunnel's are refused,
+# and the torrent tunnel survives the attempt.
+cp /etc/vpnkit/vpnkit.conf /root/suite-vpnkit.conf
+printf 'FF_NS="qbtvpn"\n' >> /etc/vpnkit/vpnkit.conf
+no "ff-netns-up refuses the torrent tunnel's namespace name" /usr/local/bin/ff-netns-up
+/usr/local/bin/ff-netns-down >/dev/null 2>&1
+is "(and ff-netns-down leaves the torrent namespace alone)" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "10.2.0.3"
+cp /root/suite-vpnkit.conf /etc/vpnkit/vpnkit.conf
+printf 'FF_CONF="/etc/wireguard/vpnkit-torrent.conf"\n' >> /etc/vpnkit/vpnkit.conf
+no "ff-netns-up refuses the torrent tunnel's config" /usr/local/bin/ff-netns-up
+cp /root/suite-vpnkit.conf /etc/vpnkit/vpnkit.conf; rm -f /root/suite-vpnkit.conf
+yes "stopping the unit removes the namespace" bash -c 'systemctl stop ff-netns.service && ! ip netns exec ffvpn true 2>/dev/null'
+is "and leaves the torrent tunnel up" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "10.2.0.3"
+rm -f /etc/wireguard/vpnkit-firefox.conf
+no "without its config, the unit fails: no namespace, nothing to fall back to" systemctl start ff-netns.service
+no "(no Firefox namespace)" ip netns exec ffvpn true
+systemctl reset-failed ff-netns.service 2>/dev/null; systemctl stop ff-netns.service 2>/dev/null
 
 # ---------------------------------------------------------------------------
 section "4. Desktop VPN and kill switch"
@@ -1641,6 +1687,9 @@ no "from its backup (moved back, not copied)" bash -c "ls '$QDESK'.bak.* 2>/dev/
 no "sudoers rule gone" test -e /etc/sudoers.d/99-vpnkit
 no "dispatcher hook gone" test -e /etc/NetworkManager/dispatcher.d/50-vpnkit
 no "service gone" test -e /etc/systemd/system/qbt-netns.service
+no "the Firefox tunnel's unit gone" test -e /etc/systemd/system/ff-netns.service
+no "the Firefox namespace gone" bash -c "ip netns list | grep -qw ffvpn"
+no "and its resolver files" test -e /etc/netns/ffvpn
 is "IPv6 back on" "$(sysctl -n net.ipv6.conf.all.disable_ipv6)" "0"
 is "the physical profile's IPv6 method is back" "$(nmcli -g ipv6.method connection show "$PPROF")" "auto"
 is "and its IPv6 DNS server is back" "$(nmcli -g ipv6.dns connection show "$PPROF" | sed 's/\\:/:/g')" "2606:4700:4700::1111"
@@ -1748,6 +1797,7 @@ rm -rf /run/systemd/system/vpnkit-direct.service.d; systemctl daemon-reload
 systemctl stop vpnkit-direct.service vpnkitdirect.slice >/dev/null 2>&1
 no "--purge removes the servers" nmcli connection show proton-ca-1
 no "--purge removes the torrent config" test -e /etc/wireguard/vpnkit-torrent.conf
+no "--purge removes the Firefox config" test -e /etc/wireguard/vpnkit-firefox.conf
 no "--purge removes a server imported under another provider's prefix ($OLDP)" nmcli connection show "$OLDP"
 no "and its config" test -e "/etc/wireguard/$OLDP.conf"
 yes "--purge leaves a profile of the user's with the kit's prefix" nmcli connection show uuid "$MINE_UUID"
@@ -1842,6 +1892,7 @@ else
   no "it leaves no launcher entry to the user (no warning, no --qbt-launcher)" grep -qiE "your own|--qbt-launcher|skips the torrent tunnel" /tmp/upgrade.log
   no "it moves nothing aside" test -e /usr/local/lib/vpnkit/moved-aside
   is "it is installed" "$(cat /usr/local/lib/vpnkit/VERSION 2>/dev/null)" "$(cat "$PLUGIN/VERSION")"
+  no "the update does not turn the Firefox tunnel on (opt-in)" systemctl is-enabled --quiet ff-netns.service
   unmarked=""
   for f in "$PLUGIN"/system/bin/*; do
     [[ "$(sed -n 2p "/usr/local/bin/${f##*/}" 2>/dev/null)" == "$BIN_MARK" ]] || unmarked+=" ${f##*/}"

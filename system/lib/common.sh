@@ -27,6 +27,9 @@ fi
 NS="qbtvpn"
 WG_IF="pqbt0"
 QBT_CONF=""
+FF_NS="ffvpn"
+FF_WG_IF="pff0"
+FF_CONF=""
 PROFILE_PREFIX="vpn"
 FALLBACK_DNS="1.1.1.1"
 SERVER_TAG_REGEX=''
@@ -64,6 +67,12 @@ fi
 
 # ----------------------------------------------------------- derived --------
 [ -z "$QBT_CONF" ] && QBT_CONF="/etc/wireguard/vpnkit-torrent.conf"
+# The Firefox tunnel (opt-in): it exists only once a Firefox server has been
+# chosen (vpnkit-sync firefox <name>, or a config put in firefox/), which
+# writes FF_CONF and FF_SERVER_FILE. These two are fixed, not settings.
+[ -z "$FF_CONF" ] && FF_CONF="/etc/wireguard/vpnkit-firefox.conf"
+FF_SERVER_FILE=/etc/vpnkit/firefox-server
+FF_BIN=/usr/lib/firefox/firefox
 
 # Resolve the unprivileged user for qBittorrent when it was not pinned.
 # Preference order: explicit setting, then the invoking sudo user, then the

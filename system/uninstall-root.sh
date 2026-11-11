@@ -39,7 +39,7 @@ lib() {  # lib <name>: the first readable copy of a library, or nothing
   return 1
 }
 
-NS="qbtvpn"; QBT_CONF=""; TARGET_USER=""; TARGET_HOME=""; DIRECT_FWMARK=51821; DIRECT_STATE=/etc/vpnkit/direct-apps
+NS="qbtvpn"; QBT_CONF=""; FF_NS="ffvpn"; FF_CONF=""; FF_SERVER_FILE=/etc/vpnkit/firefox-server; TARGET_USER=""; TARGET_HOME=""; DIRECT_FWMARK=51821; DIRECT_STATE=/etc/vpnkit/direct-apps
 COMMON=$(lib common.sh) || COMMON=""
 if [[ -n "$COMMON" ]]; then
   # shellcheck disable=SC1090
@@ -89,6 +89,10 @@ if [[ -e /etc/systemd/system/qbt-netns.service ]]; then
   systemctl disable --now qbt-netns.service >/dev/null 2>&1 || fail "could not stop and disable qbt-netns.service"
 fi
 rm -f /etc/systemd/system/qbt-netns.service
+if [[ -e /etc/systemd/system/ff-netns.service ]]; then
+  systemctl disable --now ff-netns.service >/dev/null 2>&1 || fail "could not stop and disable ff-netns.service"
+fi
+rm -f /etc/systemd/system/ff-netns.service
 # Chrome direct: stopping the slice ends what still runs in it. A unit that
 # will not go is reported; its rules are removed below in any case.
 if systemctl cat vpnkit-direct.service >/dev/null 2>&1; then
@@ -100,8 +104,9 @@ while ip -4 rule del priority 90 fwmark "$DIRECT_FWMARK" table main 2>/dev/null;
 while ip -4 rule del priority 89 fwmark "$DIRECT_FWMARK" to 100.64.0.0/10 table 52 2>/dev/null; do :; done
 rm -f /etc/systemd/system/vpnkit-direct.service /etc/systemd/system/vpnkitdirect.slice "$DIRECT_STATE"
 systemctl daemon-reload || fail "systemctl daemon-reload failed"
-# The namespace itself goes with its unit; this is in case the unit was gone.
+# The namespaces themselves go with their units; this is in case a unit was gone.
 [[ "$NS" =~ ^[A-Za-z0-9._-]{1,32}$ ]] && ip netns del "$NS" 2>/dev/null
+[[ "$FF_NS" =~ ^[A-Za-z0-9._-]{1,32}$ ]] && ip netns del "$FF_NS" 2>/dev/null
 
 if (( PURGE )); then
   # Only the servers the kit imported (kit_servers): under any prefix, so
@@ -122,6 +127,8 @@ if (( PURGE )); then
   fi
   [[ -n "$QBT_CONF" ]] && rm -f "$QBT_CONF" "$QBT_CONF".bak.*
   rm -f /etc/vpnkit/torrent-server
+  [[ -n "$FF_CONF" ]] && rm -f "$FF_CONF" "$FF_CONF".bak.*
+  rm -f "$FF_SERVER_FILE"
 fi
 
 # The launcher entries in the desktop user's folder: removed only if they are
@@ -139,7 +146,7 @@ fi
 
 # Commands in /usr/local/bin: only the kit's (lib/owned.sh); files setup moved
 # aside (install.sh --move-aside) go back where they were.
-for f in qbt-netns-up qbt-netns-down qbt-netns-status qbt-launch qbittorrent \
+for f in qbt-netns-up qbt-netns-down qbt-netns-status qbt-launch qbittorrent ff-netns-up ff-netns-down \
          vpnkit-import vpnkit-killswitch vpnkit-sync vpnkit-pick vpnkit-direct vpnkit-direct-rules \
          vpn-direct direct-launch google-chrome-stable \
          vpn-status vpn-toggle vpn-import vpn-verify vpn-check vpn-rescue vpn-diagnose; do
@@ -165,6 +172,7 @@ for f in qbt-netns-up qbt-netns-down qbt-netns-status qbt-launch qbittorrent \
   fi
 done
 [[ "$NS" =~ ^[A-Za-z0-9._-]{1,32}$ ]] && rm -rf "/etc/netns/$NS"
+[[ "$FF_NS" =~ ^[A-Za-z0-9._-]{1,32}$ && "$FF_NS" != . && "$FF_NS" != .. ]] && rm -rf "/etc/netns/$FF_NS"
 rm -rf /etc/netns/.vpnkit-* /etc/vpnkit/providers
 
 # Your settings survive a plain uninstall, so a reinstall behaves the same.

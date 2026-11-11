@@ -39,6 +39,7 @@ echo "4b. Root-run scripts set a fixed PATH first (sudo may pass the caller's on
 # NetworkManager, setup) run as root.
 ROOT_RUN=$(sed -nE 's#^@USER@ .*NOPASSWD: /usr/local/bin/([^ ]+).*#system/bin/\1#p' system/sudoers.d/99-vpnkit | sort -u)
 ROOT_RUN+=$'\n'"system/bin/vpnkit-import system/bin/vpnkit-direct-rules system/bin/qbt-netns-up system/bin/qbt-netns-down"
+ROOT_RUN+=$'\n'"system/bin/ff-netns-up system/bin/ff-netns-down"
 ROOT_RUN+=$'\n'"system/dispatcher.d/50-vpnkit system/install-root.sh system/uninstall-root.sh"
 for f in $ROOT_RUN; do
   first=$(awk '/^#/ || /^[[:space:]]*$/ || /^set -[euo]+( pipefail)?$/ {next} {print; exit}' "$f")

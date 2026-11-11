@@ -45,7 +45,7 @@ user's permissions, not root's. The helpers are installed root-owned in `/usr/lo
 only when sudoers sets `secure_path`; without it (an older or edited `/etc/sudoers`) the
 caller's `PATH` reaches root. So every script that runs as root, the seven above and
 everything they, systemd or NetworkManager start (`vpnkit-import`, `vpnkit-direct-rules`,
-`qbt-netns-up`, `qbt-netns-down`, the dispatcher hook, setup and the uninstaller), sets
+`qbt-netns-up`, `qbt-netns-down`, `ff-netns-up`, `ff-netns-down`, the dispatcher hook, setup and the uninstaller), sets
 `PATH=/usr/local/sbin:/usr/local/bin:/usr/bin` before it runs any command; `tests/check.sh`
 fails otherwise. As root, the settings folder is always `/etc/vpnkit`, whatever the
 environment says. Setup warns (and changes nothing) when sudo has no `secure_path`, because

@@ -72,3 +72,9 @@ IP_CACHE_TTL=30
 #QBT_CONF="/etc/wireguard/vpnkit-torrent.conf"
 #VPN_FWMARK=51820            # shared by every tunnel; keeps them from nesting
 #HANDSHAKE_MAX_AGE=240       # seconds without a handshake before a tunnel counts as down
+
+# ---- Firefox tunnel (off until a config is put in firefox/; rarely changed) -
+# Must differ from the torrent tunnel's names above.
+#FF_NS="ffvpn"               # network namespace name
+#FF_WG_IF="pff0"             # WireGuard interface inside it
+#FF_CONF="/etc/wireguard/vpnkit-firefox.conf"

@@ -371,8 +371,11 @@ install -d -m 755 /etc/NetworkManager/dispatcher.d
 install -m 755 -o root -g root "$SYS/dispatcher.d/50-vpnkit" /etc/NetworkManager/dispatcher.d/50-vpnkit
 
 # --------------------------------------------------------------- systemd ---
-say "Installing qbt-netns.service and the Chrome direct units"
+say "Installing qbt-netns.service, ff-netns.service and the Chrome direct units"
 install -m 644 "$SYS/systemd/qbt-netns.service" /etc/systemd/system/qbt-netns.service
+# The Firefox tunnel is opt-in: its unit is installed, but enabled only below
+# once a Firefox server has been chosen (FF_CONF exists).
+install -m 644 "$SYS/systemd/ff-netns.service" /etc/systemd/system/ff-netns.service
 # Chrome direct is opt-in: its units are installed, but only `vpnkit-direct on`
 # enables them. When it is already on, the rules are loaded again in place
 # (a restart would recreate the slice and end a Chrome running in it).
@@ -417,6 +420,19 @@ if [[ -r "$QBT_CONF" ]]; then
   fi
 else
   echo "    no torrent tunnel yet: put one config in $CONFIG_DIR/torrent and press Refresh"
+fi
+
+# The Firefox tunnel: only for a user who chose a Firefox server. Without one,
+# nothing here touches Firefox.
+if [[ -r "$FF_CONF" ]]; then
+  systemctl enable ff-netns.service >/dev/null \
+    || { warn "could not enable ff-netns.service: the Firefox tunnel would not start at boot"
+         INCOMPLETE+=("enabling ff-netns.service"); }
+  # Leave a running namespace alone: rebuilding it would cut a running
+  # Firefox off from the network.
+  if ! ip netns list 2>/dev/null | grep -qw "$FF_NS"; then
+    systemctl restart ff-netns.service || warn "ff-netns.service failed to start: journalctl -u ff-netns.service"
+  fi
 fi
 
 # ------------------------------------------------- did the internet survive -
