@@ -106,12 +106,29 @@
   stops instead of giving that user the passwordless rules while the kit keeps acting for the
   first; the docs say that IPv6 goes off on every interface but loopback (Tailscale and
   container bridges included), not only on "real" ones.
+- From the final review: setup no longer stops right after the system part, before the
+  qBittorrent settings, the status and "Done", when the launcher cache cannot be updated or a
+  qBittorrent entry of yours cannot be read (and `vpn-direct on|off` no longer exits with an
+  error after doing its work for the first reason); a launcher entry that cannot be written is
+  only a warning. Without `XDG_RUNTIME_DIR`, an existing `~/.cache` keeps its mode. The
+  `secure_path` check no longer warns wrongly when sudo speaks another language. Setup reads
+  `TARGET_USER` the way the helpers do, so quotes or a comment on that line no longer make it
+  refuse that very user. The stop messages give the full path of `install.sh` to run, and
+  README "Update" says when the panel's update stops. Importing the very same file again after
+  a server's profile was deleted outside the kit gives it back its old name, not a hashed one.
 - **Upgrading:** "Update the system part" changes nothing on profiles that already have IPv6
-  off. If you keep your own qBittorrent launcher entry, setup now leaves it alone; the kit's
-  entry from 0.4.0 is recognised and updated.
-- Tests: static checks pass (now also: every root-run script sets its PATH first; every
-  command carries the marker and is in the uninstaller's list); the marketplace security
-  baseline is `review-required` with no findings. VM suite: 632 passed, 0 failed. VM tests added in
+  off, unless you set `DISABLE_IPV6=0` under an earlier version (the docs said it gave IPv6
+  back; it did nothing). This update acts on it: IPv6 comes back on, and every profile setup
+  switched off gets its saved settings back. A profile that had `ipv6.method manual` when 0.3.6
+  to 0.4.0 switched it off cannot be (its addresses were never saved): setup names it, leaves
+  IPv6 off on it and reports itself as not finished on every run, until you set that profile's
+  IPv6 again with `nmcli` (README: "IPv6 and your network profiles"). If you keep your own
+  qBittorrent launcher entry, setup now leaves it alone; the kit's entry from 0.4.0 is
+  recognised and updated.
+- Tests: static checks pass (now also: every root-run script sets its PATH first, and the
+  passwordless ones start with `#!/usr/bin/bash`; every command carries the marker and is in
+  the uninstaller's list; the launcher helpers survive `set -e`); the marketplace security
+  baseline is `review-required` with no findings. VM suite: 682 passed, 0 failed. VM tests added in
   this release: a wired profile with static IPv6 (two addresses, a gateway, two routes, one
   with a metric and the attributes `table` and `onlink`, DNS servers, search domains, a colon
   in its name) is switched off with every field saved, then restored field for field (and
@@ -135,7 +152,15 @@
   torrents or overwritten, and a server under an earlier prefix is purged; the leak check does
   not read a root-only file through a symlink or hang on a FIFO; setup run by another user
   changes nothing; the install log is private. The suite also waits for its simulated lookup
-  service to listen before using it.
+  service to listen before using it. Added after the final review: v0.4.0 (from its git tag) is
+  installed, imports two servers, is updated to this release through `install.sh` with no
+  options, and is uninstalled with `--purge --restore-ipv6`, with nothing refused, no launcher
+  left to the user, nothing kept as not the kit's, the 0.4.0 servers deletable, armed for and
+  purged, and the user's own qBittorrent entry and IPv6 settings back at the end; setup and
+  `vpn-direct` finish when the launcher cache cannot be updated or the qBittorrent entry is a
+  dangling link; setup in German does not warn about a `secure_path` sudo has; a quoted
+  `TARGET_USER` with a comment is not refused; an existing `~/.cache` keeps its mode; a server
+  whose profile was deleted outside the kit gets its name back on the same import.
 
 ## 0.4.0 (2026-11-09)
 

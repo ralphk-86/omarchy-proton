@@ -70,13 +70,20 @@ fi
 # profile with another uuid, or a WireGuard config of yours without the kit's
 # profile) is never taken over: the server gets the hashed name instead, and
 # if that is taken too, it is refused. Kit profiles carry the uuid below.
+# One exception: a config without a profile that is byte for byte the file
+# being imported. That is the kit's own copy of this very server, left behind
+# when its profile was deleted outside the kit (nmcli, the network settings);
+# taking it back changes nothing in it.
 kit_uuid() { uuidgen --sha1 --namespace @dns --name "vpnkit-$1"; }
 name_taken() {  # name_taken <name>
   local n="$1" u kf="/etc/NetworkManager/system-connections/$1.nmconnection" ours=0
+  local wg="/etc/wireguard/$1.conf"
   u=$(kit_uuid "$n")
   [[ -e "$kf" ]] && grep -qx "uuid=$u" "$kf" && ours=1
   [[ -e "$kf" ]] && (( ! ours )) && return 0
-  [[ -e "/etc/wireguard/$n.conf" ]] && (( ! ours )) && return 0
+  if [[ -e "$wg" || -L "$wg" ]] && (( ! ours )); then
+    { [[ -f "$wg" && ! -L "$wg" ]] && cmp -s -- "$SRC" "$wg"; } || return 0
+  fi
   # A profile of that name elsewhere (another file name, another uuid).
   nmcli -e no -g UUID,NAME connection show 2>/dev/null \
     | U="$u" N="$n" awk '{ i = index($0, ":"); if (substr($0, i + 1) == ENVIRON["N"] && substr($0, 1, i - 1) != ENVIRON["U"]) f = 1 } END { exit !f }'

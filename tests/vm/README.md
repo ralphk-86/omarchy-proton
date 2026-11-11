@@ -41,6 +41,11 @@ For Chrome direct the suite installs real Google Chrome (from the `[omarchy]` re
 the stand-in Chrome it uses for most of those checks. That needs the internet during section 1,
 like the installer's own packages.
 
+The last section is an upgrade: the release named in `upgrade-from` (a git tag) is installed
+from its own files, then updated to the tree under test and uninstalled. `vm.sh` copies that
+tag's tree into the VM with `git archive`, so the clone needs its tags (`git fetch --tags`);
+without it the suite reports the release missing.
+
 ## Reusing it for another plugin
 
 `vm.sh` and `user-data.yaml` know nothing about VPNs. Copy `tests/vm/` into another plugin

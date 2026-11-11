@@ -236,13 +236,14 @@ Setup changes these things outside the plugin folder, and nothing else:
   starts qBittorrent outside the tunnel); `install.sh --qbt-launcher` replaces it, keeping
   yours next to it as a backup that the uninstaller puts back
 
-It never edits your existing configuration files. The recommended qBittorrent settings are
-applied only if you ask: `install.sh --qbt-config` (a backup of `qBittorrent.conf` is kept).
+Except as listed above, it never edits your existing configuration files. The recommended
+qBittorrent settings are applied only if you ask: `install.sh --qbt-config` (a backup of `qBittorrent.conf` is kept).
 The commands it puts in `/usr/local/bin` carry a marker line; if a file of yours is already
 there under one of their names (your own `google-chrome-stable` wrapper, say), setup stops
 before changing anything and names it. `install.sh --move-aside` then keeps it in
 `/usr/local/lib/vpnkit/moved-aside/` while the kit is installed, and the uninstaller puts it
-back. Options combine.
+back. A file there that is an edited copy of one of the kit's own commands (or one from before
+0.3.0) counts as yours too: delete it instead, or the uninstaller puts it back. Options combine.
 
 Read the scripts before you run them; a plugin that asks for root deserves that.
 
@@ -270,7 +271,16 @@ Downloads, where backup and sync tools copy things. The installed copies are rea
 only.
 
 To delete a server, click the trash icon on its row twice, or press `x` twice. A server in use
-on either tab cannot be deleted.
+on either tab cannot be deleted. Delete servers here, not in NetworkManager's settings or with
+`nmcli`: a profile deleted there leaves its config (with its private key) in `/etc/wireguard`,
+which even `uninstall.sh --purge` does not know as the kit's; remove it with
+`sudo rm /etc/wireguard/<name>.conf`. Importing the very same file again takes that config
+back under its old name.
+
+The server list shows every WireGuard profile whose name starts with the provider's prefix
+(`proton-`), so a WireGuard profile of your own named that way is listed too, and choosing it
+arms the kill switch for it like for any server. The trash icon refuses it, and neither the
+uninstaller nor `--purge` touches it: only servers the kit imported are the kit's.
 
 ### The torrent tunnel
 
@@ -587,7 +597,7 @@ The engine underneath is called `vpnkit`; that is the name you will see in paths
 |---|---|
 | `/usr/local/bin/vpn-*`, `vpnkit-*`, `qbt-*`, `direct-launch`, `qbittorrent`, `google-chrome-stable` | the commands and helpers, each with the marker line `# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).`; `qbittorrent` and `google-chrome-stable` are wrappers that come first in `PATH` (the Chrome one starts Chrome unchanged while Chrome direct is off) |
 | `/usr/local/lib/vpnkit/` | shared libraries, version stamp (written last, once setup succeeded), a copy of the uninstaller, the `diagnose-vpn` skill for AI troubleshooting; `moved-aside/` only with `install.sh --move-aside` |
-| `/etc/vpnkit/` | settings (no secrets); `ipv6-profiles.saved`, your profiles' IPv6 settings from before setup (see [IPv6](#ipv6-and-your-network-profiles)) |
+| `/etc/vpnkit/` | settings (no secrets); `vpnkit.conf.bak.<time>`, the settings before `install.sh --keep-ipv6` changed them; `ipv6-profiles.saved`, your profiles' IPv6 settings from before setup, and `ipv6-profiles.superseded`, saved settings set aside because their profile is gone (see [IPv6](#ipv6-and-your-network-profiles)) |
 | `/etc/sudoers.d/99-vpnkit` | passwordless rules for seven specific helpers, validated with `visudo -c` before install |
 | `/etc/NetworkManager/dispatcher.d/50-vpnkit` | arms the kill switch, reconnects after resume |
 | `/etc/systemd/system/qbt-netns.service` | builds the torrent namespace at boot |
@@ -614,7 +624,10 @@ omarchy plugin update io.github.ralphk-86.omarchy-proton
 
 updates the widget. After every new version the panel shows **Update the system part**; click
 it (one password prompt). It is safe to run again when only the widget or the documentation
-changed.
+changed. It stops without changing anything in two cases, and says so in its window: a file
+in `/usr/local/bin` under one of the kit's command names is not the kit's (it prints the
+`install.sh --move-aside` command to run in a terminal, see [Install](#install)), or the kit is
+set up for another desktop user (`TARGET_USER` in `/etc/vpnkit/vpnkit.conf`).
 
 If the widget still looks like the old version after an update, run `omarchy restart shell`:
 the shell does not always reload a plugin's code in place.

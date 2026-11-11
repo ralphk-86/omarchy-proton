@@ -45,6 +45,13 @@ for f in $ROOT_RUN; do
   [[ "$first" == 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"' ]] || bad "$f does not set PATH before its first command (first: $first)"
 done
 (( fail )) || ok "$(wc -w <<<"$ROOT_RUN") root-run scripts pin PATH"
+# A command sudo runs directly must not look bash up in the caller's PATH:
+# with "#!/usr/bin/env bash", env would do that before the script's own PATH.
+SUDO_RUN=$(sed -nE 's#^@USER@ .*NOPASSWD: /usr/local/bin/([^ ]+).*#system/bin/\1#p' system/sudoers.d/99-vpnkit | sort -u)
+for f in $SUDO_RUN; do
+  [[ "$(head -1 "$f")" == '#!/usr/bin/bash' ]] || bad "$f: the shebang is not #!/usr/bin/bash (first line: $(head -1 "$f"))"
+done
+(( fail )) || ok "$(wc -w <<<"$SUDO_RUN") passwordless commands start with #!/usr/bin/bash"
 
 echo "4c. Ownership: every command carries the kit's marker, and the uninstaller lists each"
 mark=$(sed -nE 's/^VPNKIT_BIN_MARK="(.*)"$/\1/p' system/lib/owned.sh)
@@ -68,6 +75,30 @@ grep -q '^method=disabled$' <<<"$out"        && ok "IPv6 disabled on the link" |
 grep -q '^dns-priority=-50$' <<<"$out"       && ok "DNS exclusive to the tunnel" || bad "DNS priority missing"
 grep -q '^private-key=\[hidden\]$' <<<"$out" && ok "--print hides the key" || bad "--print shows the key"
 rm -rf "$work"
+
+echo "5b. Launcher helpers never stop a script that runs under set -e"
+# install.sh and vpn-direct run under set -euo pipefail, after the system part
+# is done: a launcher cache that cannot be written, or an entry that cannot be
+# read, must not end them there.
+work=$(mktemp -d); mkdir -p "$work/bin" "$work/apps"
+printf '#!/bin/sh\nexit 1\n' > "$work/bin/update-desktop-database"; chmod 755 "$work/bin/update-desktop-database"
+ln -s "$work/missing.desktop" "$work/apps/dangling.desktop"
+printf '[Desktop Entry]\nExec=/usr/bin/true\n' > "$work/apps/locked.desktop"; chmod 000 "$work/apps/locked.desktop"
+{ printf '[Desktop Entry]\nExec=\nExec=/opt/first --flag %%U\n'
+  for i in $(seq 1 3000); do printf 'Exec=/opt/other-%s\n' "$i"; done; } > "$work/apps/many.desktop"
+out=$(PATH="$work/bin:$PATH" bash -c 'set -euo pipefail; . "$1"
+  vpnkit_desk_refresh "$2"; echo refresh-ok
+  e=$(vpnkit_desk_exec "$2/dangling.desktop"); echo "dangling=[$e]"
+  e=$(vpnkit_desk_exec "$2/locked.desktop"); [[ $EUID -eq 0 ]] && e=""; echo "locked=[$e]"
+  e=$(vpnkit_desk_exec "$2/many.desktop"); echo "many=[$e]"
+  echo end' _ system/lib/owned.sh "$work/apps" 2>&1)
+is_out() { grep -qxF -- "$1" <<<"$out" && ok "$2" || bad "$2 (output: $(tr '\n' ' ' <<<"$out"))"; }
+is_out "refresh-ok" "a launcher cache that cannot be updated is not an error"
+is_out "dangling=[]" "an entry that is a dangling link has no Exec=, and is not an error"
+is_out "locked=[]" "an entry that cannot be read has no Exec=, and is not an error"
+is_out "many=[/opt/first]" "the first non-empty Exec= is the one, in an entry with thousands"
+is_out "end" "the caller runs on"
+chmod 600 "$work/apps/locked.desktop"; rm -rf "$work"
 
 echo "6. No key material or personal data in the repo"
 if git grep -nE '(PrivateKey *= *|private-key=)[A-Za-z0-9+/]{43}=' -- . ':!examples' ':!tests' >/dev/null 2>&1; then

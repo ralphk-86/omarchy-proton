@@ -52,9 +52,15 @@ vpnkit_desk_ours() {
   [[ -n "${3:-}" && "$(head -c 65536 -- "$1" 2>/dev/null | sha256sum | cut -d' ' -f1)" == "$3" ]]
 }
 
-# vpnkit_desk_exec <file>: the program the entry's first Exec= starts.
+# vpnkit_desk_exec <file>: the program the entry's first Exec= starts; prints
+# nothing when there is none or the file cannot be read (a dangling link, no
+# rights). Always returns 0: callers run under set -e and pipefail.
 vpnkit_desk_exec() {
-  head -c 65536 -- "$1" 2>/dev/null | sed -nE 's/^Exec=[[:space:]]*([^[:space:]]+).*/\1/p' | head -1
+  local exe
+  exe=$(head -c 65536 -- "$1" 2>/dev/null \
+        | sed -nE '/^Exec=[[:space:]]*[^[:space:]]/{s/^Exec=[[:space:]]*([^[:space:]]+).*/\1/p;q;}') || true
+  [[ -z "$exe" ]] || printf '%s\n' "$exe"
+  return 0
 }
 
 # vpnkit_desk_backup <file>: copy an entry of the user's aside; prints the copy.
@@ -83,8 +89,12 @@ vpnkit_desk_restore() {
   return 0
 }
 
+# vpnkit_desk_refresh <dir>: update the launcher cache. Best effort: a cache
+# that cannot be written (a read-only or root-owned folder) is not an error.
 vpnkit_desk_refresh() {
-  command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$1" >/dev/null 2>&1
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$1" >/dev/null 2>&1 || true
+  fi
   return 0
 }
 

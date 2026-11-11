@@ -41,7 +41,9 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 if [[ -n "${XDG_RUNTIME_DIR:-}" && -d "$XDG_RUNTIME_DIR" && -O "$XDG_RUNTIME_DIR" ]]; then
   LOG="$XDG_RUNTIME_DIR/vpnkit-install.log"
 else
-  install -d -m 700 "$HOME/.cache"
+  # Created private if missing; an existing ~/.cache keeps its mode (the log
+  # file itself is private either way).
+  [[ -d "$HOME/.cache" ]] || install -d -m 700 "$HOME/.cache"
   LOG="$HOME/.cache/vpnkit-install.log"
 fi
 rm -f -- "$LOG"
@@ -69,33 +71,43 @@ warn() { printf '[!] %s\n' "$*"; }
 # The qBittorrent launcher entry (menus, magnet links) has to start the
 # wrapper. The kit's own entry is written or updated; one of yours is left
 # alone unless you pass --qbt-launcher (then it is backed up first, and the
-# uninstaller puts it back).
+# uninstaller puts it back). Nothing here stops the run: the system part is
+# already done, and a launcher that cannot be written is only a warning.
 qbt_launcher() {
   local apps="$HOME/.local/share/applications" desk tmp bak exe
   desk=$(vpnkit_qbt_desk "$HOME")
   if [[ -e "$desk" || -L "$desk" ]] && ! vpnkit_desk_ours "$desk" "$VPNKIT_QBT_DESK_MARK" "$VPNKIT_QBT_DESK_LEGACY_SHA"; then
     if (( ! DO_QBT_LAUNCHER )); then
-      exe=$(vpnkit_desk_exec "$desk")
+      exe=$(vpnkit_desk_exec "$desk") || exe=""
       case "$exe" in
         qbittorrent|/usr/local/bin/qbittorrent)
           echo "    your own qBittorrent launcher entry is kept; it starts $exe, which reaches the tunnel" ;;
         *)
           warn "Your own qBittorrent launcher entry ($desk) starts ${exe:-nothing},"
           warn "which skips the torrent tunnel. It is left as it is. Change its Exec= to"
-          warn "/usr/local/bin/qbittorrent, or run install.sh --qbt-launcher to replace it"
-          warn "(yours is backed up, and the uninstaller puts it back)." ;;
+          warn "/usr/local/bin/qbittorrent, or replace it with the kit's (yours is backed up,"
+          warn "and the uninstaller puts it back) by running"
+          warn "    $(printf '%q' "$SRC/install.sh") --qbt-launcher" ;;
       esac
       return 0
     fi
-    bak=$(vpnkit_desk_backup "$desk")
+    if ! bak=$(vpnkit_desk_backup "$desk"); then
+      warn "Could not back up your own qBittorrent launcher entry ($desk); it is left as it is."
+      return 0
+    fi
     echo "    your own qBittorrent launcher entry is kept as $bak (the uninstaller puts it back)"
   fi
   say "Pointing the qBittorrent launcher at the namespace wrapper"
-  install -d -m 755 "$apps"
-  tmp=$(mktemp "$apps/.qbittorrent.desktop.XXXXXX")
-  { printf '%s\n' "$VPNKIT_QBT_DESK_MARK"; cat "$SRC/applications/org.qbittorrent.qBittorrent.desktop"; } > "$tmp"
-  chmod 644 "$tmp"
-  mv -f "$tmp" "$desk"
+  if ! install -d -m 755 "$apps" || ! tmp=$(mktemp "$apps/.qbittorrent.desktop.XXXXXX" 2>/dev/null); then
+    warn "Could not write the qBittorrent launcher entry in $apps; it is left as it is."
+    return 0
+  fi
+  if ! { printf '%s\n' "$VPNKIT_QBT_DESK_MARK"; cat "$SRC/applications/org.qbittorrent.qBittorrent.desktop"; } > "$tmp" \
+     || ! chmod 644 "$tmp" || ! mv -f "$tmp" "$desk"; then
+    rm -f -- "$tmp"
+    warn "Could not write the qBittorrent launcher entry $desk; it is left as it is."
+    return 0
+  fi
   vpnkit_desk_refresh "$apps"
 }
 

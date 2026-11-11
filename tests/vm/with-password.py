@@ -29,7 +29,8 @@ while True:
     sys.stdout.buffer.write(data)
     sys.stdout.buffer.flush()
     seen = (seen + data)[-200:]
-    if b"password for" in seen.lower() and answered < 3:
+    # sudo's prompt in English, or in German for the run with LANG=de_DE.
+    if (b"password for" in seen.lower() or b"passwort f" in seen.lower()) and answered < 3:
         os.write(fd, password.encode() + b"\n")
         answered += 1
         seen = b""

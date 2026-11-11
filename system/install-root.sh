@@ -52,14 +52,17 @@ warn() { printf '[!] %s\n' "$*"; }
 # Chrome run as that user, the drop folder is theirs. The passwordless rules
 # are written for whoever runs setup. Another user running it would get the
 # rules while the kit keeps acting for the first one: stop instead.
+# Read the way every helper reads it (common.sh sources the file), so quotes
+# or a comment on that line mean the same user here as there.
 if [[ -r /etc/vpnkit/vpnkit.conf ]]; then
-  pinned=$(sed -nE 's/^TARGET_USER="?([^"]*)"?.*/\1/p' /etc/vpnkit/vpnkit.conf | tail -1)
+  pinned=$(set +eu; . /etc/vpnkit/vpnkit.conf >/dev/null 2>&1; printf '%s' "${TARGET_USER:-}") || true
   if [[ -n "$pinned" && "$pinned" != "$RUN_USER" ]]; then
     echo "omarchy-proton is set up for the desktop user '$pinned' (TARGET_USER in /etc/vpnkit/vpnkit.conf)."
     echo "Run by '$RUN_USER', setup would give $RUN_USER the passwordless rules while the torrent"
     echo "tunnel, Chrome direct and the drop folder keep acting for $pinned. Nothing was changed."
     echo "To move the kit to $RUN_USER, set TARGET_USER=\"$RUN_USER\" in /etc/vpnkit/vpnkit.conf"
-    echo "(as root), then run setup again as $RUN_USER."
+    echo "(as root), then run setup again as $RUN_USER:"
+    printf '    %q\n' "$SRC/install.sh"
     exit 1
   fi
 fi
@@ -74,9 +77,11 @@ done
 if (( ${#FOREIGN[@]} )) && (( ! MOVE_ASIDE )); then
   echo "These files are not omarchy-proton's, and setup would have to replace them:"
   printf '    %s\n' "${FOREIGN[@]}"
-  echo "Nothing was changed. Move them away yourself, or run setup as"
-  echo "    install.sh --move-aside"
+  echo "Nothing was changed. Move them away yourself, or run setup in a terminal as"
+  printf '    %q --move-aside\n' "$SRC/install.sh"
   echo "which keeps them in $VPNKIT_ASIDE; the uninstaller puts them back."
+  echo "If one of them is an edited copy of omarchy-proton's own command (or one from"
+  echo "before 0.3.0), delete it instead: moved aside, the uninstaller would put it back."
   exit 1
 fi
 
@@ -128,7 +133,10 @@ fi
 # commands it runs as root. The kit's own helpers set a fixed PATH first, so
 # they are not affected; other sudo rules on this machine may be. Said, not
 # changed: /etc/sudoers is the administrator's.
-if ! sudo -V 2>/dev/null | grep -q "Value to override user's \$PATH with"; then
+# (LC_ALL=C: sudo -V is translated, and sudo keeps the caller's LANG. Read in
+# full first: grep -q quitting early would fail the pipe under pipefail.)
+SUDO_V=$(LC_ALL=C sudo -V 2>/dev/null) || SUDO_V=""
+if ! grep -q "Value to override user's \$PATH with" <<< "$SUDO_V"; then
   warn "sudo has no secure_path (/etc/sudoers): it passes your PATH on to what it runs as root."
   warn "The kit's helpers do not depend on it. Other sudo rules may: consider adding"
   warn "  Defaults secure_path=\"/usr/local/sbin:/usr/local/bin:/usr/bin\""

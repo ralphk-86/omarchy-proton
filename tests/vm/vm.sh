@@ -130,6 +130,22 @@ start_fresh() {
   local dest="/home/tester/.config/omarchy/plugins/$PLUGIN_ID"
   vssh "sudo install -d -o tester -g tester /home/tester/.config /home/tester/.config/omarchy /home/tester/.config/omarchy/plugins $dest"
   git -C "$REPO" ls-files -z --cached --others --exclude-standard | tar -C "$REPO" --null -T - -cf - | vssh "sudo -u tester tar -C $dest -xf -"
+  # Earlier releases for an upgrade test, if the suite wants any: one git tag
+  # per line in tests/vm/upgrade-from, each copied as `git archive` makes it
+  # to ~tester/releases/<tag>. A tag this clone does not have is skipped here
+  # (the suite then reports it missing); `git fetch --tags` brings it.
+  local tag
+  if [[ -f "$HERE/upgrade-from" ]]; then
+    while IFS= read -r tag; do
+      [[ "$tag" =~ ^[A-Za-z0-9._-]+$ ]] || continue
+      if git -C "$REPO" rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null; then
+        vssh "sudo -u tester mkdir -p /home/tester/releases/$tag"
+        git -C "$REPO" archive "refs/tags/$tag" | vssh "sudo -u tester tar -C /home/tester/releases/$tag -xf -"
+      else
+        echo "no tag $tag in this clone (git fetch --tags); the upgrade test will miss it"
+      fi
+    done < "$HERE/upgrade-from"
+  fi
 }
 
 case "${1:-}" in

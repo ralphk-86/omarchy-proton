@@ -245,7 +245,8 @@ QDESK_SUM=$(sha256sum < "$QDESK")
 in_terminal "$PLUGIN/install.sh" > /tmp/install0.log 2>&1; rc=$?
 is "setup refuses to replace a file in /usr/local/bin that is not the kit's" "$rc" "1"
 yes "and names it" grep -q "^    /usr/local/bin/google-chrome-stable" <(tr -d '\r' < /tmp/install0.log)
-yes "and says how to go on" grep -q -- "install.sh --move-aside" /tmp/install0.log
+yes "and says how to go on, with the full path of install.sh" grep -qF -- "    $PLUGIN/install.sh --move-aside" /tmp/install0.log
+yes "and that an edited copy of a kit command is to be deleted instead" grep -q "edited copy of omarchy-proton's own command" /tmp/install0.log
 no "having changed nothing: no helpers" test -e /usr/local/lib/vpnkit
 no "no sudoers rules" test -e /etc/sudoers.d/99-vpnkit
 no "no packages (wg is still missing)" command -v wg
@@ -1376,6 +1377,20 @@ yes "a config whose name is taken by a file of the user's is imported under anot
   bash -c "[[ '$DE4' == proton-de-* && '$DE4' != proton-de-4 ]]"
 is "and the user's file is untouched" "$(sha256sum < /etc/wireguard/proton-de-4.conf)" "$MINE_SUM"
 yes "that server is the kit's: it can be deleted" as_user sudo -n /usr/local/bin/vpnkit-sync remove "$DE4"
+# A server whose profile is deleted outside the kit (nmcli, the network
+# settings) leaves its config behind. Importing the very same file again takes
+# that config back under the server's own name; a different file of that name
+# is still not taken over.
+conf "$DROP/wg-FI-6.conf" "$WG/deskB.key" 10.3.0.2 10.3.0.1 "FI#6" "$WG/srvB.pub" 51821
+cp -a "$DROP/wg-FI-6.conf" /tmp/suite-fi6.conf
+is "(a server proton-fi-6 is imported)" "$(as_user sudo -n /usr/local/bin/vpnkit-sync sync | jq -r '.imported[0] // empty')" "proton-fi-6"
+nmcli connection delete proton-fi-6 >/dev/null
+yes "(its profile is deleted outside the kit, its config stays)" test -e /etc/wireguard/proton-fi-6.conf
+cp -a /tmp/suite-fi6.conf "$DROP/wg-FI-6.conf"
+is "the same file imported again gets its own name back" "$(as_user sudo -n /usr/local/bin/vpnkit-sync sync | jq -r '.imported[0] // empty')" "proton-fi-6"
+yes "and is the kit's: it can be deleted, config and all" as_user sudo -n /usr/local/bin/vpnkit-sync remove proton-fi-6
+no "(its config is gone)" test -e /etc/wireguard/proton-fi-6.conf
+rm -f /tmp/suite-fi6.conf
 # A server imported under another provider's prefix (the setting changed
 # since) is still the kit's: --purge removes it (section 6).
 sed -i 's/^VPNKIT_PROVIDER=.*/VPNKIT_PROVIDER="generic"/' /etc/vpnkit/vpnkit.conf
@@ -1465,9 +1480,18 @@ direct on >/dev/null 2>&1
 # know it as the kit's (by its checksum) and replace it without --move-aside.
 sed -i 2d /usr/local/bin/vpn-import
 no "(vpn-import as 0.4.0 left it: no marker)" grep -qxF "$BIN_MARK" /usr/local/bin/vpn-import
+# A launcher cache that cannot be updated (update-desktop-database fails, as
+# in a read-only or root-owned folder) must not end the run after the system
+# part: the user-side steps run under set -e.
+shim update-desktop-database 'true'
 in_terminal "$PLUGIN/install.sh" --qbt-launcher > /tmp/install2.log 2>&1; rc=$?
 is "install.sh can be run again" "$rc" "0"
 (( rc == 0 )) || sed 's/^/      /' /tmp/install2.log | tail -15
+yes "with a launcher cache that cannot be updated, it still gets to the end" grep -q "==> Done" /tmp/install2.log
+no "and vpn-direct does not fail on it (the Chrome entry is written)" grep -q "could not update the Chrome launcher entry" /tmp/install2.log
+OUT=$(as_user /usr/local/bin/vpn-direct launcher 2>&1); rc=$?
+is "vpn-direct launcher exits 0 all the same" "$rc" "0"
+rm -f /usr/local/sbin/update-desktop-database
 is "settings survive a reinstall" "$(. /etc/vpnkit/vpnkit.conf; echo "$BYPASS_CIDRS")" "198.51.100.80/32"
 is "the running torrent tunnel was left alone" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "10.2.0.3"
 yes "Chrome direct stays on through a reinstall" systemctl is-active --quiet vpnkit-direct.service
@@ -1485,9 +1509,24 @@ is "and a probe in the slice still exits from the home address" "$(slice_ip)" "$
 # --keep-ipv6 (DISABLE_IPV6=0) on an existing install gives IPv6 back, as
 # the sysctl file and the settings say: sysctl file gone, IPv6 on, every saved
 # profile restored and applied to its running link.
-in_terminal "$PLUGIN/install.sh" --keep-ipv6 > /tmp/install-keep.log 2>&1; rc=$?
+# The same run in German (sudo keeps LANG, and its -V text is translated):
+# the secure_path check must still see that sudo has one. And the user's
+# qBittorrent entry is a dangling link: it cannot be read, which must not end
+# the run either.
+localedef -i de_DE -f UTF-8 de_DE.UTF-8 >/dev/null 2>&1
+no "(control: in German, sudo -V does not say \"Value to override\")" \
+  bash -c 'LANG=de_DE.UTF-8 sudo -V | grep -q "Value to override user"'
+yes "(control: and it does name secure_path's value)" bash -c 'LANG=de_DE.UTF-8 sudo -V | grep -q "/usr/local/sbin:/usr/local/bin:/usr/bin"'
+mv "$QDESK" /tmp/suite-qdesk.kit
+ln -s "$UHOME/suite-no-such.desktop" "$QDESK"; chown -h $U:$U "$QDESK"
+in_terminal env LANG=de_DE.UTF-8 "$PLUGIN/install.sh" --keep-ipv6 > /tmp/install-keep.log 2>&1; rc=$?
 is "install.sh --keep-ipv6 on an existing install exits 0" "$rc" "0"
 (( rc == 0 )) || sed 's/^/      /' /tmp/install-keep.log | tail -15
+no "in German, setup does not warn about a secure_path sudo has" grep -q "sudo has no secure_path" /tmp/install-keep.log
+yes "a qBittorrent entry that is a dangling link is reported as starting nothing" grep -q "starts nothing," /tmp/install-keep.log
+yes "and the run gets to the end" grep -q "==> Done" /tmp/install-keep.log
+yes "the dangling link is left as it is" test -L "$QDESK"
+rm -f "$QDESK"; mv /tmp/suite-qdesk.kit "$QDESK"
 is "it sets DISABLE_IPV6=0" "$(sed -n 's/^DISABLE_IPV6=//p' /etc/vpnkit/vpnkit.conf)" "0"
 yes "after backing vpnkit.conf up" bash -c 'grep -qx DISABLE_IPV6=1 /etc/vpnkit/vpnkit.conf.bak.*'
 no "the sysctl file is gone" test -e /etc/sysctl.d/99-vpnkit-disable-ipv6.conf
@@ -1518,6 +1557,9 @@ nmcli connection add type ethernet con-name "$GPROF" ifname suitest9 autoconnect
 # The qBittorrent entry as 0.3.0 to 0.4.0 wrote it (no marker line): an update
 # takes it over without --qbt-launcher, and keeps the user's backup.
 cp "$PLUGIN/applications/org.qbittorrent.qBittorrent.desktop" "$QDESK"; chown $U:$U "$QDESK"
+# TARGET_USER edited by hand, in single quotes with a comment: the helpers
+# (which source the file) read the same user, and so must setup.
+sed -i "s/^TARGET_USER=.*/TARGET_USER='$U'   # the desktop user (suite: quoted, with a comment)/" /etc/vpnkit/vpnkit.conf
 # A kernel started with ipv6.disable=1 has no /proc/sys/net/ipv6/conf (hidden
 # here under a tmpfs, in a mount namespace of the test's own, which the
 # installer inherits): sysctl fails on those keys, and setup must still finish.
@@ -1527,6 +1569,7 @@ unshare --mount --propagation slave bash -c 'mount -t tmpfs suite-noipv6 /proc/s
 is "on a kernel without IPv6, setup finishes" "$rc" "0"
 (( rc == 0 )) || sed 's/^/      /' /tmp/install-noipv6.log | tail -15
 yes "and says there is nothing to switch off now" grep -q "this kernel has no IPv6" /tmp/install-noipv6.log
+no "a quoted TARGET_USER with a comment is not taken for another user" grep -q "set up for the desktop user" /tmp/install-noipv6.log
 is "it writes the version stamp" "$(cat /usr/local/lib/vpnkit/VERSION 2>/dev/null)" "$(cat "$PLUGIN/VERSION")"
 is "and switches the profiles off all the same" "$(nmcli -g ipv6.method connection show "$PPROF")" "disabled"
 is "the qBittorrent entry 0.4.0 wrote is taken over" "$(head -1 "$QDESK" 2>/dev/null)" "$QMARK"
@@ -1643,6 +1686,7 @@ yes "the leak-check reports are kept by a plain uninstall" test -s "$REPORTS/lat
 # connectivity check, then says it is not finished). Run without
 # XDG_RUNTIME_DIR, as over SSH.
 rm -f /tmp/vpnkit-install.log "$UHOME/.cache/vpnkit-install.log"
+install -d -o $U -g $U -m 755 "$UHOME/.cache"; chmod 755 "$UHOME/.cache"
 shim nmcli '[[ " $* " == *" device reapply "* ]]'
 shim resolvectl 'true'
 shim systemctl '[[ "$*" == "enable qbt-netns.service" ]]'
@@ -1658,6 +1702,7 @@ is "the static profile is switched off again" "$(nmcli -g ipv6.method connection
 is "without XDG_RUNTIME_DIR the install log is in ~/.cache, the user's only" \
   "$(stat -c '%a %U' "$UHOME/.cache/vpnkit-install.log" 2>/dev/null)" "600 $U"
 no "and not in /tmp" test -e /tmp/vpnkit-install.log
+is "an existing ~/.cache keeps its mode" "$(stat -c %a "$UHOME/.cache")" "755"
 # A rollback during an update leaves IPv6 as the earlier install set it.
 no "an update that loses the internet fails" rollback_install /tmp/install-rollback2.log
 yes "and rolls back" grep -q "No internet after the install - undoing" /tmp/install-rollback2.log
@@ -1743,6 +1788,80 @@ no "--purge removes the leak-check reports" test -e "$REPORTS"
 is "home address at the end" "$(myip)" "$HOME_IP"
 gateway off
 yes "real internet still works" curl -4 -s --max-time 8 -o /tmp/out https://archlinux.org
+
+# ---------------------------------------------------------------------------
+section "7. Upgrade from an earlier release, then uninstall"
+# The way a user upgrades: the plugin folder holds the earlier release (its
+# own files, from its git tag) and its setup has run; `omarchy plugin update`
+# replaces the folder; "Update the system part" runs install.sh with no
+# options; later the README's uninstall. Nothing the earlier release installed
+# may count as someone else's: no refusal, no launcher left to the user, and
+# nothing kept as "not omarchy-proton's".
+OLD=$(grep -m1 -E '^[A-Za-z0-9._-]+$' "$PLUGIN/tests/vm/upgrade-from" 2>/dev/null)
+OLDTREE=$UHOME/releases/$OLD
+if [[ -z "$OLD" || ! -f "$OLDTREE/install.sh" ]]; then
+  bad "the earlier release ${OLD:-(none named)} is in the VM (vm.sh copies it from its git tag)"
+else
+  OLDV=$(cat "$OLDTREE/VERSION")
+  cp "$PLUGIN/tests/vm/with-password.py" /tmp/with-password.py
+  mv "$PLUGIN" "$PLUGIN.suite-new"
+  cp -a "$OLDTREE" "$PLUGIN"
+  as_user python3 /tmp/with-password.py tester "$PLUGIN/install.sh" > /tmp/old-install.log 2>&1; rc=$?
+  is "$OLD: its install.sh exits 0" "$rc" "0"
+  (( rc == 0 )) || sed 's/^/      /' /tmp/old-install.log | tail -15
+  is "$OLD: it is installed" "$(cat /usr/local/lib/vpnkit/VERSION 2>/dev/null)" "$OLDV"
+  is "$OLD: its qBittorrent entry (no marker) replaced the user's" "$(sha256sum < "$QDESK")" "$(sha256sum < "$OLDTREE/applications/org.qbittorrent.qBittorrent.desktop")"
+  is "$OLD: the user's entry is backed up next to it" "$(cat "$QDESK".bak.* 2>/dev/null | sha256sum)" "$QDESK_SUM"
+  is "$OLD: IPv6 is off on the physical profile" "$(nmcli -g ipv6.method connection show "$PPROF")" "disabled"
+  # Two servers imported by the earlier release.
+  conf "$DROP/wg-CA-1.conf" "$WG/deskA.key" 10.2.0.2 10.2.0.1 "CA#1" "$WG/srvA.pub" 51820
+  conf "$DROP/wg-SE-2.conf" "$WG/deskB.key" 10.3.0.2 10.3.0.1 "SE#2" "$WG/srvB.pub" 51821
+  is "$OLD: imports two servers" "$(as_user sudo -n /usr/local/bin/vpnkit-sync sync | jq -r '.imported | sort | join(",")')" "proton-ca-1,proton-se-2"
+  # omarchy plugin update: the folder now holds this release.
+  rm -rf "$PLUGIN"; mv "$PLUGIN.suite-new" "$PLUGIN"
+  in_terminal "$PLUGIN/install.sh" > /tmp/upgrade.log 2>&1; rc=$?
+  is "the update from $OLD (install.sh, no options) exits 0" "$rc" "0"
+  (( rc == 0 )) || sed 's/^/      /' /tmp/upgrade.log | tail -25
+  yes "and gets to the end" grep -q "==> Done" /tmp/upgrade.log
+  no "it refuses nothing as not the kit's" grep -qiE "not omarchy-proton's|--move-aside" /tmp/upgrade.log
+  no "it leaves no launcher entry to the user (no warning, no --qbt-launcher)" grep -qiE "your own|--qbt-launcher|skips the torrent tunnel" /tmp/upgrade.log
+  no "it moves nothing aside" test -e /usr/local/lib/vpnkit/moved-aside
+  is "it is installed" "$(cat /usr/local/lib/vpnkit/VERSION 2>/dev/null)" "$(cat "$PLUGIN/VERSION")"
+  unmarked=""
+  for f in "$PLUGIN"/system/bin/*; do
+    [[ "$(sed -n 2p "/usr/local/bin/${f##*/}" 2>/dev/null)" == "$BIN_MARK" ]] || unmarked+=" ${f##*/}"
+  done
+  is "every command is replaced by this release's (marker line)" "$unmarked" ""
+  is "the earlier release's qBittorrent entry is taken over" "$(head -1 "$QDESK" 2>/dev/null)" "$QMARK"
+  is "and the user's backup is kept, the only one" "$(ls "$QDESK".bak.* 2>/dev/null | wc -l):$(cat "$QDESK".bak.* 2>/dev/null | sha256sum)" "1:$QDESK_SUM"
+  is "IPv6 stays off on the physical profile" "$(nmcli -g ipv6.method connection show "$PPROF")" "disabled"
+  is "the servers $OLD imported are listed" "$(as_user /usr/local/bin/vpn-status --json | jq -r '.profiles | sort | join(",")' 2>/dev/null)" "proton-ca-1,proton-se-2"
+  yes "a server $OLD imported is the kit's: it can be deleted" as_user sudo -n /usr/local/bin/vpnkit-sync remove proton-se-2
+  no "(its config is gone)" test -e /etc/wireguard/proton-se-2.conf
+  CA1_UUID=$(nmcli -g connection.uuid connection show proton-ca-1)
+  CONNECTION_ID=proton-ca-1 CONNECTION_UUID=$CA1_UUID /etc/NetworkManager/dispatcher.d/50-vpnkit proton-ca-1 up
+  yes "the hook arms the kill switch for a server $OLD imported" nft list table inet vpnkit_kill
+  /usr/local/bin/vpnkit-killswitch off >/dev/null
+  in_terminal "$PLUGIN/uninstall.sh" --purge --restore-ipv6 > /tmp/upgrade-uninstall.log 2>&1; rc=$?
+  is "then uninstall.sh --purge --restore-ipv6 exits 0" "$rc" "0"
+  (( rc == 0 )) || sed 's/^/      /' /tmp/upgrade-uninstall.log | tail -25
+  no "it keeps nothing as not the kit's" grep -qiE "not omarchy-proton's|kept /usr/local/bin" /tmp/upgrade-uninstall.log
+  left=""
+  for f in "$PLUGIN"/system/bin/*; do
+    [[ -e "/usr/local/bin/${f##*/}" || -L "/usr/local/bin/${f##*/}" ]] && left+=" ${f##*/}"
+  done
+  is "no command is left in /usr/local/bin" "$left" ""
+  no "nothing is left in /usr/local/lib/vpnkit" test -e /usr/local/lib/vpnkit
+  no "nor in /etc/vpnkit" test -e /etc/vpnkit
+  no "the server $OLD imported is purged" nmcli connection show proton-ca-1
+  no "with its config" test -e /etc/wireguard/proton-ca-1.conf
+  is "the user's own qBittorrent entry is back" "$(sha256sum < "$QDESK" 2>/dev/null)" "$QDESK_SUM"
+  no "from the backup $OLD made (moved back)" bash -c "ls '$QDESK'.bak.* 2>/dev/null | grep -q ."
+  is "IPv6 is on again" "$(sysctl -n net.ipv6.conf.all.disable_ipv6)" "0"
+  is "the physical profile's IPv6 method is back (saved by $OLD)" "$(nmcli -g ipv6.method connection show "$PPROF")" "auto"
+  is "and its IPv6 DNS server" "$(nmcli -g ipv6.dns connection show "$PPROF" | sed 's/\\:/:/g')" "2606:4700:4700::1111"
+  yes "real internet still works after the upgrade and the uninstall" curl -4 -s --max-time 8 -o /tmp/out https://archlinux.org
+fi
 
 pkill -f whoami.py; pkill -x dnsmasq
 printf '\nResult: %d passed, %d failed\n' "$pass" "$fail"
