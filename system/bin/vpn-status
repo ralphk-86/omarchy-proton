@@ -184,8 +184,9 @@ STATUS=$(jq -cn \
     direct_others:      (if $direct_on then names("others") else [] end),
     ssh_direct_enabled: $ssh_on,
     ssh_direct_known:   ($s != null),
-    ssh_direct_ports:   ($ssh_ports | split(",") | map(select(. != "") | tonumber)),
-    ssh_direct_ports_ok: ($ssh_ports != ""),
+    ssh_direct_ports:   ((if $s != null and ($s.ports | type) == "string" then $s.ports else $ssh_ports end)
+                         | split(",") | map(select(. != "") | tonumber)),
+    ssh_direct_ports_ok: (if $s != null and ($s.ports_ok | type) == "boolean" then $s.ports_ok else $ssh_ports != "" end),
     ssh_direct_rules:   (if $s == null or ($ssh_on | not) then null else $s.rules end),
     profiles:        ($profiles | split("\n") | map(select(. != "")))
   }')
@@ -267,7 +268,7 @@ case "$MODE" in
           elif .ssh_direct_known | not then
             "                     state unknown: the status helper did not answer"
           elif .ssh_direct_rules != true then
-            "                     *** NOT WORKING: its rules are missing (vpn-direct ssh off, then on) ***"
+            "                     *** NOT WORKING: its rules, or the kill switch line for them, are missing (vpn-direct ssh off, then on) ***"
           else empty end)
        else "SSH direct         : off" end),
       (if .inbox > 0 then "Waiting in the folder: \(.inbox) config(s) - run vpn-import" else empty end)

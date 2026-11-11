@@ -78,7 +78,7 @@ fake_notify() {
   fi
 }
 notified() {
-  local n; n=$(wc -l < /tmp/suite-notify.log 2>/dev/null) || n=0
+  local n; n=$({ wc -l < /tmp/suite-notify.log; } 2>/dev/null) || n=0
   if [[ "$n" == 1 ]]; then cat /tmp/suite-notify.log; else printf '%s records: %s' "$n" "$(paste -sd'#' /tmp/suite-notify.log 2>/dev/null)"; fi
 }
 # The Firefox part of a leak-check report (vpn-verify's section 10b).
@@ -1817,6 +1817,12 @@ for a in "ssh" "ssh bogus" "ssh on extra" "on ssh" "ssh off off"; do
   /usr/local/bin/vpnkit-direct $a >/dev/null 2>&1; rc=$?
   is "the helper itself refuses '$a'" "$rc" "2"
 done
+# sudo matches the arguments joined by spaces, so one word "ssh on" is
+# passwordless too; the helper refuses it (one argument).
+for a in "ssh on" "ssh off"; do
+  as_user sudo -n /usr/local/bin/vpnkit-direct "$a" >/dev/null 2>&1; rc=$?
+  is "through sudo, the helper refuses '$a' as one word" "$rc" "2"
+done
 no "and nothing was turned on" test -e /etc/vpnkit/direct-apps
 
 # DIRECT_SSH_PORTS: one to eight port numbers, never DNS; anything else is refused.
@@ -1826,6 +1832,7 @@ for v in "" "0" "65536" "0022" "22 x" "22;id" "22-24" "53" "22 853" "1 2 3 4 5 6
   is "DIRECT_SSH_PORTS=\"$v\" is refused" "$rc" "1"
 done
 yes "with the reason" grep -q "at most 8" <<<"$OUT"
+is "nine copies of one port are one port" "$(bash -c '. /usr/local/lib/vpnkit/common.sh; . /usr/local/lib/vpnkit/direct.sh; vpnkit_ssh_ports "22 22 22 22 22 22 22 22 22"' 2>&1)" "22"
 no "nothing was turned on" test -e /etc/vpnkit/direct-apps
 no "nor loaded" nft list table inet vpnkit_direct
 no "nor the unit enabled" systemctl is-enabled --quiet vpnkit-direct.service
@@ -1866,7 +1873,7 @@ yes "and that the kill switch lets it out" grep -q "PASS.*the kill switch lets t
 # A rule that went missing: status, panel data and the leak check say so.
 ip -4 rule del priority 90 fwmark 51821 table main
 is "status: a missing rule shows" "$(status .ssh_direct_rules)" "false"
-yes "vpn-status says it does not work" grep -q "NOT WORKING: its rules are missing" <<<"$(as_user /usr/local/bin/vpn-status)"
+yes "vpn-status says it does not work" grep -q "NOT WORKING: its rules, or the kill switch line for them, are missing" <<<"$(as_user /usr/local/bin/vpn-status)"
 is "port 22 then goes into the VPN, never around it" "$(portip 22)" "10.2.0.2"
 OUT=$(vpn-verify 2>&1); rc=$?
 is "the leak check fails" "$rc" "1"
@@ -1874,10 +1881,21 @@ yes "and says the rules are not loaded" grep -q "FAIL.*SSH direct is on but its 
 yes "and that a marked connection would not leave outside the tunnel" grep -q "FAIL.*a connection SSH direct marks would leave through proton-ca-1" <<<"$OUT"
 /etc/NetworkManager/dispatcher.d/50-vpnkit "$PHYS" up
 is "a link coming up loads them again" "$(status .ssh_direct_rules)" "true"
+# An armed kill switch without its line blocks SSH: the status must not say
+# it works.
+h=$(nft -a list chain inet vpnkit_kill output 2>/dev/null | awk '/meta mark 0x0000ca6d accept/ {print $NF; exit}')
+nft delete rule inet vpnkit_kill output handle "${h:-0}"
+no "the kill switch is armed without its line" ks_line
+is "port 22 is then blocked" "$(portip 22)" "none"
+is "status: not working" "$(status .ssh_direct_rules)" "false"
+is "and the helper's own status agrees" "$(direct status | jq -c .ssh.rules)" "false"
+yes "vpn-status says so" grep -q "NOT WORKING: its rules, or the kill switch line for them, are missing" <<<"$(as_user /usr/local/bin/vpn-status)"
 nft delete table inet vpnkit_kill
+is "with no kill switch at all, the rules alone count" "$(status .ssh_direct_rules)" "true"
 OUT=$(vpn-verify 2>&1)
 yes "a kill switch without its line is a failure" grep -q "FAIL.*the kill switch has no line for SSH direct's mark" <<<"$OUT"
 as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
+is "server A re-armed: working again" "$(status .ssh_direct_rules)" "true"
 
 # Other ports than the loaded ones: the rules no longer count as loaded until on again.
 ssh_ports "2222"
@@ -1912,6 +1930,28 @@ is "Chrome direct turns on beside it" "$(direct on 2>&1)" "direct: on"
 is "both rule sets are loaded" "$(direct status | jq -c '[.rules, .ssh.rules]')" "[true,true]"
 is "the slice exits from home" "$(slice_ip)" "$HOME_IP"
 is "port 22 still does" "$(portip 22)" "$HOME_IP"
+# Ports that are not valid take only SSH direct down, never Chrome direct.
+ssh_ports "22 x"
+OUT=$(/usr/local/bin/vpnkit-direct-rules up 2>&1); rc=$?
+is "with ports not valid, the rules helper still loads Chrome's part" "$rc" "0"
+yes "and says SSH's is left out" grep -q "loading Chrome direct's rules only" <<<"$OUT"
+yes "Chrome's mark is loaded" chrome_mark
+no "SSH's is not" ssh_mark
+is "status: Chrome works, SSH does not" "$(direct status | jq -c '[.rules, .ssh.rules]')" "[true,false]"
+is "the slice still exits from home" "$(slice_ip)" "$HOME_IP"
+is "port 22 follows the bar" "$(portip 22)" "10.2.0.2"
+systemctl restart vpnkit-direct.service; rc=$?
+is "the unit starts with them too (a reboot)" "$rc" "0"
+yes "with Chrome's mark" chrome_mark
+is "Chrome direct turns off with them" "$(direct off 2>&1 | tail -1)" "direct: off"
+no "and its mark is gone" chrome_mark
+is "SSH direct stays on, not working" "$(direct status | jq -c '[.enabled, .rules, .ssh.enabled, .ssh.rules]')" "[false,false,true,false]"
+is "Chrome direct turns on with them" "$(direct on 2>&1 | tail -1)" "direct: on"
+is "and works" "$(direct status | jq -c '[.enabled, .rules, .ssh.enabled, .ssh.rules]')" "[true,true,true,false]"
+is "the slice exits from home again" "$(slice_ip)" "$HOME_IP"
+ssh_ports "22 2222"
+/usr/local/bin/vpnkit-direct-rules up >/dev/null 2>&1
+is "valid again: both rule sets" "$(direct status | jq -c '[.rules, .ssh.rules]')" "[true,true]"
 is "Chrome direct turns off" "$(direct off 2>&1)" "direct: off"
 is "SSH direct keeps its rules" "$(direct status | jq -c '[.enabled, .rules, .ssh.enabled, .ssh.rules]')" "[false,false,true,true]"
 is "port 22 still leaves from home" "$(portip 22)" "$HOME_IP"
@@ -1920,7 +1960,7 @@ yes "the kill switch line stays" ks_line
 no "Chrome's mark is gone" chrome_mark
 is "a process in the slice follows the bar again" "$(slice_ip)" "10.2.0.2"
 is "Chrome direct on once more" "$(direct on 2>&1)" "direct: on"
-is "SSH direct turns off" "$(as_user /usr/local/bin/vpn-direct ssh off 2>&1)" "ssh direct: off"
+is "SSH direct turns off" "$(as_user /usr/local/bin/vpn-direct ssh off 2>&1 | head -1)" "ssh direct: off"
 is "Chrome direct keeps its rules" "$(direct status | jq -c '[.enabled, .rules, .ssh.enabled, .ssh.rules]')" "[true,true,false,false]"
 is "the slice still exits from home" "$(slice_ip)" "$HOME_IP"
 is "port 22 follows the bar" "$(portip 22)" "10.2.0.2"
@@ -1928,9 +1968,70 @@ yes "the kill switch line stays for Chrome" ks_line
 no "SSH's rules are gone" ssh_mark
 is "Chrome direct off" "$(direct off 2>&1)" "direct: off"
 
+# Ruling 17: a connection open when SSH direct is turned on keeps its path,
+# only new ones go direct; and only TCP is matched (UDP to port 22 follows
+# the bar). A line server on 2200 (TCP and UDP) and a UDP one on 22 answer
+# each line or datagram with the address it came from.
+cat > /tmp/peer.py <<'PY'
+import socket, sys, threading
+port, mode = int(sys.argv[1]), sys.argv[2]
+def tcp():
+    s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("0.0.0.0", port)); s.listen(8)
+    while True:
+        c, a = s.accept()
+        def serve(c=c, a=a):
+            try:
+                for _ in c.makefile("rb"): c.sendall((a[0] + "\n").encode())
+            except OSError: pass
+            finally: c.close()
+        threading.Thread(target=serve, daemon=True).start()
+def udp():
+    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); u.bind(("0.0.0.0", port))
+    while True:
+        d, a = u.recvfrom(64); u.sendto((a[0] + "\n").encode(), a)
+if mode in ("udp", "both"): threading.Thread(target=udp, daemon=True).start()
+tcp() if mode in ("tcp", "both") else threading.Event().wait()
+PY
+cat > /tmp/peer-client.py <<'PY'
+import os, socket, sys, time
+c = socket.create_connection(("192.0.2.80", int(sys.argv[1])), timeout=10); f = c.makefile("rb")
+c.sendall(b"a\n"); print(f.readline().decode().strip(), flush=True)
+for _ in range(600):
+    if os.path.exists(sys.argv[2]): break
+    time.sleep(0.1)
+c.sendall(b"b\n"); print(f.readline().decode().strip(), flush=True)
+PY
+udpip() { python3 -c 'import socket,sys
+u=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); u.settimeout(3)
+try:
+    u.sendto(b"x",("192.0.2.80",int(sys.argv[1]))); print(u.recvfrom(64)[0].decode().strip())
+except OSError: print("none")' "$1"; }
+ip netns exec provider python3 /tmp/peer.py 2200 both </dev/null >/dev/null 2>&1 &
+ip netns exec provider python3 /tmp/peer.py 22 udp </dev/null >/dev/null 2>&1 &
+for i in $(seq 1 50); do [[ "$(udpip 2200)" != none ]] && break; sleep 0.2; done
+ssh_ports "22 2200"
+rm -f /tmp/suite-go
+python3 /tmp/peer-client.py 2200 /tmp/suite-go > /tmp/peer-client.out 2>&1 &
+PEERC=$!
+for i in $(seq 1 50); do [[ -s /tmp/peer-client.out ]] && break; sleep 0.2; done
+is "before: the open connection goes through server A" "$(head -1 /tmp/peer-client.out)" "10.2.0.2"
+is "SSH direct on, with port 2200" "$(direct ssh on 2>&1)" "ssh direct: on (ports 22, 2200)"
+touch /tmp/suite-go; wait "$PEERC"
+is "after: the connection that was open keeps its path" "$(sed -n 2p /tmp/peer-client.out)" "10.2.0.2"
+rm -f /tmp/suite-go
+python3 /tmp/peer-client.py 2200 /tmp/suite-go-now > /tmp/peer-client.out 2>&1 & PEERC=$!
+touch /tmp/suite-go-now; wait "$PEERC"; rm -f /tmp/suite-go-now
+is "a new connection to it leaves from home" "$(head -1 /tmp/peer-client.out)" "$HOME_IP"
+is "UDP to port 22 follows the bar" "$(udpip 22)" "10.2.0.2"
+is "and UDP to port 2200" "$(udpip 2200)" "10.2.0.2"
+ssh_ports "22 2222"
+
 # Off removes everything.
 is "SSH direct on again" "$(direct ssh on 2>&1)" "ssh direct: on (ports 22, 2222)"
-is "off" "$(as_user /usr/local/bin/vpn-direct ssh off 2>&1)" "ssh direct: off"
+OUT=$(as_user /usr/local/bin/vpn-direct ssh off 2>&1)
+is "off" "$(head -1 <<<"$OUT")" "ssh direct: off"
+yes "and says open connections need a reconnect" grep -q "reconnect them" <<<"$OUT"
 no "off: nothing loaded" nft list table inet vpnkit_direct
 no "off: no fwmark rule" direct_rule
 no "off: no tailnet rule" tailnet_rule

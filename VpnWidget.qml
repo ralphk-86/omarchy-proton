@@ -287,7 +287,7 @@ Panel {
   readonly property string sshDetail: {
     if (!sshPortsOk) return "Not working: DIRECT_SSH_PORTS in /etc/vpnkit/vpnkit.conf is not valid"
     if (!sshKnown) return "State unknown: it could not be checked"
-    if (!sshWorking) return "Not working: its rules are missing. Turn it off and on again"
+    if (!sshWorking) return "Not working: its rules, or the kill switch's line for them, are missing. Turn it off and on again"
     return "Your own IP for new SSH connections \u00b7 everything else follows the bar"
   }
   readonly property string folderShort: homeShort(folder)

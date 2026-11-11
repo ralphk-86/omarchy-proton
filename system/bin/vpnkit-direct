@@ -148,8 +148,14 @@ turn_off() {
     # once that worked is the state line gone for good.
     write_state "$after"
     if systemctl is-active --quiet "$UNIT" && ! /usr/local/bin/vpnkit-direct-rules up; then
-      write_state "$before"
-      return 1
+      if [[ "$after" == ssh ]] && ! vpnkit_ssh_ports >/dev/null 2>&1; then
+        # SSH direct stays on, but with ports that are not valid nothing of it
+        # can be loaded (the status says so): Chrome's rules go with the rest.
+        /usr/local/bin/vpnkit-direct-rules down || { write_state "$before"; return 1; }
+      else
+        write_state "$before"
+        return 1
+      fi
     fi
   fi
   rearm_killswitch
@@ -194,10 +200,10 @@ case "$#:$1:${2:-}" in
     ports=$(vpnkit_ssh_ports 2>/dev/null) || ports=""
     jq -cn --argjson enabled "$(tf vpnkit_direct_on)" \
            --argjson unit "$(tf systemctl is-active --quiet "$UNIT")" \
-           --argjson rules "$(tf vpnkit_direct_rules_loaded)" \
+           --argjson rules "$(tf vpnkit_direct_rules_working)" \
            --argjson dns_ok "$(tf dns_ok)" \
            --argjson ssh_enabled "$(tf vpnkit_ssh_direct_on)" --arg ports "$ports" \
-           --argjson ssh_rules "$(tf vpnkit_ssh_rules_loaded "$ports")" \
+           --argjson ssh_rules "$(tf vpnkit_ssh_rules_working "$ports")" \
            '{enabled: $enabled, unit: $unit, rules: $rules, dns_ok: $dns_ok,
              ssh: {enabled: $ssh_enabled, ports: $ports, rules: $ssh_rules}}'
     ;;

@@ -72,6 +72,7 @@ case "$#:${1:-}:${2:-}" in
     ;;
   2:ssh:off)
     sudo -n /usr/local/bin/vpnkit-direct ssh off
+    echo "SSH connections that used your own IP stop working now; reconnect them."
     ;;
   *)
     sed -n '3,30p' "$0" >&2

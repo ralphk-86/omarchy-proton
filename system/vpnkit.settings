@@ -71,8 +71,9 @@ IP_CACHE_TTL=30
 # connections to these ports leave through your normal connection (your own
 # IP), also while a server is selected: ssh, scp, sftp, rsync and git over
 # ssh. Up to 8 port numbers, separated by spaces; not 53 or 853 (DNS never
-# leaves outside a tunnel). After changing it while SSH direct is on, run
-# vpn-direct ssh on again.
+# leaves outside a tunnel). Only the ports your SSH servers listen on: every
+# program's connections to these ports go direct, so never 80 or 443. After
+# changing it while SSH direct is on, run vpn-direct ssh on again.
 #DIRECT_SSH_PORTS="22"
 
 # ---- torrent tunnel (rarely changed) ---------------------------------------

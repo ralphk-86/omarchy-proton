@@ -55,7 +55,6 @@ vpnkit_ssh_ports() {  # vpnkit_ssh_ports [<value>]: DIRECT_SSH_PORTS checked, as
     echo "DIRECT_SSH_PORTS may hold only port numbers, separated by spaces or commas (it is \"$shown\")" >&2; return 1
   fi
   for p in ${raw//,/ }; do
-    n=$((n + 1))
     if [[ ! "$p" =~ ^[1-9][0-9]{0,4}$ ]] || (( p > 65535 )); then
       echo "DIRECT_SSH_PORTS: $p is not a port number (1 to 65535)" >&2; return 1
     fi
@@ -64,6 +63,8 @@ vpnkit_ssh_ports() {  # vpnkit_ssh_ports [<value>]: DIRECT_SSH_PORTS checked, as
     fi
     ports+=("$p")
   done
+  # Each port counts once ("22 22" is one port).
+  (( ${#ports[@]} == 0 )) || n=$(printf '%s\n' "${ports[@]}" | sort -nu | wc -l)
   if (( n == 0 )); then echo "DIRECT_SSH_PORTS is empty: name at least one port (22 is the usual one)" >&2; return 1; fi
   if (( n > 8 )); then echo "DIRECT_SSH_PORTS names $n ports; at most 8 are allowed" >&2; return 1; fi
   printf '%s\n' "${ports[@]}" | sort -nu | paste -sd, -
@@ -152,6 +153,17 @@ vpnkit_kill_lets_direct_out() {  # the armed kill switch has its line for DIRECT
     | any(any(.expr[]?; .match?.left?.meta?.key? == "mark" and .match?.right? == $m) and any(.expr[]?; has("accept")))' \
     >/dev/null 2>&1 <<<"$t"
 }
+
+vpnkit_kill_direct_ok() {  # no kill switch, or one with its line for DIRECT_FWMARK (root)
+  # An armed kill switch without the line blocks what the rules mark, so the
+  # rules alone do not mean "working".
+  nft list table inet vpnkit_kill >/dev/null 2>&1 || return 0
+  vpnkit_kill_lets_direct_out
+}
+
+# What the status reports as an exemption's "rules": loaded, and let out.
+vpnkit_direct_rules_working() { vpnkit_direct_rules_loaded && vpnkit_kill_direct_ok; }
+vpnkit_ssh_rules_working()    { vpnkit_ssh_rules_loaded "$1" && vpnkit_kill_direct_ok; }
 
 _vpnkit_in_root() {  # _vpnkit_in_root <pid> <absolute path>: that file as <pid> sees it
   # Through /proc/<pid>/root, so the process's own mounts count. A symlink's

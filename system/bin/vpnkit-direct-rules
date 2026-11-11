@@ -10,8 +10,11 @@
 #
 #    up    Refused unless Chrome direct or SSH direct is on (a line "chrome"
 #          or "ssh" in /etc/vpnkit/direct-apps), so nothing outside
-#          `vpnkit-direct` can load an exemption, and refused while SSH direct
-#          is on and DIRECT_SSH_PORTS is not valid (nothing is loaded then).
+#          `vpnkit-direct` can load an exemption. While SSH direct is on and
+#          DIRECT_SSH_PORTS is not valid, SSH direct's rules are left out (a
+#          warning; the status says it is not working): with Chrome direct on,
+#          its part is loaded as usual; with Chrome direct off, `up` is
+#          refused and nothing is loaded.
 #          Then load the nftables table inet vpnkit_direct, replacing it
 #          atomically:
 #            * Chrome direct, only while it is on: a route hook marks every
@@ -78,9 +81,17 @@ case "$#:${1:-}" in
     fi
     if vpnkit_ssh_direct_on; then
       # Only checked port numbers reach the ruleset (vpnkit_ssh_ports).
-      ports=$(vpnkit_ssh_ports) || { echo "vpnkit-direct-rules: SSH direct is on, but its ports are not valid - not loading" >&2; exit 1; }
-      ssh_rules=("tcp dport { ${ports//,/, } } ct state new ct mark set $DIRECT_FWMARK comment \"ssh\""
-                 "ct mark $DIRECT_FWMARK meta mark set $DIRECT_FWMARK comment \"ssh\"")
+      # Invalid ports never take Chrome direct down with them: only SSH
+      # direct's rules are left out then.
+      if ports=$(vpnkit_ssh_ports); then
+        ssh_rules=("tcp dport { ${ports//,/, } } ct state new ct mark set $DIRECT_FWMARK comment \"ssh\""
+                   "ct mark $DIRECT_FWMARK meta mark set $DIRECT_FWMARK comment \"ssh\"")
+      elif [[ -n "$chrome_rule" ]]; then
+        echo "vpnkit-direct-rules: SSH direct is on, but its ports are not valid - loading Chrome direct's rules only" >&2
+      else
+        echo "vpnkit-direct-rules: SSH direct is on, but its ports are not valid - not loading" >&2
+        exit 1
+      fi
     fi
     {
       echo "table inet $TABLE"

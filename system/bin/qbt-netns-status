@@ -199,7 +199,7 @@ tf() { if "$@"; then echo true; else echo false; fi; }
 direct_json() {  # the "direct" object; {"enabled":null} when the scan did not finish
   local d_unit d_rules d_dns scan
   d_unit=$(tf systemctl is-active --quiet vpnkit-direct.service)
-  d_rules=$(tf vpnkit_direct_rules_loaded)
+  d_rules=$(tf vpnkit_direct_rules_working)
   d_dns=$(printf '%s' "$DIRECT_DNS" | tr -cd '0-9A-Za-z.:' | head -c 64)
   if ! vpnkit_direct_on; then
     jq -cn --argjson unit "$d_unit" --argjson rules "$d_rules" --arg dns "$d_dns" \
@@ -232,11 +232,14 @@ jq -e 'type == "object"' >/dev/null 2>&1 <<<"$direct" || direct='{"enabled":null
 # On or off, its ports ("22,2222"; empty when DIRECT_SSH_PORTS is not valid),
 # and whether its rules for exactly those ports are loaded. Part of "direct",
 # also when Chrome's scan did not finish.
+# Its rules count only while the kill switch, when armed, lets them out; they
+# are looked at only while it is on (off: false).
 ssh_json() {
-  local ports
+  local ports on rules=false
   ports=$(vpnkit_ssh_ports 2>/dev/null) || ports=""
-  jq -cn --argjson enabled "$(tf vpnkit_ssh_direct_on)" --arg ports "$ports" \
-         --argjson rules "$(tf vpnkit_ssh_rules_loaded "$ports")" \
+  on=$(tf vpnkit_ssh_direct_on)
+  [[ "$on" == true ]] && rules=$(tf vpnkit_ssh_rules_working "$ports")
+  jq -cn --argjson enabled "$on" --arg ports "$ports" --argjson rules "$rules" \
     '{enabled: $enabled, ports: $ports, ports_ok: ($ports != ""), rules: $rules}'
 }
 ssh=$(ssh_json) || ssh='{"enabled":null}'
