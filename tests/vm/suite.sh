@@ -582,6 +582,27 @@ yes "and says why" grep -q "the Firefox tunnel's exit" <<<"$OUT"
 is "(neither tunnel moved)" "$(cat /etc/vpnkit/torrent-server) $(cat /etc/vpnkit/firefox-server)" "proton-nl-3 proton-se-4"
 as_user sudo -n /usr/local/bin/vpnkit-sync remove proton-nl-5 >/dev/null
 as_user sudo -n /usr/local/bin/vpnkit-sync remove proton-se-6 >/dev/null
+# A config carrying a tunnel's key is not imported at all: as a server it
+# could be picked for regular traffic, and vpn-toggle (as the user) cannot read
+# keys to stop that. Same key, other names and endpoints.
+conf "$DROP/se-7.conf"         "$WG/ff.key"      10.3.0.7 10.3.0.1 "SE#7" "$WG/srvB.pub" 51821
+conf "$DROP/nl-8.conf"         "$WG/torrent.key" 10.2.0.8 10.2.0.1 "NL#8" "$WG/srvA.pub" 51820
+conf "$DROP/torrent/se-9.conf" "$WG/ff.key"      10.3.0.9 10.3.0.1 "SE#9" "$WG/srvB.pub" 51821
+conf "$DROP/firefox/nl-10.conf" "$WG/torrent.key" 10.2.0.10 10.2.0.1 "NL#10" "$WG/srvA.pub" 51820
+OUT=$(as_user sudo -n /usr/local/bin/vpnkit-sync sync)
+is "configs with a tunnel's key are not imported" "$(jq -r '.imported | length' <<<"$OUT")" "0"
+is "(and choose nothing)" "$(jq -r '.torrent + "|" + .firefox' <<<"$OUT")" "|"
+is "a desktop config with the Firefox tunnel's key is refused, naming it" \
+  "$(jq -r '.skipped[] | select(.file == "se-7.conf") | .reason' <<<"$OUT" | grep -c "same private key as the Firefox tunnel (server proton-se-4)")" "1"
+is "a desktop config with the torrent tunnel's key is refused, naming it" \
+  "$(jq -r '.skipped[] | select(.file == "nl-8.conf") | .reason' <<<"$OUT" | grep -c "same private key as the torrent tunnel (server proton-nl-3)")" "1"
+is "a torrent config with the Firefox tunnel's key is refused" \
+  "$(jq -r '.skipped[] | select(.file == "torrent/se-9.conf") | .reason' <<<"$OUT" | grep -c "the Firefox tunnel")" "1"
+is "a Firefox config with the torrent tunnel's key is refused" \
+  "$(jq -r '.skipped[] | select(.file == "firefox/nl-10.conf") | .reason' <<<"$OUT" | grep -c "the torrent tunnel")" "1"
+no "(no server was made from them)" bash -c 'nmcli -g NAME connection show | grep -qxE "proton-(se-7|nl-8|se-9|nl-10)"'
+is "(both tunnels stayed where they were)" "$(cat /etc/vpnkit/torrent-server) $(cat /etc/vpnkit/firefox-server)" "proton-nl-3 proton-se-4"
+rm -f "$DROP/se-7.conf" "$DROP/nl-8.conf" "$DROP/torrent/se-9.conf" "$DROP/firefox/nl-10.conf"
 no "the Firefox server cannot be removed" as_user sudo -n /usr/local/bin/vpnkit-sync remove proton-se-4
 yes "(it is still there)" nmcli connection show proton-se-4
 # Arguments of the passwordless rule: names only, validated.

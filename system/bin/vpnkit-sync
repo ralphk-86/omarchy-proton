@@ -116,6 +116,7 @@ do_sync() {
     base=$(basename "$f")
     tmp="$work/$base"
     if ! fetch "$f" "$tmp"; then skip "$base" "cannot read the file, or it is not a config"; continue; fi
+    if out=$(tunnel_key_clash "$tmp" torrent firefox); then skip "$base" "$out"; rm -f "$tmp"; continue; fi
     if out=$(/usr/local/bin/vpnkit-import "$tmp" 2>&1); then
       IMPORTED+=("$(sed -n 's/^imported: //p' <<<"$out" | head -1)")
       discard "$f"
@@ -153,6 +154,9 @@ import_sub() {
     base="$sub/$(basename "$f")"
     tmp="$WORK/$(basename "$f")"
     if ! fetch "$f" "$tmp"; then skip "$base" "cannot read the file, or it is not a config"; continue; fi
+    # A config for one tunnel must not carry the other tunnel's key (it may
+    # be the same tunnel's own config again).
+    if out=$(tunnel_key_clash "$tmp" "$(other_tunnel "$sub")"); then skip "$base" "$out"; rm -f "$tmp"; continue; fi
     if out=$(/usr/local/bin/vpnkit-import "$tmp" 2>&1); then
       out=$(sed -n 's/^imported: //p' <<<"$out" | head -1)
       IMPORTED+=("$out"); [[ -z "$first" ]] && first="$out"
@@ -167,6 +171,29 @@ import_sub() {
 }
 
 TORRENT_FILE=/etc/vpnkit/torrent-server
+
+# tunnel_key_clash <config> <tunnel>...: a config to import must not carry the
+# private key the torrent or Firefox tunnel runs on. As a server it could be
+# chosen for regular traffic (vpn-toggle, running as the user, cannot read the
+# keys to check), and one key in two tunnels makes the provider drop both.
+# Prints the reason and succeeds when it does.
+other_tunnel() { case "$1" in torrent) echo firefox ;; firefox) echo torrent ;; esac; }
+tunnel_key_clash() {
+  local k t conf rec
+  k=$(key_of "$1"); [[ -n "$k" ]] || return 1
+  for t in "${@:2}"; do
+    case "$t" in
+      torrent) conf="$QBT_CONF"; rec="$TORRENT_FILE" ;;
+      firefox) conf="$FF_CONF";  rec="$FF_SERVER_FILE" ;;
+      *) continue ;;
+    esac
+    [[ -r "$conf" && "$k" == "$(key_of "$conf")" ]] || continue
+    printf "has the same private key as the %s tunnel (server %s); one key in two tunnels makes the provider drop both: download a config with its own key\n" \
+      "$([[ $t == firefox ]] && echo Firefox || echo torrent)" "$(head -1 "$rec" 2>/dev/null || echo unknown)"
+    return 0
+  done
+  return 1
+}
 
 valid_name() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,15}$ && "$1" == "$PROFILE_PREFIX"-* ]]; }
 # Deleting a server or moving the torrent tunnel onto it: only a server the

@@ -416,7 +416,9 @@ if [[ -r "$QBT_CONF" ]]; then
          INCOMPLETE+=("enabling qbt-netns.service"); }
   # Leave a running namespace alone: rebuilding it would cut a running
   # qBittorrent off from the network.
-  if ! ip netns list 2>/dev/null | grep -qw "$NS"; then
+  # (Tested on its file, not with `ip netns list | grep -q`: under pipefail
+  # that pipeline can fail when grep quits early.)
+  if [[ ! -e "/run/netns/$NS" ]]; then
     systemctl restart qbt-netns.service || warn "qbt-netns.service failed to start: journalctl -u qbt-netns.service"
   fi
 else
