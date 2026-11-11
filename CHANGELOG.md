@@ -61,19 +61,19 @@
   - The `README.txt` in your drop folder is written only when it is missing, so an existing one
     does not mention `firefox/`; delete it to get the new one.
 - Tests: static checks pass; the marketplace security baseline is `review-required` with no
-  findings. VM suite: VMRESULT. VM tests added in this release: the Firefox namespace (only
-  `lo` and its interface, its resolver files and firewall, DNS through the tunnel, nothing out
-  and no DNS while the tunnel is down, the torrent tunnel untouched), the opt-in (no change to
-  `firefox` or its launcher until a config is imported; off removes the unit, config, record
-  and launcher entry and puts the user's own entry back; a reinstall leaves a running tunnel
-  alone; uninstall removes it, `--purge` its config), the separate-exit and key guards both
-  ways, the wrapper's and `ff-launch`'s refusals (tunnel down, resolver files missing, a
-  Firefox outside, another build such as `/opt/firefox/firefox`, abuse of the sudo rule, the
-  PATH test), the notifications (one record, none from a terminal), real Firefox on a virtual
-  display (a page from the tunnel's address, no process in the host's namespace, a second start
-  handed over), the status and leak check; and for SSH direct: off by default, the exact sudo
-  arguments (also as one word), every invalid port value, ports 22 and 2222 from the home
-  address while port 443 and the torrent and Firefox namespaces follow their tunnels, a
+  findings. VM suite: 1053 passed, 0 failed. VM tests added in this release: the Firefox
+  namespace (only `lo` and its interface, its resolver files and firewall, DNS through the
+  tunnel, nothing out and no DNS while the tunnel is down, the torrent tunnel untouched), the
+  opt-in (no change to `firefox` or its launcher until a config is imported; off removes the
+  unit, config, record and launcher entry and puts the user's own entry back; a reinstall
+  leaves a running tunnel alone; uninstall removes it, `--purge` its config), the separate-exit
+  and key guards both ways, the wrapper's and `ff-launch`'s refusals (tunnel down, resolver
+  files missing, a Firefox outside, another build such as `/opt/firefox/firefox`, abuse of the
+  sudo rule, the PATH test), the notifications (one record, none from a terminal), real Firefox
+  on a virtual display (a page from the tunnel's address, no process in the host's namespace, a
+  second start handed over), the status and leak check; and for SSH direct: off by default, the
+  exact sudo arguments (also as one word), every invalid port value, ports 22 and 2222 from the
+  home address while port 443 and the torrent and Firefox namespaces follow their tunnels, a
   connection open before it is turned on keeping its path, UDP to the same ports following the
   bar, the blocked state, missing rules, an armed kill switch without its line, invalid ports
   next to Chrome direct, a reboot (unit restart), independence from Chrome direct both ways, a
