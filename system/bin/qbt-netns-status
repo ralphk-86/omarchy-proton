@@ -120,6 +120,14 @@ other_clients=$(vpnkit_outside_clients "$NS_INODE" | paste -sd, -)
 # --- the namespace's actual exit IP (cached, this is the real proof) --------
 exit_ip=$(ns_exit_ip "$NS" "$IPCACHE" "$tunnel_up")
 
+# --- the desktop user's programs, read once ------------------------------------
+# The Firefox and Chrome checks below both look at every process of the
+# desktop user; one pass (vpnkit_proc_index) serves both. Only while one of
+# them is on: otherwise neither looks.
+if [[ -r "$FF_CONF" ]] || vpnkit_ff_opted_in || vpnkit_direct_on; then
+  vpnkit_proc_index "$TARGET_USER"
+fi
+
 # --- the Firefox tunnel (opt-in) ----------------------------------------------
 # Computed like the torrent fields above. It is on once a Firefox server was
 # chosen (vpnkit_ff_opted_in, or its config is in place); only then are the

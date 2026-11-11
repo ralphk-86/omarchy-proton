@@ -1935,6 +1935,37 @@ rm -rf /run/systemd/system/vpnkit-direct.service.d; systemctl daemon-reload
 systemctl reset-failed vpnkit-direct.service 2>/dev/null
 ssh_ports -
 
+# The status looks at the desktop user's programs once for the Firefox and
+# Chrome checks (vpnkit_proc_index): each process must come out exactly as it
+# does with one readlink per process. Stand-ins: a Chrome outside the slice,
+# a Firefox (a copy of bash) with a Firefox child, a program that was deleted.
+FFBAK=$(mktemp); cp -a /usr/lib/firefox/firefox "$FFBAK"
+install -m 755 /usr/bin/bash /usr/lib/firefox/firefox
+install -m 755 /usr/bin/sleep /opt/google/chrome/suite-standin
+install -m 755 /usr/bin/sleep /tmp/suite-gone
+as_user /opt/google/chrome/suite-standin 120 </dev/null >/dev/null 2>&1 &
+as_user /usr/lib/firefox/firefox -c '/usr/lib/firefox/firefox -c "sleep 120 & wait" & wait' </dev/null >/dev/null 2>&1 &
+as_user /tmp/suite-gone 120 </dev/null >/dev/null 2>&1 &
+sleep 1; rm -f /tmp/suite-gone
+CHPID=$(pgrep -u $U -f '^/opt/google/chrome/suite-standin' | head -1)
+FFMAIN=$(pgrep -u $U -f '^/usr/lib/firefox/firefox -c /usr/lib/firefox/firefox' | head -1)
+FFKID=$(pgrep -u $U -f '^/usr/lib/firefox/firefox -c sleep 120' | head -1)
+GONE=$(pgrep -u $U -x suite-gone | head -1)
+OUT=$(bash -c '. /usr/local/lib/vpnkit/common.sh; . /usr/local/lib/vpnkit/direct.sh
+  ino=$(stat -Lc %i /run/netns/ffvpn)
+  run() { vpnkit_chrome_outside_pids tester; echo -; vpnkit_ff_pids "$ino" tester both; echo -
+          vpnkit_ff_pids "" tester outside; echo -; vpnkit_app_pids tester "^/tmp/suite-gone" both "netns:$ino"; echo -
+          vpnkit_app_pids tester "^/usr/bin/sleep$" outside "slice:vpnkitdirect.slice"; }
+  run; echo =; vpnkit_proc_index tester; run')
+A=$(sed '/^=$/,$d' <<<"$OUT"); B=$(sed '1,/^=$/d' <<<"$OUT")
+is "one pass over the processes classifies them as one readlink each does" "$B" "$A"
+yes "(the Chrome stand-in is outside the slice)" grep -qx "${CHPID:-none}" <<<"$A"
+yes "(the Firefox main process is outside, its child is not counted)" \
+  bash -c '[[ -n "$2" && "$2" != "$3" ]] && grep -qx "outside $2" <<<"$1" && ! grep -q " $3$" <<<"$1"' _ "$A" "$FFMAIN" "$FFKID"
+yes "(the deleted program is seen)" grep -qx "outside ${GONE:-none}" <<<"$A"
+for p in $(pgrep -P "${FFKID:-0}") $FFKID $FFMAIN $CHPID $GONE; do kill "$p" 2>/dev/null; done
+sleep 1
+cp -a --remove-destination "$FFBAK" /usr/lib/firefox/firefox; rm -f "$FFBAK" /opt/google/chrome/suite-standin
 as_user /usr/local/bin/vpn-toggle off >/dev/null 2>&1
 
 # ---------------------------------------------------------------------------

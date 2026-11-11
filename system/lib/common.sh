@@ -184,6 +184,39 @@ TORRENT_CLIENTS="qbittorrent-nox transmission-gtk transmission-qt transmission-d
 transmission-cli deluge deluge-gtk deluged rtorrent ktorrent fragments tixati biglybt
 frostwire webtorrent"
 
+# One pass over a user's processes: each one's program (what readlink
+# /proc/<pid>/exe says, " (deleted)" and all), read by a single `find` rather
+# than one readlink per process. The status helper polls every few seconds
+# and asks about Firefox and Chrome both; it builds this once and the checks
+# below use it. Without it (or for another user) they read /proc themselves;
+# either way a process is classified the same.
+VPNKIT_EXE_USER=""
+VPNKIT_EXE_PIDS=()
+declare -gA VPNKIT_EXE=() 2>/dev/null || true
+vpnkit_proc_index() {  # vpnkit_proc_index <user>: fills VPNKIT_EXE (pid -> program) and VPNKIT_EXE_PIDS
+  local pid i k pids
+  local -a paths=() kv=()
+  VPNKIT_EXE=(); VPNKIT_EXE_PIDS=(); VPNKIT_EXE_USER=""
+  pids=$(pgrep -u "$1" 2>/dev/null) || pids=""
+  for pid in $pids; do paths+=("/proc/$pid/exe"); done
+  if (( ${#paths[@]} > 0 )); then
+    # NUL-separated: a program's path may hold any character but NUL.
+    mapfile -d '' -t kv < <(find "${paths[@]}" -maxdepth 0 -printf '%p\0%l\0' 2>/dev/null)
+    for (( i = 0; i + 1 < ${#kv[@]}; i += 2 )); do
+      k="${kv[i]#/proc/}"; k="${k%/exe}"
+      [[ "$k" =~ ^[0-9]+$ ]] || continue
+      VPNKIT_EXE[$k]="${kv[i+1]}"
+    done
+  fi
+  # In pgrep's order, the order the checks print in without the index.
+  for pid in $pids; do [[ -n "${VPNKIT_EXE[$pid]+x}" ]] && VPNKIT_EXE_PIDS+=("$pid"); done
+  VPNKIT_EXE_USER="$1"
+}
+_vpnkit_exe() {  # _vpnkit_exe <pid>: its program, from the index when it has the pid
+  if [[ -n "$VPNKIT_EXE_USER" && -n "${VPNKIT_EXE[$1]+x}" ]]; then printf '%s' "${VPNKIT_EXE[$1]}"
+  else readlink "/proc/$1/exe" 2>/dev/null; fi
+}
+
 vpnkit_app_pids() {  # vpnkit_app_pids <user> <exe ERE> <inside|outside|both> <netns:INODE | slice:NAME> [<names ERE>]
   # Prints each process of <user> whose program (/proc/<pid>/exe) matches
   # <exe ERE> and that is inside (or outside) <place>: the network namespace
@@ -194,12 +227,15 @@ vpnkit_app_pids() {  # vpnkit_app_pids <user> <exe ERE> <inside|outside|both> <n
   # looked at. A process that vanished, or whose place cannot be read, is
   # skipped. The one check behind "is this app running outside its tunnel or
   # slice" for qBittorrent, Firefox and Chrome.
+  # Without <names ERE>, and with vpnkit_proc_index built for <user>, the
+  # processes and their programs come from the index.
   local user="$1" re="$2" want="$3" place="$4" pid v ins
   local pids
   if [[ -n "${5:-}" ]]; then pids=$(pgrep -x "$5" -u "$user" 2>/dev/null) || pids=""
+  elif [[ -n "$VPNKIT_EXE_USER" && "$VPNKIT_EXE_USER" == "$user" ]]; then pids="${VPNKIT_EXE_PIDS[*]}"
   else pids=$(pgrep -u "$user" 2>/dev/null) || pids=""; fi
   for pid in $pids; do
-    [[ "$(readlink "/proc/$pid/exe" 2>/dev/null)" =~ $re ]] || continue
+    [[ "$(_vpnkit_exe "$pid")" =~ $re ]] || continue
     case "$place" in
       netns:*)
         v=$(stat -Lc '%i' "/proc/$pid/ns/net" 2>/dev/null) || continue
@@ -252,7 +288,7 @@ vpnkit_ff_pids() {  # vpnkit_ff_pids <namespace inode or ""> <user> <inside|outs
         [[ "$k" == PPid ]] && { ppid="$v"; break; }
       done < "/proc/$pid/status"; } 2>/dev/null
     [[ "$ppid" =~ ^[0-9]+$ ]] || continue          # it vanished
-    [[ "$(readlink "/proc/$ppid/exe" 2>/dev/null)" =~ $VPNKIT_FF_EXE_RE ]] && continue
+    [[ "$(_vpnkit_exe "$ppid")" =~ $VPNKIT_FF_EXE_RE ]] && continue
     case "$3" in
       both) printf '%s %s\n' "$where" "$pid" ;;
       "$where") printf '%s\n' "$pid" ;;
