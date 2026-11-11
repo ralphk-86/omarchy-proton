@@ -40,7 +40,10 @@ Design notes, plans and agent working files are kept outside it (`docs/superpowe
    inside it for the two tunnels); `vpnkit-sync` imports and then removes them from the folder.
 6. Chrome direct (opt-in) = slice `vpnkitdirect.slice` (only root places processes there),
    nftables table `inet vpnkit_direct` marking its packets 51821 for the main table, and
-   `meta mark 51821 accept` in the kill switch (after its DNS reject) only while on.
+   `meta mark 51821 accept` in the kill switch (after its DNS reject) only while on. The kill
+   switch's tunnel line is `meta mark != 51821 oifname "<prefix>-*" accept`: the mark routes a
+   packet again, but the output hook still sees the tunnel as its device, so without the
+   exception marked DNS would be accepted there before the reject (0.4.0-0.4.2 did that).
    `vpnkit-direct on|off|status` switches it; `direct-launch`, behind the
    `google-chrome-stable` wrapper, starts Chrome in the slice with a filtered session bus
    (no `org.freedesktop.systemd1`, else Chrome moves itself out) and the kit's `xdg-open`

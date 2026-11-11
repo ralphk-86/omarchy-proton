@@ -31,7 +31,7 @@ direct and SSH direct are deliberate exceptions, described below.
 
 | Helper | Arguments | What it can do |
 |---|---|---|
-| `qbt-netns-status` | none allowed | read the namespace and kill switch state; the Firefox tunnel's, once it is on: its namespace, handshake and endpoint, its exit IP (one `curl` run inside that namespace, cached in `/run/ff-netns-exit-ip` for 60 s), and the program, network namespace and parent of each process of the desktop user (one pass, to find a Firefox outside the namespace); SSH direct's (on or off, its ports, whether its rules are loaded and, while the kill switch is armed, let out by it), and Chrome direct's: its unit and rules, which programs run in its slice (it reads Chrome's native-messaging manifests in `/etc/opt/chrome` as root and the ones in your home folder with your permissions), and whether Chrome's resolver files still name `DIRECT_DNS` only (read through `/proc/<pid>/root`, nothing is run there); it writes only its own caches in `/run`, including whether `DIRECT_DNS` answered (asked at most every 30 s) |
+| `qbt-netns-status` | none allowed | read the namespace and kill switch state; the Firefox tunnel's, once it is on: its namespace, handshake and endpoint, its exit IP (one `curl` run inside that namespace, cached in `/run/ff-netns-exit-ip` for 60 s, and only for the server and namespace it was measured in; choosing another Firefox server or turning the tunnel off deletes it), and the program, network namespace and parent of each process of the desktop user (one pass, to find a Firefox outside the namespace); SSH direct's (on or off, its ports, whether its rules are loaded and, while the kill switch is armed, let out by it), and Chrome direct's: its unit and rules, which programs run in its slice (it reads Chrome's native-messaging manifests in `/etc/opt/chrome` as root and the ones in your home folder with your permissions), and whether Chrome's resolver files still name `DIRECT_DNS` only (read through `/proc/<pid>/root`, nothing is run there); it writes only its own caches in `/run`, including whether `DIRECT_DNS` answered (asked at most every 30 s) |
 | `qbt-launch` | passed to qBittorrent only | start `/usr/bin/qbittorrent` inside the namespace, as the desktop user; refuses while the tunnel is down or a qBittorrent (GUI or `qbittorrent-nox`) of that user runs outside the namespace; started without a terminal, a refusal is also a desktop notification (`notify-send`, run as the desktop user) |
 | `ff-launch` | passed to Firefox only | start `/usr/lib/firefox/firefox` inside the Firefox namespace, as the desktop user (`runuser` before exec); refuses while the tunnel is off (no Firefox config) or down, the namespace's resolver files are missing or unsafe, `FF_NS` names the torrent namespace, or a Firefox of that user runs outside the namespace (its main processes: Firefox's sandboxed children have network namespaces of their own; any build counts, a program named `firefox` or `firefox-bin` wherever it is, such as Mozilla's tarball, a flatpak or a snap, because a new Firefox can hand its pages to any of them, but only the packaged one is ever started inside). Started without a terminal, a refusal is also a desktop notification (`notify-send`, run as the desktop user). Whatever the arguments make Firefox do, it does as you, with only the tunnel for network |
 | `vpnkit-killswitch` | `on <profile>`, `off`, `status`; validated | load or remove one nftables table |
@@ -86,6 +86,17 @@ process there, and only two helpers do: `direct-launch` (Chrome) and `vpn-verify
   `mailto:` and other protocols) run the kit's `xdg-open`, first in Chrome's `PATH`, which
   starts the app with `systemd-run --user --scope` outside the slice, on the real session
   bus. If that scope cannot be made, nothing is opened.
+- **DNS from the slice is rejected all the same.** The slice's mark makes the kernel route a
+  packet again, to the normal connection, after the tunnel was first chosen for it, and the
+  kill switch's output hook still sees the tunnel as its device. So the kill switch's line for
+  the tunnel leaves marked packets out (`meta mark != 51821`); they reach its DNS rule (UDP
+  and TCP to 53 and 853, rejected) before the line that lets the mark out. That holds with a
+  server selected and while blocked. Chrome's own lookups go to `DIRECT_DNS` on loopback,
+  which the kill switch allows first; that resolver's own questions follow the bar. In 0.4.0 to
+  0.4.2 the tunnel line also took marked packets, so plain DNS sent from the slice to a
+  resolver outside this machine left from the home address while a server was selected. Setup
+  arms an armed kill switch again with the current rules, and the leak check fails on one that
+  still has the old line.
 - **What Chrome starts directly still inherits the exemption** (an extension's
   native-messaging helper, anything an extension or a flag makes it run), and software
   running as you can ask Chrome to start things. Refusing the flags above, on the command line
@@ -99,7 +110,8 @@ namespaces) to one of `DIRECT_SSH_PORTS` (default 22) leaves on the normal conne
 server selected and while the bar says blocked. That is any program's connection, to any host,
 not only `ssh`'s: matching by port is what lets `scp`, `rsync` and `git` over ssh work without
 wrappers. DNS is not part of it (53 and 853 are refused as ports, and the kill switch's DNS
-reject comes before its line for the mark). It shares Chrome direct's mark, policy rules, NAT
+reject comes before its line for the mark and its tunnel line leaves marked packets out; see
+above). It shares Chrome direct's mark, policy rules, NAT
 and kill-switch line, which are loaded while either is on.
 
 The Firefox tunnel (off until a Firefox config is imported) is no hole: it confines the

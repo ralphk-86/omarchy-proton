@@ -357,7 +357,8 @@ can be changed in `/etc/vpnkit/vpnkit.conf`. `vpn-status --json` shows the ones 
 **Kill switch.** Picking a server loads an nftables table that rejects everything leaving the
 machine unless it goes out through a VPN interface, is WireGuard's own encrypted traffic, or
 stays on your local network (or, only if you turned it on, comes from Chrome under
-[Chrome direct](#chrome-direct)). DNS is rejected outside a tunnel even towards your router.
+[Chrome direct](#chrome-direct)). DNS (ports 53 and 853, UDP and TCP) is rejected outside a
+tunnel even towards your router, also when it comes from Chrome under Chrome direct.
 It is loaded *before* the old connection is dropped, so switching servers has no open moment. Only
 **Normal connection** (`vpn-toggle off`) removes it. A server that stops answering, a profile
 NetworkManager drops, or waking from suspend therefore leaves you blocked, with the bar
@@ -567,7 +568,11 @@ Set it before you turn Chrome direct on. If you change it later, restart Chrome.
 slice (`vpnkitdirect.slice`) that only root can put a process into, so no other program can
 join it. An nftables table marks that slice's packets so they take the normal route, and the
 kill switch lets those marked packets out, after its rule that rejects DNS outside a tunnel:
-Chrome's plain DNS still cannot leave that way. With `DIRECT_DNS` set, Chrome runs with its own
+plain DNS from the slice (ports 53 and 853) still cannot leave that way, with a server selected
+or while blocked. (The mark sends a packet to the normal connection after the tunnel was
+already chosen for it, and the kill switch still sees the tunnel as its device; so its line for
+the tunnel leaves marked packets out, and they meet the DNS rule. Up to 0.4.2 they did not:
+see the changelog for 0.5.0.) With `DIRECT_DNS` set, Chrome runs with its own
 copy of the resolver files, naming `DIRECT_DNS` alone. Turned off, the slice, the rules and the
 kill switch's exception are gone, and `google-chrome-stable` starts Chrome unchanged.
 
@@ -688,8 +693,10 @@ questions, and that the server has answered with a handshake recently (NetworkMa
 showing a WireGuard profile as connected when its server stopped answering or its key was
 revoked). With IPv6 kept on, it also proves IPv6 cannot get out while the VPN is up. With
 [Chrome direct](#chrome-direct) on, it checks that its rules are loaded, that a probe in its
-slice leaves from your own address while a server is selected, that `DIRECT_DNS` answers and is
-the only resolver each Chrome process sees, and names anything in the slice that is not Chrome.
+slice leaves from your own address while a server is selected, that the kill switch still
+rejects DNS from the slice (a kill switch armed by 0.4.x did not; choosing the server again
+re-arms it), that `DIRECT_DNS` answers and is the only resolver each Chrome process sees, and
+names anything in the slice that is not Chrome.
 With [SSH direct](#ssh-direct) on, it checks that its rules match `DIRECT_SSH_PORTS`, that a
 connection it marks is routed outside the tunnel while a server is selected, and that the
 kill switch lets it out. With the [Firefox tunnel](#firefox-tunnel) on, it checks that

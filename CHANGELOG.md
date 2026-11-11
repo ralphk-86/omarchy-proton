@@ -2,6 +2,22 @@
 
 ## 0.5.0 (2026-11-11)
 
+- **Fixed, a leak present since 0.4.0 (in 0.4.0, 0.4.1 and 0.4.2): plain DNS from Chrome direct
+  could leave from your home IP.** With Chrome direct on and a server selected, plain DNS (UDP
+  or TCP to port 53, or DNS over TLS on 853) that something in Chrome sent to a resolver outside
+  this machine (an extension's native-messaging helper, a program Chrome started, a resolver
+  named by address, even the VPN's own `10.2.0.1`) left from your home IP instead of being
+  rejected; your ISP could see those names. Chrome's own lookups were not affected: they go to
+  `DIRECT_DNS` on loopback (or, with `DIRECT_DNS` empty, to the system resolver, which follows
+  the bar). Also unaffected: everything outside Chrome's slice, and the blocked state. The cause: Chrome
+  direct's mark sends a packet to the normal connection after the tunnel was first chosen for
+  it, and the kill switch, which still sees the tunnel as the packet's device, accepted it on
+  its line for the tunnel before its DNS rule. That line now leaves marked packets out
+  (`meta mark != 51821 oifname "proton-*" accept`), so they meet the DNS rule, and only then the
+  line that lets Chrome direct and SSH direct out. "Update the system part" arms an armed kill
+  switch again with the new rules, and the leak check fails on one that still has the old line
+  (choosing the server again also fixes it). SSH direct was never affected (it cannot mark 53
+  or 853).
 - **New, off until you turn it on: the Firefox tunnel.** Firefox gets an always-on WireGuard
   tunnel of its own, built like the torrent tunnel: a network namespace (`ffvpn`, interface
   `pff0`) whose only way out is that tunnel, on a server of its own, up from boot and
@@ -61,7 +77,14 @@
   - The `README.txt` in your drop folder is written only when it is missing, so an existing one
     does not mention `firefox/`; delete it to get the new one.
 - Tests: static checks pass; the marketplace security baseline is `review-required` with no
-  findings. VM suite: 1053 passed, 0 failed. VM tests added in this release: the Firefox
+  findings. VM suite: 1053 passed, 0 failed. VM tests added in this release: the DNS fix (UDP
+  and TCP to 53 and 853 from Chrome's slice to two resolvers off the link, the VPN's own among
+  them, rejected and counted where the simulated internet begins, with a server selected and
+  while blocked; the slice, the host, SSH direct and the two namespaces otherwise unchanged; an
+  old kill switch line leaking, failing the leak check, and fixed by re-arming; the update
+  re-arming one an earlier release armed; the upgrade now from v0.4.2 too, besides v0.4.0), the
+  Firefox exit address after a switch of server (the new one's or none, never the old one's; a
+  cache that names another server is ignored; off, and the uninstaller, delete it), the Firefox
   namespace (only `lo` and its interface, its resolver files and firewall, DNS through the
   tunnel, nothing out and no DNS while the tunnel is down, the torrent tunnel untouched), the
   opt-in (no change to `firefox` or its launcher until a config is imported; off removes the
