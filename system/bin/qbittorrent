@@ -43,6 +43,7 @@ A new qBittorrent hands its torrents and magnet links to the one already
 running, so they would download on your regular connection. Close that
 qBittorrent (or: kill $OUTSIDE), then start it again.
 EOF
+  vpnkit_refused_notice qBittorrent "A qBittorrent is already running outside the VPN namespace (pid $OUTSIDE). Close it, then start qBittorrent again."
   exit 1
 fi
 
@@ -58,6 +59,7 @@ it entered before the namespace's DNS settings existed, so name lookups would
 go around the tunnel. Close this shell and start qBittorrent again from the
 launcher or a new terminal.
 EOF
+    vpnkit_refused_notice qBittorrent "This shell entered the VPN namespace before its DNS settings existed. Start qBittorrent from the launcher or a new terminal."
     exit 1
   fi
   exec "$REAL" "$@"
@@ -75,6 +77,7 @@ connection, so this wrapper refuses.
   Then:              qbittorrent
   Check status:      vpn-status
 EOF
+  vpnkit_refused_notice qBittorrent "The torrent tunnel is not running. Start it: sudo systemctl start qbt-netns.service"
   exit 1
 fi
 

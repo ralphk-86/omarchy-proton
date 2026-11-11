@@ -77,7 +77,8 @@ echo
 # --- 1. namespace exists ----------------------------------------------------
 echo "1. Namespace"
 NSOK=0
-if ip netns list 2>/dev/null | grep -qw "$NS"; then
+# The namespace's own file, not `ip netns list | grep -qw` (a pipefail race).
+if [[ -e "/run/netns/$NS" ]]; then
   ok "namespace '$NS' exists"; NSOK=1
 elif $SUDO test -r "$QBT_CONF"; then
   no "namespace '$NS' does not exist - run: sudo systemctl start qbt-netns.service"

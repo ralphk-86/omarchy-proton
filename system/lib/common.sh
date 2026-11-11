@@ -282,6 +282,23 @@ vpnkit_ff_opted_in() {  # vpnkit_ff_opted_in: the Firefox tunnel is on (or half 
   systemctl is-enabled --quiet ff-netns.service 2>/dev/null
 }
 
+vpnkit_refused_notice() {  # vpnkit_refused_notice <app> <why>: tell the desktop user an app was not started
+  # Started from the launcher or a link, nobody sees stderr, so a refusal is
+  # also shown as a desktop notification ("<app> was not started"). Only when
+  # stderr is not a terminal. Run by a root launcher (qbt-launch, ff-launch),
+  # it is sent as the desktop user on their own session bus, never as root.
+  # Best effort: it never fails the caller, and gives up after 3 seconds.
+  [[ -t 2 ]] && return 0
+  if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+    vpnkit_gui_env "$TARGET_USER" "$TARGET_UID"
+    timeout 3 runuser -u "$TARGET_USER" -- env -i "${VPNKIT_GUI_ENV[@]}" PATH=/usr/local/bin:/usr/bin \
+      notify-send -a "$1" "$1 was not started" "$2" >/dev/null 2>&1 || true
+  else
+    timeout 3 notify-send -a "$1" "$1 was not started" "$2" >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
 vpnkit_ns_nsswitch() {  # vpnkit_ns_nsswitch: prints the nsswitch.conf for a private namespace
   # The host's nsswitch uses the `resolve` NSS module, which talks to
   # systemd-resolved over a UNIX SOCKET in /run. Unix sockets are NOT isolated

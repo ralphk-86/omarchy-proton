@@ -420,6 +420,10 @@ Panel {
       lastError = prettyName(name) + " carries the torrent tunnel. Pick another server, or choose a different torrent server first."
       return
     }
+    if (name !== "off" && name === ffConn) {
+      lastError = prettyName(name) + " carries the Firefox tunnel. Pick another server."
+      return
+    }
     pendingTarget = name
     lastError = ""
     message = ""
@@ -427,9 +431,11 @@ Panel {
     actionProcess.running = true
   }
 
+  // Right click: off, or the first server that no tunnel uses.
   function quickToggle() {
-    if (desktopVpn || killswitch) switchTo("off")
-    else if (profiles.length > 0) switchTo(profiles[0])
+    if (desktopVpn || killswitch) { switchTo("off"); return }
+    var free = profiles.filter(function (p) { return p !== qbtConn && p !== ffConn })
+    if (free.length > 0) switchTo(free[0])
   }
 
   // Refresh: import whatever is waiting in the drop folder, then re-read status.
@@ -476,6 +482,10 @@ Panel {
     if (demo || switchingTorrent || !installed || name === qbtConn) return
     if (inRegularUse(name)) {
       lastError = prettyName(name) + " carries your regular traffic. One config cannot be used twice at the same time."
+      return
+    }
+    if (name === ffConn) {
+      lastError = prettyName(name) + " carries the Firefox tunnel. Pick another server for torrents."
       return
     }
     if (qbtRunning) {
@@ -1231,21 +1241,24 @@ Panel {
                   readonly property string profile: String(modelData)
                   readonly property bool regularHere: vpn.inRegularUse(profile)
                   readonly property bool torrentsHere: vpn.qbtConn === profile
-                  // Taken by the other tab: shown, labelled, not selectable.
-                  readonly property bool takenElsewhere: vpn.tab === "regular" ? torrentsHere : regularHere
+                  // The Firefox tunnel's server: in neither tab's choice.
+                  readonly property bool firefoxHere: vpn.ffConn !== "" && vpn.ffConn === profile
+                  // Taken by the other tab or by Firefox: shown, labelled, not selectable.
+                  readonly property bool takenElsewhere: firefoxHere || (vpn.tab === "regular" ? torrentsHere : regularHere)
                   width: parent.width
                   rowIndex: vpn.firstServerIndex + index
                   glyph: vpn.tab === "torrents" ? vpn.gTorrent : vpn.gVpn
                   title: vpn.prettyName(profile)
                   subtitle: vpn.armedRemove === profile ? "Click the trash again to delete this server"
+                    : firefoxHere ? "Used for Firefox"
                     : takenElsewhere ? (vpn.tab === "regular" ? "Used for torrents" : "Carries your regular traffic")
                     : (vpn.tab === "regular" && vpn.blocked && vpn.wanted === profile) ? "Down, traffic blocked. Click to retry"
                     : profile
                   isCurrent: vpn.tab === "regular" ? (vpn.desktopVpn && vpn.conn === profile) : torrentsHere
                   isPending: vpn.tab === "regular" ? vpn.pendingTarget === profile : vpn.pendingTorrent === profile
                   opacity: takenElsewhere ? 0.55 : 1.0
-                  badge: takenElsewhere ? (vpn.tab === "regular" ? vpn.gTorrent : vpn.gVpn) : ""
-                  actionGlyph: regularHere || torrentsHere ? "" : vpn.gTrash
+                  badge: firefoxHere ? vpn.gFirefox : (takenElsewhere ? (vpn.tab === "regular" ? vpn.gTorrent : vpn.gVpn) : "")
+                  actionGlyph: regularHere || torrentsHere || firefoxHere ? "" : vpn.gTrash
                   actionTooltip: "Delete this server"
                   actionUrgent: true
                   onChosen: vpn.pickServer(profile)

@@ -36,10 +36,8 @@ fi
 # (vpnkit_ff_opted_in, common.sh).
 vpnkit_ff_opted_in || exec "$REAL" "$@"
 
-# Started from the launcher, nobody sees stderr.
-say_refused() {  # say_refused <one line for the notification>
-  [[ -t 2 ]] || timeout 3 notify-send -a Firefox "Firefox was not started" "$1" >/dev/null 2>&1 || true
-}
+# Started from the launcher, nobody sees stderr (vpnkit_refused_notice).
+say_refused() { vpnkit_refused_notice Firefox "$1"; }
 
 NS_INODE=$(stat -Lc '%i' "/run/netns/$FF_NS" 2>/dev/null) || NS_INODE=""
 
@@ -73,6 +71,7 @@ but it entered before the namespace's DNS settings existed, so name lookups
 would go around the tunnel. Close this shell and start Firefox again from the
 launcher or a new terminal.
 EOF
+    say_refused "This shell entered the Firefox tunnel before its DNS settings existed. Start Firefox from the launcher or a new terminal."
     exit 1
   fi
   exec "$REAL" "$@"

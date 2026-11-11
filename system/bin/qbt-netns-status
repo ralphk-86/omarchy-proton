@@ -78,7 +78,9 @@ if nft list table inet vpnkit_kill >/dev/null 2>&1; then
   [[ -r /run/vpnkit/wanted ]] && wanted=$(head -1 /run/vpnkit/wanted | tr -cd 'A-Za-z0-9._-')
 fi
 
-if ip netns list 2>/dev/null | grep -qw "$NS"; then
+# The namespace's own file, not `ip netns list | grep -qw`: under pipefail,
+# grep quitting at its first match can fail the pipeline (a false "missing").
+if [[ -e "/run/netns/$NS" ]]; then
   exists=true
   read -r route handshake endpoint < <(tunnel_probe "$NS" "$WG_IF")
   [[ "$endpoint" == - ]] && endpoint=""

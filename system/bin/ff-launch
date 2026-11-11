@@ -29,7 +29,14 @@ set -euo pipefail
 . /usr/local/lib/vpnkit/common.sh   # FF_NS, FF_CONF, FF_BIN, TARGET_USER, TARGET_UID, ...
 
 [[ $EUID -eq 0 ]] || { echo "ff-launch: must run as root" >&2; exit 2; }
-refuse() { echo "ff-launch: $*" >&2; exit 1; }
+# A refusal: on stderr, and as a desktop notification when there is no
+# terminal (the launcher, a link; vpnkit_refused_notice), as the wrapper's own.
+refuse() {  # refuse <message> [<second line>]
+  echo "ff-launch: $1" >&2
+  [[ -n "${2:-}" ]] && echo "$2" >&2
+  vpnkit_refused_notice Firefox "$1${2:+ $2}"
+  exit 1
+}
 
 [[ -x "$FF_BIN" ]] || refuse "$FF_BIN not found"
 
@@ -43,11 +50,8 @@ refuse() { echo "ff-launch: $*" >&2; exit 1; }
 [[ "$FF_NS" != "$NS" && "$FF_NS" =~ ^[A-Za-z0-9._-]{1,32}$ && "$FF_NS" != . && "$FF_NS" != .. ]] \
   || refuse "FF_NS in vpnkit.conf must be a namespace name other than the torrent tunnel's - refusing"
 
-if [[ ! -e "/run/netns/$FF_NS" ]]; then
-  echo "ff-launch: the Firefox namespace '$FF_NS' is not running." >&2
-  echo "Start it with: sudo systemctl start ff-netns.service" >&2
-  exit 1
-fi
+[[ -e "/run/netns/$FF_NS" ]] \
+  || refuse "the Firefox namespace '$FF_NS' is not running." "Start it with: sudo systemctl start ff-netns.service"
 
 # FAIL CLOSED: refuse unless the namespace's resolver files are in place.
 # `ip netns exec` mounts them over /etc only if they exist when Firefox enters,
@@ -55,11 +59,9 @@ fi
 # the host's nsswitch.conf, whose `resolve` module reaches systemd-resolved over
 # a Unix socket and resolves outside the tunnel. Checked before the route, so a
 # namespace still being built (or whose build failed) is refused.
-if ! vpnkit_resolver_safe "/etc/netns/$FF_NS"; then
-  echo "ff-launch: the Firefox namespace's DNS settings (/etc/netns/$FF_NS) are missing or unsafe - refusing." >&2
-  echo "Rebuild the tunnel: sudo systemctl restart ff-netns.service" >&2
-  exit 1
-fi
+vpnkit_resolver_safe "/etc/netns/$FF_NS" \
+  || refuse "the Firefox namespace's DNS settings (/etc/netns/$FF_NS) are missing or unsafe - refusing." \
+            "Rebuild the tunnel: sudo systemctl restart ff-netns.service"
 
 # FAIL CLOSED: refuse to launch unless the tunnel actually has a route.
 # (Read in full first: under pipefail, grep -q quitting early can fail the
@@ -70,11 +72,9 @@ ROUTE=$(ip netns exec "$FF_NS" ip route show default 2>/dev/null) || ROUTE=""
 # FAIL CLOSED: a Firefox of the user running outside the namespace would be
 # handed whatever this one is asked to open (see vpnkit_ff_outside_pids).
 OUTSIDE=$(vpnkit_ff_outside_pids "$(stat -Lc '%i' "/run/netns/$FF_NS")" "$TARGET_USER" | paste -sd' ' -)
-if [[ -n "$OUTSIDE" ]]; then
-  echo "ff-launch: Firefox is already running outside the namespace (pid $OUTSIDE) - refusing." >&2
-  echo "It would open these pages itself, outside the tunnel. Close it first." >&2
-  exit 1
-fi
+[[ -z "$OUTSIDE" ]] \
+  || refuse "Firefox is already running outside the namespace (pid $OUTSIDE) - refusing." \
+            "It would open these pages itself, outside the tunnel. Close it first."
 
 # The window, clipboard, file dialogs, sound and notifications work as usual:
 # a network namespace isolates networking only, and the Wayland and session

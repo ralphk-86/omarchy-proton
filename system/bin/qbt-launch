@@ -25,16 +25,20 @@ set -euo pipefail
 . /usr/local/lib/vpnkit/common.sh   # NS, WG_IF, TARGET_USER, TARGET_UID, ...
 BIN="/usr/bin/qbittorrent"   # hardcoded on purpose: see the header
 
-if [[ ! -x "$BIN" ]]; then
-  echo "qbt-launch: $BIN not found" >&2
+# A refusal: on stderr, and as a desktop notification when there is no
+# terminal (started from the launcher or the panel; vpnkit_refused_notice).
+refuse() {  # refuse <message> [<second line>]
+  echo "qbt-launch: $1" >&2
+  [[ -n "${2:-}" ]] && echo "$2" >&2
+  vpnkit_refused_notice qBittorrent "$1${2:+ $2}"
   exit 1
-fi
+}
 
-if ! ip netns list 2>/dev/null | grep -qw "$NS"; then
-  echo "qbt-launch: VPN namespace '$NS' is not running." >&2
-  echo "Start it with: sudo systemctl start qbt-netns.service" >&2
-  exit 1
-fi
+[[ -x "$BIN" ]] || refuse "$BIN not found"
+
+# The namespace's own file, not `ip netns list | grep -qw` (a pipefail race).
+[[ -e "/run/netns/$NS" ]] \
+  || refuse "VPN namespace '$NS' is not running." "Start it with: sudo systemctl start qbt-netns.service"
 
 # FAIL CLOSED: refuse unless the namespace's resolver files are in place.
 # `ip netns exec` mounts them over /etc only if they exist when qBittorrent
@@ -42,26 +46,22 @@ fi
 # use the host's nsswitch.conf, whose `resolve` module reaches systemd-resolved
 # over a Unix socket and resolves outside the tunnel. Checked before the route,
 # so a namespace still being built (or whose build failed) is refused.
-if ! vpnkit_resolver_safe "/etc/netns/$NS"; then
-  echo "qbt-launch: the VPN namespace's DNS settings (/etc/netns/$NS) are missing or unsafe - refusing." >&2
-  echo "Rebuild the tunnel: sudo systemctl restart qbt-netns.service" >&2
-  exit 1
-fi
+vpnkit_resolver_safe "/etc/netns/$NS" \
+  || refuse "the VPN namespace's DNS settings (/etc/netns/$NS) are missing or unsafe - refusing." \
+            "Rebuild the tunnel: sudo systemctl restart qbt-netns.service"
 
 # FAIL CLOSED: refuse to launch unless the tunnel actually has a route.
-if ! ip netns exec "$NS" ip route show default 2>/dev/null | grep -q .; then
-  echo "qbt-launch: tunnel is DOWN - refusing to launch qBittorrent." >&2
-  exit 1
-fi
+# (Read in full first: under pipefail, grep -q quitting early can fail the
+# pipeline, and that would be a false refusal.)
+ROUTE=$(ip netns exec "$NS" ip route show default 2>/dev/null) || ROUTE=""
+[[ -n "$ROUTE" ]] || refuse "tunnel is DOWN - refusing to launch qBittorrent."
 
 # FAIL CLOSED: a qBittorrent of the user running outside the namespace would be
 # handed whatever this one is asked to open (see vpnkit_qbt_outside_pids).
 OUTSIDE=$(vpnkit_qbt_outside_pids "$(stat -Lc '%i' /var/run/netns/"$NS")" "$TARGET_USER" | paste -sd' ' -)
-if [[ -n "$OUTSIDE" ]]; then
-  echo "qbt-launch: qBittorrent is already running outside the namespace (pid $OUTSIDE) - refusing." >&2
-  echo "It would receive these torrents and download them outside the tunnel. Close it first." >&2
-  exit 1
-fi
+[[ -z "$OUTSIDE" ]] \
+  || refuse "qBittorrent is already running outside the namespace (pid $OUTSIDE) - refusing." \
+            "It would receive these torrents and download them outside the tunnel. Close it first."
 
 # The GUI still works normally: a network namespace isolates networking only,
 # and the Wayland socket is a filesystem socket, not a network one. The

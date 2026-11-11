@@ -65,6 +65,18 @@ as_user() { runuser -u $U -- env HOME=$UHOME USER=$U XDG_RUNTIME_DIR=/run/user/$
 myip()    { local a; a=$(curl -4 -s --max-time 3 "$@" "$LOOKUP" 2>/dev/null) || a=""; printf '%s' "${a:-none}"; }
 status()  { as_user /usr/local/bin/vpn-status --refresh --json | jq -r "$1"; }
 resolves() { timeout 5 getent hosts "$1" >/dev/null 2>&1; }
+# A stand-in notify-send (put first in PATH) that records who sent what, to
+# check the refusals that reach the desktop; notified reads the first record.
+fake_notify() {
+  rm -f /tmp/suite-notify.log
+  if [[ "$1" == on ]]; then
+    printf '#!/bin/sh\nprintf "%%s|%%s\\n" "$(id -un)" "$*" >> /tmp/suite-notify.log\n' > /usr/local/bin/notify-send
+    chmod 755 /usr/local/bin/notify-send
+  else
+    rm -f /usr/local/bin/notify-send
+  fi
+}
+notified() { head -1 /tmp/suite-notify.log 2>/dev/null; }
 # The Firefox part of a leak-check report (vpn-verify's section 10b).
 ffsect()  { sed -n '/^10b\. Firefox tunnel/,/^11\. /p' <<<"$1"; }
 PHYS=$(ip -4 route show default | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
@@ -474,7 +486,13 @@ pkill -x qbittorrent; sleep 1
 ip -n qbtvpn link set pqbt0 down
 is "tunnel down: nothing leaves the namespace" "$(ip netns exec qbtvpn curl -4 -s --max-time 3 $LOOKUP || echo none)" "none"
 no "tunnel down: no DNS in the namespace" ip netns exec qbtvpn timeout 4 getent hosts only-in-tunnel.test
+fake_notify on
 no "tunnel down: qbittorrent refuses to start" as_user /usr/local/bin/qbittorrent 5
+# Started without a terminal (the launcher, the panel), nobody sees stderr:
+# qbt-launch's refusal is a desktop notification too, sent as the user.
+is "and says so in a desktop notification, as the user" "$(notified)" \
+  "$U|-a qBittorrent qBittorrent was not started tunnel is DOWN - refusing to launch qBittorrent."
+fake_notify off
 ip -n qbtvpn link set pqbt0 up; ip -n qbtvpn route replace default dev pqbt0
 is "tunnel restored" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "10.2.0.3"
 
@@ -785,8 +803,17 @@ yes "and names its pid" grep -q "FAIL.*Firefox is running OUTSIDE the Firefox tu
 ffkill
 # Fail closed: no route, no resolver files, no namespace: no Firefox.
 ip -n ffvpn link set pff0 down
+fake_notify on
 no "tunnel down: Firefox refuses to start" as_user /usr/local/bin/firefox 5
+# From the launcher or a link nobody sees stderr: ff-launch's refusal is a
+# desktop notification too, sent as the user, never as root.
+is "and says so in a desktop notification, as the user" "$(notified)" \
+  "$U|-a Firefox Firefox was not started the Firefox tunnel is DOWN - refusing to launch Firefox."
+fake_notify on
 no "tunnel down: ff-launch refuses" as_user sudo -n /usr/local/bin/ff-launch 5
+is "(ff-launch on its own too)" "$(notified)" \
+  "$U|-a Firefox Firefox was not started the Firefox tunnel is DOWN - refusing to launch Firefox."
+fake_notify off
 ip -n ffvpn link set pff0 up; ip -n ffvpn route replace default dev pff0
 is "(tunnel restored)" "$(ip netns exec ffvpn curl -4 -s --max-time 4 $LOOKUP)" "10.3.0.4"
 # One server can sit behind several endpoints: the leak check compares the
@@ -817,8 +844,12 @@ yes "and is named" grep -qE "FAIL.*Firefox \(pid [0-9]+\) sees the host's DNS se
 ffkill
 yes "inside the namespace, the wrapper starts Firefox directly" ip netns exec ffvpn runuser -u "$U" -- /usr/local/bin/firefox 1
 systemctl stop ff-netns.service
+fake_notify on
 OUT=$(as_user /usr/local/bin/firefox 5 2>&1); rc=$?
 is "no namespace (tunnel on): the wrapper refuses" "$rc" "1"
+is "(and notifies)" "$(notified)" \
+  "$U|-a Firefox Firefox was not started The Firefox tunnel is not running. Start it: sudo systemctl start ff-netns.service"
+fake_notify off
 yes "and says how to start it" grep -q "systemctl start ff-netns.service" <<<"$OUT"
 no "and so does ff-launch" as_user sudo -n /usr/local/bin/ff-launch 5
 is "(nothing was started)" "$(ffpids | wc -l)" "0"
