@@ -231,6 +231,7 @@ fi
 say "Installing helpers to /usr/local/bin"
 install -d -m 755 /usr/local/lib/vpnkit
 install -m 644 "$SYS/lib/common.sh" /usr/local/lib/vpnkit/common.sh
+install -m 644 "$SYS/lib/netns.sh" /usr/local/lib/vpnkit/netns.sh
 install -m 644 "$SYS/lib/direct.sh" /usr/local/lib/vpnkit/direct.sh
 install -m 644 "$SYS/lib/ipv6.sh" /usr/local/lib/vpnkit/ipv6.sh
 install -m 644 "$SYS/lib/owned.sh" /usr/local/lib/vpnkit/owned.sh

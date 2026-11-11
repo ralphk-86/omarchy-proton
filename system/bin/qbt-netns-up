@@ -4,12 +4,9 @@
 #  qbt-netns-up - build an isolated network namespace containing ONLY a
 #                 WireGuard tunnel, for qBittorrent to run inside.
 #
-#  WHY THIS DESIGN:
-#  A network namespace has its own routing table, its own interfaces and its
-#  own /etc/resolv.conf. If the WireGuard interface is not up inside it, the
-#  namespace has NO default route and NO reachable resolver - so nothing can
-#  escape, including DNS. Leaks are not "filtered", they are impossible,
-#  because there is no path out other than the tunnel.
+#  The namespace is built by vpnkit_netns_up (/usr/local/lib/vpnkit/netns.sh),
+#  which explains the design: no tunnel means no route and no resolver, so
+#  nothing inside can escape, including DNS.
 #
 #  This is independent of the desktop VPN connection, so that can be toggled
 #  freely without ever exposing qBittorrent.
@@ -23,165 +20,9 @@ set -euo pipefail
 
 # All names, paths and provider quirks come from /etc/vpnkit/vpnkit.conf.
 . /usr/local/lib/vpnkit/common.sh   # NS, WG_IF, QBT_CONF, FALLBACK_DNS, VPN_FWMARK, ...
-CONF="$QBT_CONF"
+. /usr/local/lib/vpnkit/netns.sh    # vpnkit_netns_up
 
 log() { echo "[qbt-netns] $*"; }
 
-if [[ ! -r "$CONF" ]]; then
-  log "ERROR: $CONF not found."
-  log "Download a WireGuard config from your provider, save it there as"
-  log "$(basename "$CONF"), and chmod 600 it."
-  exit 1
-fi
-
-# --- parse the config -------------------------------------------------------
-# We configure the interface by hand rather than using wg-quick, because
-# wg-quick cannot place an interface inside a namespace.
-get() { vpnkit_wg_get "$CONF" "$1" "$2"; }
-
-ADDRESS=$(get interface Address)
-DNS=$(get interface DNS)
-PRIVKEY=$(get interface PrivateKey)
-PEERKEY=$(get peer PublicKey)
-ENDPOINT=$(get peer Endpoint)
-ALLOWED=$(get peer AllowedIPs)
-PSK=$(get peer PresharedKey)
-
-: "${ALLOWED:=0.0.0.0/0,::/0}"
-: "${DNS:=$FALLBACK_DNS}"
-ALLOWED=${ALLOWED// /}
-
-if [[ -z "$ADDRESS" || -z "$PRIVKEY" || -z "$PEERKEY" || -z "$ENDPOINT" ]]; then
-  log "ERROR: could not parse $CONF (need Address, PrivateKey, peer PublicKey, Endpoint)."
-  exit 1
-fi
-
-# --- tear down any previous state (idempotent) ------------------------------
-ip netns del "$NS" 2>/dev/null || true
-ip link del "$WG_IF" 2>/dev/null || true
-
-# --- namespace-local DNS: written BEFORE the namespace has any route ---------
-# `ip netns exec` bind-mounts /etc/netns/<ns>/* over /etc for the process it
-# starts, but only the files that exist at that moment, and a running process
-# keeps those mounts for life. So the resolver files must be complete before the
-# tunnel has a default route (qbt-launch starts qBittorrent as soon as it sees
-# one): otherwise a qBittorrent entering in between would keep the host's
-# nsswitch.conf, whose `resolve` module reaches systemd-resolved over a Unix
-# socket and resolves outside the tunnel. Each file is written to a temporary
-# name and renamed into place, so a reader never sees a partial file.
-#
-# resolv.conf: processes inside the namespace read /etc/netns/<ns>/resolv.conf
-# as their /etc/resolv.conf. Pointing it at the in-tunnel resolver means DNS is
-# only reachable THROUGH the tunnel. No tunnel, no DNS. No leak.
-mkdir -p "/etc/netns/$NS"
-# Temporary files live next to the folder, not in it: `ip netns exec` bind-mounts
-# every entry of /etc/netns/<ns>/ over /etc. Same filesystem, so the renames are atomic.
-NSDNS_TMP=$(mktemp -d "/etc/netns/.vpnkit-$NS.XXXXXX")
-# Not left behind when a step below fails.
-trap 'rm -rf "$NSDNS_TMP"' EXIT
-{
-  echo "# In-tunnel DNS. Only reachable via the WireGuard tunnel."
-  echo "# No tunnel => no resolver => no DNS leak, by construction."
-  for d in ${DNS//,/ }; do
-    [[ "$d" == *:* && "${DISABLE_IPV6:-1}" == "1" ]] && continue
-    echo "nameserver $d"
-  done
-  echo "options edns0 trust-ad"
-} > "$NSDNS_TMP/resolv.conf"
-
-# --- CRITICAL: namespace-local nsswitch.conf --------------------------------
-# Without `resolve` and `mdns`: systemd-resolved answers over a Unix socket,
-# which a network namespace does not isolate (see vpnkit_ns_nsswitch). glibc
-# then speaks plain DNS to the nameservers in the namespace's resolv.conf,
-# which are only reachable through the tunnel. No tunnel => no DNS.
-vpnkit_ns_nsswitch > "$NSDNS_TMP/nsswitch.conf"
-chmod 644 "$NSDNS_TMP/resolv.conf" "$NSDNS_TMP/nsswitch.conf"
-mv -f "$NSDNS_TMP/nsswitch.conf" "/etc/netns/$NS/nsswitch.conf"
-mv -f "$NSDNS_TMP/resolv.conf" "/etc/netns/$NS/resolv.conf"
-rmdir "$NSDNS_TMP"; trap - EXIT
-if ! vpnkit_resolver_safe "/etc/netns/$NS"; then
-  log "ERROR: the namespace resolver files in /etc/netns/$NS are not safe - not building the tunnel."
-  exit 1
-fi
-
-# --- build the namespace ----------------------------------------------------
-log "creating namespace $NS"
-ip netns add "$NS"
-if [[ "${DISABLE_IPV6:-1}" == "1" && -e /proc/sys/net/ipv6/conf/all/disable_ipv6 ]]; then
-  # A fresh namespace starts from the kernel's defaults, not the host's sysctl,
-  # so IPv6 has to be switched off here as well. (A kernel started with
-  # ipv6.disable=1 has no IPv6 and no such keys: nothing to switch off.)
-  ip netns exec "$NS" sysctl -qw net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1
-fi
-ip -n "$NS" link set lo up
-
-# --- default-deny firewall INSIDE the namespace -----------------------------
-# Belt and braces. The namespace already contains only lo and the WireGuard
-# interface, so there is no other path out. This ruleset guarantees that even
-# if some other interface ever appeared inside the namespace, traffic still
-# could not use it: egress is permitted ONLY via the tunnel or loopback.
-# Loaded before the tunnel interface is moved in (interfaces are matched by
-# name, so it need not exist yet): there is never a moment without it.
-ip netns exec "$NS" nft -f - <<NFT
-table inet qbtguard {
-    chain output {
-        type filter hook output priority filter; policy drop;
-        oifname "lo"      accept
-        oifname "$WG_IF"  accept
-    }
-    chain input {
-        type filter hook input priority filter; policy drop;
-        iifname "lo"      accept
-        iifname "$WG_IF"  accept
-        ct state established,related accept
-    }
-}
-NFT
-log "in-namespace firewall active (egress only via $WG_IF)"
-
-# Create the WireGuard interface in the ROOT namespace (so it can reach the
-# internet to establish the tunnel), then move it into the namespace. The
-# encrypted socket stays bound to the root namespace - this is the standard
-# WireGuard netns pattern and is what makes the isolation airtight.
-log "creating wireguard interface $WG_IF"
-ip link add "$WG_IF" type wireguard
-
-KEYDIR=$(mktemp -d); chmod 700 "$KEYDIR"
-trap 'rm -rf "$KEYDIR"' EXIT
-printf '%s\n' "$PRIVKEY" > "$KEYDIR/key"
-WG_ARGS=(private-key "$KEYDIR/key")
-# The mark makes the desktop VPN's policy routing skip this tunnel's encrypted
-# packets, so the torrent tunnel always rides the normal connection directly.
-[[ -n "${VPN_FWMARK:-}" && "$VPN_FWMARK" != "0" ]] && WG_ARGS+=(fwmark "$VPN_FWMARK")
-WG_ARGS+=(peer "$PEERKEY" endpoint "$ENDPOINT" allowed-ips "$ALLOWED" persistent-keepalive 25)
-if [[ -n "$PSK" ]]; then
-  printf '%s\n' "$PSK" > "$KEYDIR/psk"
-  WG_ARGS+=(preshared-key "$KEYDIR/psk")
-fi
-wg set "$WG_IF" "${WG_ARGS[@]}"
-rm -rf "$KEYDIR"
-
-log "moving $WG_IF into $NS"
-ip link set "$WG_IF" netns "$NS"
-
-# --- address and routes inside the namespace --------------------------------
-# IPv6 addresses are skipped when DISABLE_IPV6=1. An absent IPv6 stack cannot
-# leak.
-IFS=',' read -ra ADDRS <<< "$ADDRESS"
-for a in "${ADDRS[@]}"; do
-  a=$(echo "$a" | tr -d ' ')
-  [[ -z "$a" ]] && continue
-  if [[ "$a" == *:* && "${DISABLE_IPV6:-1}" == "1" ]]; then
-    log "skipping IPv6 address $a (IPv6 disabled)"
-    continue
-  fi
-  ip -n "$NS" addr add "$a" dev "$WG_IF"
-done
-
-ip -n "$NS" link set "$WG_IF" up
-ip -n "$NS" route add default dev "$WG_IF"
-
-
-
-log "namespace $NS is up"
-ip netns exec "$NS" ip -brief addr show
+# A plain statement (see netns.sh): set -e stays in force inside the function.
+vpnkit_netns_up "$NS" "$WG_IF" "$QBT_CONF" qbtguard

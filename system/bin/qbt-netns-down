@@ -7,6 +7,6 @@
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"
 set -euo pipefail
 . /usr/local/lib/vpnkit/common.sh   # NS, WG_IF, QBT_CONF, FALLBACK_DNS, TARGET_USER, ...
-ip netns del "$NS" 2>/dev/null || true
-ip link del "$WG_IF" 2>/dev/null || true
+. /usr/local/lib/vpnkit/netns.sh    # vpnkit_netns_down
+vpnkit_netns_down "$NS" "$WG_IF"
 echo "[qbt-netns] namespace $NS torn down"

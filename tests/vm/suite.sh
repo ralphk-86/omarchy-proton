@@ -440,8 +440,8 @@ is "tunnel restored" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "
 # systemd-resolved over a Unix socket, outside the tunnel) for its whole life.
 # Reported in the marketplace review of 0.3.6.
 NSDIR=/etc/netns/qbtvpn; NSBAK=$(mktemp -d)
-yes "qbt-netns-up writes the resolver files before the default route" \
-  awk '/vpnkit_resolver_safe "\/etc\/netns/ && !r {r=NR} /route add default/ && !d {d=NR} END {exit !(r && d && r < d)}' /usr/local/bin/qbt-netns-up
+yes "vpnkit_netns_up writes the resolver files before the default route" \
+  awk '/vpnkit_resolver_safe "\/etc\/netns/ && !r {r=NR} /route add default/ && !d {d=NR} END {exit !(r && d && r < d)}' /usr/local/lib/vpnkit/netns.sh
 yes "no temporary files are left in $NSDIR (ip netns exec mounts every entry)" \
   bash -c "[[ \$(ls -A $NSDIR | sort | paste -sd,) == nsswitch.conf,resolv.conf ]]"
 mv "$NSDIR/nsswitch.conf" "$NSBAK/"
@@ -474,6 +474,21 @@ OUT=$(unshare --mount --propagation slave bash -c 'mount -t tmpfs suite-noipv6 /
   /usr/local/bin/qbt-netns-up >/dev/null 2>&1 || exit 1
   ip netns exec qbtvpn curl -4 -s --max-time 6 "$1"' _ "$LOOKUP" 2>&1); rc=$?
 is "on a kernel without IPv6, qbt-netns-up still builds a working namespace" "$rc:$OUT" "0:10.2.0.3"
+# The builder is a library function (netns.sh): it must leave a caller's own
+# EXIT trap in place (its temporary files are cleaned up in subshells), and
+# refuse names that are not what they claim to be before building anything.
+OUT=$(bash -c 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"; set -euo pipefail
+  . /usr/local/lib/vpnkit/common.sh; . /usr/local/lib/vpnkit/netns.sh
+  trap "echo caller-trap-ran" EXIT
+  vpnkit_netns_up "$NS" "$WG_IF" "$QBT_CONF" qbtguard >/dev/null 2>&1' 2>&1)
+is "vpnkit_netns_up leaves its caller's EXIT trap in place" "$OUT" "caller-trap-ran"
+is "(and built the torrent namespace)" "$(ip netns exec qbtvpn curl -4 -s --max-time 6 $LOOKUP)" "10.2.0.3"
+OUT=$(bash -c 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"; set -euo pipefail
+  . /usr/local/lib/vpnkit/common.sh; . /usr/local/lib/vpnkit/netns.sh
+  trap "echo caller-trap-ran" EXIT
+  vpnkit_netns_up suitebad "p\"x" "$QBT_CONF" qbtguard' 2>&1); rc=$?
+is "vpnkit_netns_up refuses an interface name that is not one, and the caller's trap runs" "$rc:$(tail -1 <<<"$OUT")" "1:caller-trap-ran"
+no "(nothing was built for it)" bash -c 'ip netns list | grep -qw suitebad || [[ -e /etc/netns/suitebad ]] && exit 0; exit 1'
 systemctl restart qbt-netns.service
 is "(rebuilt the normal way)" "$(ip netns exec qbtvpn curl -4 -s --max-time 6 $LOOKUP)" "10.2.0.3"
 no "no temporary folder is left in /etc/netns" bash -c 'ls -d /etc/netns/.vpnkit-* 2>/dev/null | grep -q .'

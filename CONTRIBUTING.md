@@ -10,6 +10,7 @@ system/uninstall-root.sh       privileged removal
 system/bin/                    everything that lands in /usr/local/bin
 system/lib/common.sh           settings loader shared by all scripts
 system/lib/direct.sh           Chrome direct's settings and helpers (sourced after common.sh)
+system/lib/netns.sh            builds a WireGuard-only network namespace (the torrent tunnel)
 system/lib/ipv6.sh             saves and restores profiles' IPv6 settings (install, rollback, uninstall)
 system/lib/owned.sh            which files are the kit's: marker lines, launcher entries (install, uninstall)
 system/lib/released-bin.sha256 checksums of the commands 0.3.0 to 0.4.0 installed (no marker then); frozen
