@@ -488,8 +488,8 @@ is "on a kernel without IPv6, qbt-netns-up still builds a working namespace" "$r
 OUT=$(bash -c 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"; set -euo pipefail
   . /usr/local/lib/vpnkit/common.sh; . /usr/local/lib/vpnkit/netns.sh
   trap "echo caller-trap-ran" EXIT
-  vpnkit_netns_up "$NS" "$WG_IF" "$QBT_CONF" qbtguard >/dev/null 2>&1' 2>&1)
-is "vpnkit_netns_up leaves its caller's EXIT trap in place" "$OUT" "caller-trap-ran"
+  vpnkit_netns_up "$NS" "$WG_IF" "$QBT_CONF" qbtguard >/dev/null 2>&1' 2>&1); rc=$?
+is "vpnkit_netns_up leaves its caller's EXIT trap in place" "$rc:$OUT" "0:caller-trap-ran"
 is "(and built the torrent namespace)" "$(ip netns exec qbtvpn curl -4 -s --max-time 6 $LOOKUP)" "10.2.0.3"
 OUT=$(bash -c 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"; set -euo pipefail
   . /usr/local/lib/vpnkit/common.sh; . /usr/local/lib/vpnkit/netns.sh
@@ -597,8 +597,17 @@ FFBAK=""; [[ -e /usr/lib/firefox/firefox ]] && { FFBAK=$(mktemp); cp -a /usr/lib
 install -D -m 755 /usr/bin/sleep /usr/lib/firefox/firefox
 ip netns exec ffvpn runuser -u $U -- /usr/lib/firefox/firefox 600 </dev/null >/dev/null 2>&1 &
 sleep 1
-no "the Firefox server cannot be switched under a Firefox inside" as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-se-4
-no "and the tunnel cannot be turned off under it" as_user sudo -n /usr/local/bin/vpnkit-sync firefox off
+OUT=$(as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-se-4 2>&1); rc=$?
+is "the Firefox server cannot be switched under a Firefox inside" "$rc:$(grep -c 'close Firefox first' <<<"$OUT")" "1:1"
+OUT=$(as_user sudo -n /usr/local/bin/vpnkit-sync firefox off 2>&1); rc=$?
+is "and the tunnel cannot be turned off under it" "$rc:$(grep -c 'close Firefox first' <<<"$OUT")" "1:1"
+# A package update replaces the binary under a running Firefox: its program
+# then reads "/usr/lib/firefox/firefox (deleted)", and still counts.
+install -m 755 /usr/bin/sleep /usr/lib/firefox/firefox.suite-new
+mv /usr/lib/firefox/firefox.suite-new /usr/lib/firefox/firefox
+yes "(its program now shows as deleted)" bash -c 'for p in $(pgrep -x -u tester firefox); do readlink /proc/$p/exe; done | grep -qx "/usr/lib/firefox/firefox (deleted)"'
+OUT=$(as_user sudo -n /usr/local/bin/vpnkit-sync firefox off 2>&1); rc=$?
+is "an updated Firefox inside still blocks turning the tunnel off" "$rc:$(grep -c 'close Firefox first' <<<"$OUT")" "1:1"
 pkill -x -u $U firefox; sleep 1
 as_user /usr/lib/firefox/firefox 600 </dev/null >/dev/null 2>&1 &
 sleep 1
@@ -709,6 +718,10 @@ is "and nothing was connected" "$(status .desktop_vpn)" "false"
 yes "vpn-toggle connects server A" as_user /usr/local/bin/vpn-toggle proton-ca-1
 no "the server carrying regular traffic cannot be chosen for torrents" as_user sudo -n /usr/local/bin/vpnkit-sync torrent proton-ca-1
 is "the torrent tunnel stayed where it was" "$(status .qbt_conn)" "proton-nl-3"
+OUT=$(as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-ca-1 2>&1); rc=$?
+is "the server carrying regular traffic cannot be chosen for Firefox" "$rc" "1"
+yes "(refused because it carries regular traffic)" grep -q "carries your regular traffic" <<<"$OUT"
+is "the Firefox tunnel stayed where it was" "$(cat /etc/vpnkit/firefox-server)" "proton-se-4"
 is "regular traffic exits through server A" "$(myip)" "10.2.0.2"
 is "kill switch is armed" "$(status .killswitch)" "true"
 is "status shows the VPN address" "$(status .external_ip)" "10.2.0.2"
@@ -1582,6 +1595,10 @@ is "a profile of the user's with the kit's prefix cannot be deleted through the 
 yes "it is still there" nmcli connection show uuid "$MINE_UUID"
 yes "and so is its config" test -e /etc/wireguard/proton-mine.conf
 no "nor be chosen for torrents" as_user sudo -n /usr/local/bin/vpnkit-sync torrent proton-mine
+OUT=$(as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-mine 2>&1); rc=$?
+is "nor for Firefox" "$rc" "1"
+yes "(refused as not the kit's server)" grep -q "no such server: proton-mine" <<<"$OUT"
+is "(the Firefox tunnel stayed where it was)" "$(cat /etc/vpnkit/firefox-server)" "proton-se-4"
 # The NetworkManager hook arms the kill switch for the kit's servers only.
 CONNECTION_ID=proton-mine CONNECTION_UUID=$MINE_UUID /etc/NetworkManager/dispatcher.d/50-vpnkit proton-mine up
 no "the hook does not arm the kill switch for the user's own proton-* profile" nft list table inet vpnkit_kill

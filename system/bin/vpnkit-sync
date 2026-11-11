@@ -139,6 +139,7 @@ do_sync() {
   import_sub firefox; first="$SUB_FIRST"
   if [[ -n "$first" ]]; then
     if out=$(select_firefox "$first" 2>&1); then FIREFOX="$first"
+    elif (( $? == 3 )); then FIREFOX="$first"; skip "firefox/" "${out#vpnkit-sync: }"
     else skip "firefox/" "imported $first, but could not use it for Firefox: ${out#vpnkit-sync: }"; fi
   fi
   summary
@@ -172,7 +173,11 @@ valid_name() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,15}$ && "$1" == "$PROFILE_PREFIX"-* 
 # kit imported (its uuid), never a WireGuard profile of yours with the prefix.
 kit_server() { vpnkit_kit_profile "$1"; }
 in_regular_use() {  # the server carries, or is wanted for, regular traffic
-  nmcli -t -f NAME connection show --active 2>/dev/null | grep -qxF "$1" \
+  # Read whole first: `nmcli | grep -q` under pipefail fails when grep quits
+  # early and nmcli dies of SIGPIPE, which would read as "not in use".
+  local active
+  active=$(nmcli -t -f NAME connection show --active 2>/dev/null) || active=""
+  grep -qxF -- "$1" <<<"$active" \
     || [[ "$(head -1 /run/vpnkit/wanted 2>/dev/null)" == "$1" ]]
 }
 # What a server is used for: regular, torrent, firefox, or nothing.
@@ -199,12 +204,14 @@ same_exit() {
   e=$(endpoint_of "$1"); k=$(key_of "$1")
   [[ -n "$e" && "$e" == "$(endpoint_of "$2")" ]] || [[ -n "$k" && "$k" == "$(key_of "$2")" ]]
 }
-# key_used_by <file>: prints the name of another server whose config has the
-# same private key (a provider may give one key to every config of a device).
+# key_used_by <file>: prints the name of another config in /etc/wireguard
+# with the same private key (a provider may give one key to every config of a
+# device): any server, also one imported under an earlier provider's prefix,
+# and a WireGuard config of the user's own. The tunnels' own copies are left out.
 key_used_by() {
   local k f
   k=$(key_of "$1"); [[ -n "$k" ]] || return 1
-  for f in /etc/wireguard/"$PROFILE_PREFIX"-*.conf; do
+  for f in /etc/wireguard/*.conf; do
     [[ -f "$f" && "$f" != "$1" && "$f" != "$FF_CONF" && "$f" != "$QBT_CONF" ]] || continue
     [[ "$k" == "$(key_of "$f")" ]] && { basename "$f" .conf; return 0; }
   done
@@ -286,12 +293,16 @@ select_firefox() {  # select_firefox <server name>: turns the Firefox tunnel on
     echo "vpnkit-sync: close Firefox first, then switch its server" >&2
     return 1
   fi
-  install -d -m 700 /etc/wireguard
-  install -m 600 -o root -g root "$conf" "$FF_CONF"
-  printf '%s\n' "$name" > "$FF_SERVER_FILE"; chmod 644 "$FF_SERVER_FILE"
-  systemctl enable ff-netns.service >/dev/null 2>&1
+  # Each step must hold, or the record and the unit could name another
+  # server than the config the tunnel runs on.
+  { install -d -m 700 /etc/wireguard && install -m 600 -o root -g root "$conf" "$FF_CONF"; } \
+    || { echo "vpnkit-sync: could not write $FF_CONF; the Firefox tunnel was not changed" >&2; return 1; }
+  { printf '%s\n' "$name" > "$FF_SERVER_FILE" && chmod 644 "$FF_SERVER_FILE"; } \
+    || { echo "vpnkit-sync: could not record the Firefox server in $FF_SERVER_FILE" >&2; return 1; }
+  systemctl enable ff-netns.service >/dev/null 2>&1 \
+    || { echo "vpnkit-sync: could not enable ff-netns.service, so the Firefox tunnel would not start at boot" >&2; return 1; }
   systemctl restart ff-netns.service >/dev/null 2>&1 \
-    || { echo "vpnkit-sync: the Firefox tunnel did not start (journalctl -u ff-netns.service)" >&2; return 1; }
+    || { echo "vpnkit-sync: chosen for Firefox, but the tunnel did not start yet; it keeps trying (journalctl -u ff-netns.service)" >&2; return 3; }
   echo "firefox: $name"
 }
 

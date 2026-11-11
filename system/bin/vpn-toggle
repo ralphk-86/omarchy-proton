@@ -127,7 +127,12 @@ case "${1:-toggle}" in
   toggle|"")
     if [[ -n "$(active_profile)" || -r /run/vpnkit/wanted ]]; then exec "$0" off
     else
-      first=$(list_profiles | head -1)
+      # The first server that is free for regular traffic: not the torrent
+      # or Firefox tunnel's ("/", never a server name, stands in for none:
+      # an empty pattern would match every line).
+      tt=$(head -1 /etc/vpnkit/torrent-server 2>/dev/null) || tt=""
+      ft=$(head -1 "$FF_SERVER_FILE" 2>/dev/null) || ft=""
+      first=$(list_profiles | grep -vxF -e "${tt:-/}" -e "${ft:-/}" | head -1)
       [[ -z "$first" ]] && { echo "No VPN profiles configured."; exit 1; }
       exec "$0" "$first"
     fi

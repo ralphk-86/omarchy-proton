@@ -53,8 +53,15 @@ vpnkit_netns_up() {
 
   if [[ ! -r "$conf" ]]; then
     _vpnkit_netns_log "ERROR: $conf not found."
-    _vpnkit_netns_log "Download a WireGuard config from your provider, save it there as"
-    _vpnkit_netns_log "$(basename "$conf"), and chmod 600 it."
+    if [[ "$conf" == "${FF_CONF:-}" ]]; then
+      # Only vpnkit-sync may write it: it checks the Firefox config against
+      # the torrent tunnel's exit and key first.
+      _vpnkit_netns_log "The Firefox tunnel is off. To turn it on, put a WireGuard config in the"
+      _vpnkit_netns_log "drop folder's firefox/ and press Refresh (or: sudo vpnkit-sync firefox <server>)."
+    else
+      _vpnkit_netns_log "Download a WireGuard config from your provider, save it there as"
+      _vpnkit_netns_log "$(basename "$conf"), and chmod 600 it."
+    fi
     exit 1
   fi
 
