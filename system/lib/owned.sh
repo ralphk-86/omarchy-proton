@@ -12,10 +12,11 @@
 #  marked files and puts the kept ones back.
 #
 #  Launcher entries in ~/.local/share/applications (install.sh, uninstall.sh,
-#  vpn-direct, and uninstall-root.sh through runuser; ALWAYS as the desktop
-#  user, never as root): the kit's own entries start with a marker line. One
-#  of yours is replaced only when asked, backed up first as <file>.bak.<time>,
-#  and put back when the kit's entry is removed.
+#  vpn-direct, vpn-firefox-launcher, and uninstall-root.sh and vpnkit-sync
+#  through runuser; ALWAYS as the desktop user, never as root): the kit's own
+#  entries start with a marker line. One of yours is replaced only when asked,
+#  backed up first as <file>.bak.<time>, and put back when the kit's entry is
+#  removed.
 # ============================================================================
 
 VPNKIT_BIN_MARK="# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit)."
@@ -41,9 +42,11 @@ VPNKIT_QBT_DESK_MARK="# Written by omarchy-proton (torrent tunnel). Removed by i
 # The qBittorrent entry 0.3.0 to 0.4.0 wrote, which had no marker line.
 VPNKIT_QBT_DESK_LEGACY_SHA="8b1b0ceac177ddf4843b976eab80730e1ea147135c673414526335425585ce3c"
 VPNKIT_CHROME_DESK_MARK="# Written by omarchy-proton (Chrome direct). Removed when it is turned off."
+VPNKIT_FIREFOX_DESK_MARK="# Written by omarchy-proton (Firefox tunnel). Removed when the tunnel is turned off."
 
-vpnkit_qbt_desk()    { printf '%s/.local/share/applications/org.qbittorrent.qBittorrent.desktop\n' "$1"; }
-vpnkit_chrome_desk() { printf '%s/.local/share/applications/google-chrome.desktop\n' "$1"; }
+vpnkit_qbt_desk()     { printf '%s/.local/share/applications/org.qbittorrent.qBittorrent.desktop\n' "$1"; }
+vpnkit_chrome_desk()  { printf '%s/.local/share/applications/google-chrome.desktop\n' "$1"; }
+vpnkit_firefox_desk() { printf '%s/.local/share/applications/firefox.desktop\n' "$1"; }
 
 # vpnkit_desk_ours <file> <marker> [legacy sha256]: the kit wrote this entry.
 vpnkit_desk_ours() {
@@ -98,6 +101,33 @@ vpnkit_desk_refresh() {
   return 0
 }
 
+# vpnkit_desk_override <packaged entry> <file> <marker> <program> <wrapper> <what>:
+# write the kit's launcher entry <file>: <marker>, then the packaged entry with
+# every Exec= that starts <program> starting <wrapper> instead, each line's
+# arguments kept (the actions too). An entry of the user's at <file> (no
+# marker) is backed up first and put back when the kit's entry is removed;
+# <what> names the feature in that message ("Chrome direct"). Does nothing
+# when the packaged entry does not exist. Written beside <file> and renamed
+# over it. Returns non-zero, without a half-written entry, on a failure.
+vpnkit_desk_override() {
+  local src="$1" desk="$2" mark="$3" prog="$4" wrap="$5" what="$6" apps tmp bak
+  [[ -f "$src" ]] || return 0
+  apps=$(dirname -- "$desk")
+  install -d -m 755 "$apps" || return 1
+  if { [[ -e "$desk" || -L "$desk" ]]; } && ! vpnkit_desk_ours "$desk" "$mark"; then
+    bak=$(vpnkit_desk_backup "$desk") || return 1
+    echo "Your own $desk is kept as $bak (put back when $what is turned off)"
+  fi
+  tmp=$(mktemp "$apps/.$(basename -- "$desk").XXXXXX") || return 1
+  if ! { printf '%s\n' "$mark"
+         sed -E "s#^Exec=${prog//./\\.}([[:space:]]|\$)#Exec=$wrap\\1#" "$src"
+       } > "$tmp" || ! chmod 644 "$tmp" || ! mv -f -- "$tmp" "$desk"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  vpnkit_desk_refresh "$apps"
+}
+
 # vpnkit_desk_remove <file> <marker> [legacy sha256] [kit wrapper]: remove the
 # kit's entry (only the kit's) and put the user's own back, if one was kept.
 vpnkit_desk_remove() {
@@ -108,12 +138,13 @@ vpnkit_desk_remove() {
   vpnkit_desk_refresh "$(dirname -- "$1")"
 }
 
-# vpnkit_launchers_remove <home>: both of the kit's entries, as the uninstaller
+# vpnkit_launchers_remove <home>: all three of the kit's entries, as the uninstaller
 # does it. Run as the owner of <home>.
 vpnkit_launchers_remove() {
   local rc=0
   vpnkit_desk_remove "$(vpnkit_qbt_desk "$1")" "$VPNKIT_QBT_DESK_MARK" "$VPNKIT_QBT_DESK_LEGACY_SHA" \
     /usr/local/bin/qbittorrent || rc=1
   vpnkit_desk_remove "$(vpnkit_chrome_desk "$1")" "$VPNKIT_CHROME_DESK_MARK" || rc=1
+  vpnkit_desk_remove "$(vpnkit_firefox_desk "$1")" "$VPNKIT_FIREFOX_DESK_MARK" "" /usr/local/bin/firefox || rc=1
   return "$rc"
 }

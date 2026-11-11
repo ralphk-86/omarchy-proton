@@ -122,6 +122,9 @@ main() {
   # Chrome direct (off unless turned on with vpn-direct): the Chrome launcher
   # entry follows it, so a reinstall rewrites it from the current package.
   /usr/local/bin/vpn-direct launcher || warn "Chrome direct: could not update the Chrome launcher entry"
+  # The Firefox tunnel (off until a Firefox server is chosen): the same for
+  # the Firefox launcher entry.
+  /usr/local/bin/vpn-firefox-launcher || warn "Firefox tunnel: could not update the Firefox launcher entry"
 
   if command -v qbittorrent >/dev/null 2>&1 || [[ -x /usr/bin/qbittorrent ]]; then
     qbt_launcher

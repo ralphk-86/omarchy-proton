@@ -148,7 +148,7 @@ fi
 # aside (install.sh --move-aside) go back where they were.
 for f in qbt-netns-up qbt-netns-down qbt-netns-status qbt-launch qbittorrent ff-netns-up ff-netns-down ff-launch firefox \
          vpnkit-import vpnkit-killswitch vpnkit-sync vpnkit-pick vpnkit-direct vpnkit-direct-rules \
-         vpn-direct direct-launch google-chrome-stable \
+         vpn-direct direct-launch google-chrome-stable vpn-firefox-launcher \
          vpn-status vpn-toggle vpn-import vpn-verify vpn-check vpn-rescue vpn-diagnose; do
   t="/usr/local/bin/$f"
   if [[ -e "$t" || -L "$t" ]]; then

@@ -179,6 +179,32 @@ polkit.addRule(function(action, subject) {
   }
 });
 JS
+# Firefox's packaged launcher entry, as Arch ships it: four Exec= lines, the
+# actions with their arguments. (The VM is thrown away after the run.)
+install -d /usr/share/applications
+cat > /usr/share/applications/firefox.desktop <<'EOF'
+[Desktop Entry]
+Version=1.0
+Name=Firefox
+Exec=/usr/lib/firefox/firefox %u
+Icon=firefox
+Type=Application
+Actions=new-window;new-private-window;open-profile-manager;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=/usr/lib/firefox/firefox --new-window %u
+
+[Desktop Action new-private-window]
+Name=New Private Window
+Exec=/usr/lib/firefox/firefox --private-window %u
+
+[Desktop Action open-profile-manager]
+Name=Open the Profile Manager
+Exec=/usr/lib/firefox/firefox --ProfileManager
+EOF
+FDESK=$UHOME/.local/share/applications/firefox.desktop
+FMARK='# Written by omarchy-proton (Firefox tunnel). Removed when the tunnel is turned off.'
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +533,7 @@ section "3b. Firefox namespace"
 no "no Firefox namespace before opt-in" ip netns exec ffvpn true
 is "unit not enabled before opt-in" "$(systemctl is-enabled ff-netns.service 2>/dev/null)" "disabled"
 no "no Firefox config before opt-in" test -e /etc/wireguard/vpnkit-firefox.conf
+no "no Firefox launcher override before opt-in (setup wrote none)" test -e "$FDESK"
 # The builder on its own: a config put where a chosen Firefox server goes.
 conf /root/suite-ff.conf "$WG/ff.key" 10.3.0.4 10.3.0.1 "SE#4" "$WG/srvB.pub" 51821
 install -m 600 /root/suite-ff.conf /etc/wireguard/vpnkit-firefox.conf; rm -f /root/suite-ff.conf
@@ -545,12 +572,23 @@ systemctl reset-failed ff-netns.service 2>/dev/null; systemctl stop ff-netns.ser
 # Opting in: a config put in the drop folder's firefox/ becomes a server and is
 # chosen for Firefox, which turns the tunnel on.
 conf "$DROP/firefox/se-4.conf" "$WG/ff.key" 10.3.0.4 10.3.0.1 "SE#4" "$WG/srvB.pub" 51821
+# A Firefox launcher entry of the user's own: kept aside, never lost.
+install -d -o $U -g $U "$UHOME/.local" "$UHOME/.local/share" "$UHOME/.local/share/applications"
+printf '[Desktop Entry]\nName=My own Firefox\nExec=/usr/lib/firefox/firefox -P work\n' > "$FDESK"; chown $U:$U "$FDESK"
 is "status counts a config waiting in firefox/" "$(status .inbox)" "1"
 OUT=$(as_user /usr/local/bin/vpn-import 2>&1); echo "$OUT" | sed 's/^/      /'
 yes "import from firefox/ selects it for Firefox" grep -qx "Firefox tunnel: proton-se-4" <<<"$OUT"
 is "the Firefox server is recorded" "$(cat /etc/vpnkit/firefox-server 2>/dev/null)" "proton-se-4"
 no "the imported config is gone from firefox/" test -e "$DROP/firefox/se-4.conf"
 is "the Firefox config is root-only" "$(stat -c '%a %U' /etc/wireguard/vpnkit-firefox.conf 2>/dev/null)" "600 root"
+# The launcher entry follows the opt-in: the launcher, its actions and links
+# from other apps start the wrapper, so they land in the namespace.
+is "the launcher override carries the marker" "$(head -1 "$FDESK" 2>/dev/null)" "$FMARK"
+is "the override's Exec is the wrapper" "$(grep -c '^Exec=' "$FDESK" 2>/dev/null):$(grep -cE '^Exec=/usr/local/bin/firefox( |$)' "$FDESK" 2>/dev/null)" "4:4"
+is "actions keep their arguments" "$(grep '^Exec=' "$FDESK" 2>/dev/null | paste -sd'|' -)" \
+  "Exec=/usr/local/bin/firefox %u|Exec=/usr/local/bin/firefox --new-window %u|Exec=/usr/local/bin/firefox --private-window %u|Exec=/usr/local/bin/firefox --ProfileManager"
+is "the override is the user's file" "$(stat -c %U "$FDESK" 2>/dev/null)" "$U"
+yes "a user's own launcher is backed up, not lost" bash -c "grep -l 'My own Firefox' $FDESK.bak.* | grep -q ."
 is "the unit is enabled: the tunnel comes up at boot" "$(systemctl is-enabled ff-netns.service 2>/dev/null)" "enabled"
 is "Firefox namespace exits through its own server" "$(ip netns exec ffvpn curl -4 -s --max-time 6 $LOOKUP)" "10.3.0.4"
 is "only lo and the tunnel are inside" "$(ip -n ffvpn -o link show | awk -F': ' '{print $2}' | sort | paste -sd,)" "lo,pff0"
@@ -642,12 +680,20 @@ is "the unit is disabled" "$(systemctl is-enabled ff-netns.service 2>/dev/null)"
 no "the Firefox config is gone" test -e /etc/wireguard/vpnkit-firefox.conf
 no "the record of its server is gone" test -e /etc/vpnkit/firefox-server
 no "the namespace's resolver files are gone" test -e /etc/netns/ffvpn
+no "no launcher override while off" grep -qxF "$FMARK" "$FDESK"
+is "and the user's own launcher entry is back, unchanged" "$(cat "$FDESK" 2>/dev/null)" \
+  "$(printf '[Desktop Entry]\nName=My own Firefox\nExec=/usr/lib/firefox/firefox -P work')"
+no "(its backup was moved back, not copied)" bash -c "ls $FDESK.bak.* 2>/dev/null | grep -q ."
+as_user /usr/local/bin/vpn-firefox-launcher >/dev/null 2>&1
+yes "a launcher entry without the marker is never removed" grep -q 'My own Firefox' "$FDESK"
+rm -f "$FDESK" "$FDESK".bak.*
 yes "the server itself stays" nmcli connection show proton-se-4
 is "the torrent tunnel is untouched" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "10.2.0.3"
 yes "firefox off again changes nothing and succeeds" as_user sudo -n /usr/local/bin/vpnkit-sync firefox off
 # Back on for the rest of the suite: a server chosen directly.
 is "a server can be chosen for Firefox directly" "$(as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-se-4 2>&1)" "firefox: proton-se-4"
 is "Firefox exits through it again" "$(ip netns exec ffvpn curl -4 -s --max-time 6 $LOOKUP)" "10.3.0.4"
+is "choosing it directly (as from a terminal) writes the launcher override too" "$(head -1 "$FDESK" 2>/dev/null)" "$FMARK"
 
 # Starting Firefox: the wrapper (/usr/local/bin/firefox) and the root launcher
 # (ff-launch). Stand-in binary again; processes are found by their program.
@@ -716,6 +762,7 @@ as_user sudo -n /usr/local/bin/vpnkit-sync firefox off >/dev/null 2>&1
 as_user /usr/local/bin/firefox 600 </dev/null >/dev/null 2>&1 &
 sleep 1
 P=$(ffpids | head -1)
+no "no override while off" test -e "$FDESK"
 is "firefox off: the wrapper execs the real binary" "$(stat -Lc %i /proc/${P:-none}/ns/net 2>/dev/null)" "$HOSTINO"
 is "(directly, as the user)" "$(ps -o user= -p "${P:-1}" | tr -d ' ')" "$U"
 ffkill

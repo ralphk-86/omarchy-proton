@@ -251,6 +251,18 @@ firefox_inside() {
   ns=$(stat -Lc '%i' "/run/netns/$FF_NS" 2>/dev/null) || return 0
   vpnkit_ff_inside_pids "$ns" "$TARGET_USER"
 }
+# The Firefox launcher entry follows the tunnel (vpn-firefox-launcher), from
+# the panel, vpn-import and a terminal alike. It lives in the desktop user's
+# home, so it is written as that user (runuser, clean environment), never as
+# root. Best effort: with the entry not updated, the wrapper still refuses or
+# passes Firefox through as the tunnel's state says.
+ff_launcher() {
+  [[ -n "$TARGET_USER" && "$TARGET_USER" != root && -n "${TARGET_HOME:-}" && -d "$TARGET_HOME" ]] || return 0
+  runuser -u "$TARGET_USER" -- env -i HOME="$TARGET_HOME" PATH="$PATH" \
+    timeout 30 /usr/local/bin/vpn-firefox-launcher >/dev/null 2>&1 \
+    || echo "vpnkit-sync: could not update the Firefox launcher entry (run vpn-firefox-launcher)" >&2
+  return 0
+}
 # The two tunnels must not be set up on each other's names (vpnkit.conf).
 ff_names_ok() {
   [[ "$FF_NS" != "$NS" && "$FF_WG_IF" != "$WG_IF" && "$FF_CONF" != "$QBT_CONF" \
@@ -328,6 +340,7 @@ select_firefox() {  # select_firefox <server name>: turns the Firefox tunnel on
     || { echo "vpnkit-sync: could not record the Firefox server in $FF_SERVER_FILE" >&2; return 1; }
   systemctl enable ff-netns.service >/dev/null 2>&1 \
     || { echo "vpnkit-sync: could not enable ff-netns.service, so the Firefox tunnel would not start at boot" >&2; return 1; }
+  ff_launcher
   systemctl restart ff-netns.service >/dev/null 2>&1 \
     || { echo "vpnkit-sync: chosen for Firefox, but the tunnel did not start yet; it keeps trying (journalctl -u ff-netns.service)" >&2; return 3; }
   echo "firefox: $name"
@@ -348,6 +361,7 @@ firefox_off() {  # turn the Firefox tunnel off; the server itself stays
     echo "vpnkit-sync: the Firefox tunnel could not be turned off completely (systemctl status ff-netns.service)" >&2
     return 1
   fi
+  ff_launcher
   echo "firefox: off"
 }
 

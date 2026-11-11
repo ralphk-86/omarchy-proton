@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
+# ============================================================================
+#  vpn-firefox-launcher - make the Firefox launcher entry follow the Firefox
+#  tunnel.
+#
+#  USAGE
+#    vpn-firefox-launcher       tunnel on: point the entry at the wrapper;
+#                               tunnel off: remove the kit's entry
+#    vpn-firefox-launcher off   remove the kit's entry
+#
+#  The launcher entry is ~/.local/share/applications/firefox.desktop, a copy
+#  of the packaged one with every Exec=/usr/lib/firefox/firefox starting
+#  /usr/local/bin/firefox instead (the actions keep their arguments: new
+#  window, private window, profile manager), so the launcher, its actions and
+#  links opened from other apps land in the namespace. Its first line marks it
+#  as ours; a file there without that line is yours: it is backed up before
+#  being replaced (choosing a Firefox server is the request), never removed,
+#  and put back when the kit's entry goes (tunnel off, or the uninstaller).
+#  lib/owned.sh does it.
+#
+#  Runs as you, never as root. vpnkit-sync runs it (as you) whenever a Firefox
+#  server is chosen or the tunnel is turned off, and install.sh after setup.
+#  The tunnel is on when its server is recorded in /etc/vpnkit/firefox-server
+#  (readable by you; the config itself is not).
+# ============================================================================
+set -euo pipefail
+
+# shellcheck disable=SC1091
+. /usr/local/lib/vpnkit/owned.sh || { echo "vpn-firefox-launcher: the kit is not installed (run its setup)" >&2; exit 1; }
+# shellcheck disable=SC1091
+. /usr/local/lib/vpnkit/common.sh   # FF_SERVER_FILE
+SRC_DESK="/usr/share/applications/firefox.desktop"
+DESK=$(vpnkit_firefox_desk "$HOME")
+MARKER="$VPNKIT_FIREFOX_DESK_MARK"
+WRAPPER="/usr/local/bin/firefox"
+
+# Removes the kit's entry and puts a backup of yours back.
+launcher_off() { vpnkit_desk_remove "$DESK" "$MARKER" "" "$WRAPPER"; }
+
+case "$#:${1:-}" in
+  0:)
+    if [[ -s "$FF_SERVER_FILE" && -f "$SRC_DESK" ]]; then
+      vpnkit_desk_override "$SRC_DESK" "$DESK" "$MARKER" /usr/lib/firefox/firefox "$WRAPPER" "the Firefox tunnel"
+    else
+      # Off, or Firefox is not installed: no entry of the kit's.
+      launcher_off
+    fi
+    ;;
+  1:off)
+    launcher_off
+    ;;
+  *)
+    sed -n '3,25p' "$0" >&2
+    exit 2
+    ;;
+esac

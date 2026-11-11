@@ -45,7 +45,7 @@ for a in "$@"; do
   fi
 done
 
-echo "==> Removing the launcher overrides (qBittorrent, Chrome)"
+echo "==> Removing the launcher overrides (qBittorrent, Chrome, Firefox)"
 # Only the kit's own entries; an entry of yours that setup replaced (it kept a
 # backup) is put back. The root half checks again, as you, in case this part
 # could not run.
