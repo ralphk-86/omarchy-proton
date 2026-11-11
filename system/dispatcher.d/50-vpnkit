@@ -14,6 +14,8 @@
 #      longer active - typically after suspend/resume - reconnect it. Until it
 #      is back, the kill switch keeps regular traffic blocked.
 # ============================================================================
+# Runs as root. NetworkManager gives it a clean environment; pinned anyway.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"
 ACTION="${2:-}"
 [ "$ACTION" = "up" ] || exit 0
 . /usr/local/lib/vpnkit/common.sh 2>/dev/null || exit 0
@@ -32,7 +34,14 @@ ctype=$($NMCLI -g connection.type connection show "${CONNECTION_UUID:-}" 2>/dev/
 
 if [ "$ctype" = "wireguard" ]; then
   case "${CONNECTION_ID:-}" in
-    "$PROFILE_PREFIX"-*) /usr/local/bin/vpnkit-killswitch on "$CONNECTION_ID" >/dev/null 2>&1 ;;
+    "$PROFILE_PREFIX"-*)
+      # Only a server the kit imported (its uuid), not a WireGuard profile of
+      # yours that happens to share the prefix: arming for that one would
+      # leave the machine blocked when it goes down.
+      if [ "${CONNECTION_UUID:-}" = "$(vpnkit_profile_uuid "$CONNECTION_ID" 2>/dev/null)" ]; then
+        /usr/local/bin/vpnkit-killswitch on "$CONNECTION_ID" >/dev/null 2>&1
+      fi
+      ;;
   esac
   exit 0
 fi

@@ -190,14 +190,14 @@ nmcli connection modify "$PPROF" ipv6.method auto ipv6.dns "2606:4700:4700::1111
 is "the physical profile carries an IPv6 DNS server, as Omarchy's DNS picker leaves it" \
   "$(nmcli -g ipv6.dns connection show "$PPROF" | sed 's/\\:/:/g')" "2606:4700:4700::1111"
 # A wired profile with static IPv6 (documentation addresses only): two
-# addresses, a gateway, two routes (one with a metric), DNS and search
+# addresses, a gateway, two routes (one with a metric and attributes), DNS and search
 # domains. Not in use (no such interface): only its settings matter. The
 # install must save every field it clears, and the rollback and the uninstall
 # must put each one back exactly.
 SPROF="suite: static6"   # a colon: names are escaped by nmcli -g; profiles go by uuid
 nmcli connection add type ethernet con-name "$SPROF" ifname suitest0 autoconnect no ipv4.method disabled \
   ipv6.method manual ipv6.addresses "2001:db8:1::10/64, 2001:db8:1::11/64" ipv6.gateway 2001:db8:1::1 \
-  ipv6.routes "2001:db8:2::/48 2001:db8:1::2, 2001:db8:3::/48 2001:db8:1::3 50" \
+  ipv6.routes "2001:db8:2::/48 2001:db8:1::2, 2001:db8:3::/48 2001:db8:1::3 50 table=100 onlink=true" \
   ipv6.dns "2001:db8::53,2001:db8::54" ipv6.dns-search "example.test,lab.example.test" >/dev/null
 SUUID=$(nmcli -g connection.uuid connection show "$SPROF")
 V6F=(method dns dns-search addresses gateway routes)
@@ -205,7 +205,7 @@ declare -A SBEFORE
 for f in "${V6F[@]}"; do SBEFORE[$f]=$(nmcli -g "ipv6.$f" connection show uuid "$SUUID"); done
 SDUMP=$(nmcli -e no -f ipv6 connection show uuid "$SUUID")
 is "the static profile has two addresses" "${SBEFORE[addresses]}" '2001\:db8\:1\:\:10/64, 2001\:db8\:1\:\:11/64'
-is "and two routes, one with a metric" "${SBEFORE[routes]}" '2001\:db8\:2\:\:/48 2001\:db8\:1\:\:2, 2001\:db8\:3\:\:/48 2001\:db8\:1\:\:3 50'
+is "and two routes, one with a metric and attributes" "${SBEFORE[routes]}" '2001\:db8\:2\:\:/48 2001\:db8\:1\:\:2, 2001\:db8\:3\:\:/48 2001\:db8\:1\:\:3 50 onlink=true table=100'
 # same_static <description>: every IPv6 field of the static profile is as before.
 same_static() {
   local f
@@ -229,10 +229,31 @@ if [[ " \$* " == *" modify "* && " \$* " == *" $LUUID "* ]]; then echo "Error: p
 exec /usr/bin/nmcli "\$@"
 EOF
 chmod 755 /usr/local/sbin/nmcli
+# An admin's own wrapper where the kit puts its Chrome wrapper: not the kit's,
+# so setup must not replace it unless asked (--move-aside), and the
+# uninstaller must put it back. And a qBittorrent launcher entry of the
+# user's own, which setup must leave alone without --qbt-launcher.
+BIN_MARK=$(bash -c '. "$1"; printf %s "$VPNKIT_BIN_MARK"' _ "$PLUGIN/system/lib/owned.sh")
+printf '#!/bin/sh\n# the admin wrapper (suite)\nexec /usr/bin/google-chrome-stable --suite-admin-flag "$@"\n' > /usr/local/bin/google-chrome-stable
+chmod 755 /usr/local/bin/google-chrome-stable
+ADMIN_SUM=$(sha256sum < /usr/local/bin/google-chrome-stable)
+QDESK=$UHOME/.local/share/applications/org.qbittorrent.qBittorrent.desktop
+install -d -o $U -g $U "$UHOME/.local" "$UHOME/.local/share" "$UHOME/.local/share/applications"
+printf '[Desktop Entry]\nType=Application\nName=My qBittorrent\nExec=/usr/bin/qbittorrent --suite-flag %%U\n' > "$QDESK"
+chown $U:$U "$QDESK"
+QDESK_SUM=$(sha256sum < "$QDESK")
+in_terminal "$PLUGIN/install.sh" > /tmp/install0.log 2>&1; rc=$?
+is "setup refuses to replace a file in /usr/local/bin that is not the kit's" "$rc" "1"
+yes "and names it" grep -q "^    /usr/local/bin/google-chrome-stable" <(tr -d '\r' < /tmp/install0.log)
+yes "and says how to go on" grep -q -- "install.sh --move-aside" /tmp/install0.log
+no "having changed nothing: no helpers" test -e /usr/local/lib/vpnkit
+no "no sudoers rules" test -e /etc/sudoers.d/99-vpnkit
+no "no packages (wg is still missing)" command -v wg
+is "and the admin's file is untouched" "$(sha256sum < /usr/local/bin/google-chrome-stable)" "$ADMIN_SUM"
 # The real path: the user runs install.sh in a terminal and types the sudo
 # password once.
-in_terminal "$PLUGIN/install.sh" > /tmp/install.log 2>&1; rc=$?
-is "install.sh exits 0" "$rc" "0"
+in_terminal "$PLUGIN/install.sh" --move-aside > /tmp/install.log 2>&1; rc=$?
+is "install.sh --move-aside exits 0" "$rc" "0"
 (( rc == 0 )) || sed 's/^/      /' /tmp/install.log | tail -25
 rm -f /usr/local/sbin/nmcli
 yes "missing dependency was installed (wg)" command -v wg
@@ -247,6 +268,18 @@ yes "the Chrome direct units are installed" test -f /etc/systemd/system/vpnkit-d
 no "and Chrome direct is not enabled: it is opt-in" systemctl is-enabled --quiet vpnkit-direct.service
 yes "sudoers file is valid" visudo -c -f /etc/sudoers.d/99-vpnkit
 yes "the AI troubleshooting skill is installed" test -r /usr/local/lib/vpnkit/skills/diagnose-vpn/SKILL.md
+is "--move-aside kept the admin's wrapper" "$(sha256sum < /usr/local/lib/vpnkit/moved-aside/google-chrome-stable)" "$ADMIN_SUM"
+yes "and said so" grep -q "moved /usr/local/bin/google-chrome-stable (not the kit's)" /tmp/install.log
+is "the kit's wrapper is in its place, with the kit's marker" "$(sed -n 2p /usr/local/bin/google-chrome-stable)" "$BIN_MARK"
+is "the user's own qBittorrent launcher entry is left as it was" "$(sha256sum < "$QDESK")" "$QDESK_SUM"
+yes "with a warning that it skips the tunnel" grep -q "which skips the torrent tunnel" /tmp/install.log
+yes "and how to have it replaced" grep -q -- "install.sh --qbt-launcher" /tmp/install.log
+no "this sudo has secure_path: no warning about it" grep -q "sudo has no secure_path" /tmp/install.log
+LOGF=/run/user/$UID_T/vpnkit-install.log
+is "the install log is readable by the user only" "$(stat -c '%a %U' "$LOGF" 2>/dev/null)" "600 $U"
+# The user points their entry at the wrapper, as the warning says.
+printf '[Desktop Entry]\nType=Application\nName=My qBittorrent\nExec=qbittorrent --suite-flag %%U\n' > "$QDESK"
+QDESK_SUM=$(sha256sum < "$QDESK")
 
 # "Troubleshoot with AI": a stub agent records what vpn-diagnose hands it.
 STUB=$(mktemp -d); chmod 755 "$STUB"
@@ -430,6 +463,19 @@ as_user /usr/local/bin/qbittorrent 600 </dev/null >/dev/null 2>&1 &
 sleep 2
 yes "a qBittorrent started normally resolves only through the tunnel" bash -c '/usr/local/bin/vpn-verify | grep -q "PASS.*resolves names only through the tunnel"'
 pkill -x qbittorrent; sleep 1
+
+# A kernel started with ipv6.disable=1 has no /proc/sys/net/ipv6/conf (here it
+# is hidden under a tmpfs, in a mount namespace of the test's own), and sysctl
+# fails on those keys: the namespace must be built all the same. Checked from
+# inside that mount namespace, where the new namespace's mount lives.
+OUT=$(unshare --mount --propagation slave bash -c 'mount -t tmpfs suite-noipv6 /proc/sys/net/ipv6 || exit 9
+  [[ -e /proc/sys/net/ipv6/conf/all/disable_ipv6 ]] && exit 8
+  /usr/local/bin/qbt-netns-up >/dev/null 2>&1 || exit 1
+  ip netns exec qbtvpn curl -4 -s --max-time 6 "$1"' _ "$LOOKUP" 2>&1); rc=$?
+is "on a kernel without IPv6, qbt-netns-up still builds a working namespace" "$rc:$OUT" "0:10.2.0.3"
+systemctl restart qbt-netns.service
+is "(rebuilt the normal way)" "$(ip netns exec qbtvpn curl -4 -s --max-time 6 $LOOKUP)" "10.2.0.3"
+no "no temporary folder is left in /etc/netns" bash -c 'ls -d /etc/netns/.vpnkit-* 2>/dev/null | grep -q .'
 
 # ---------------------------------------------------------------------------
 section "4. Desktop VPN and kill switch"
@@ -972,8 +1018,10 @@ yes "off: and Chrome is not in the slice" bash -c "[[ -n '$CHROME_PID' ]] && ! g
 chrome_stop
 refuses "off: direct-launch refuses" "off" sudo -n /usr/local/bin/direct-launch
 as_user /usr/local/bin/vpn-direct off >/dev/null 2>&1
-no "override removed when off" test -e "$DESK"
-cp "$(ls "$DESK".bak.* 2>/dev/null | head -1)" "$DESK" 2>/dev/null; chown $U:$U "$DESK" 2>/dev/null
+no "override removed when off" grep -qxF "$MARK" "$DESK"
+is "and the user's own entry is put back, unchanged" "$(cat "$DESK" 2>/dev/null)" \
+  "$(printf '[Desktop Entry]\nName=My own Chrome\nExec=/usr/bin/google-chrome-stable --my-flag')"
+no "its backup was moved back, not copied" bash -c "ls $DESK.bak.* 2>/dev/null | grep -q ."
 as_user /usr/local/bin/vpn-direct launcher >/dev/null 2>&1
 yes "a launcher file without the marker is never removed" grep -q 'My own Chrome' "$DESK"
 rm -f "$DESK" "$DESK".bak.*
@@ -1133,6 +1181,68 @@ kill "$XVFB_PID" "$LOGSRV_PID" 2>/dev/null
 rm -f /etc/opt/chrome/policies/managed/suite.json
 
 # ---------------------------------------------------------------------------
+section "4d. Passwordless helpers never run a command from the caller's PATH"
+# With env_reset, sudo replaces PATH only when sudoers sets secure_path (this
+# sudo has it built in); an older or edited /etc/sudoers may not, and then the
+# caller's PATH reaches root. Switch it off here, so it is that case. Then put
+# a fake of every command in /usr/bin first in the caller's PATH: each fake
+# notes its name when it runs as root, then runs the real command, so every
+# helper still does its job. (Read by "sorts late": after the wheel rule.)
+NOSP=/etc/sudoers.d/zz-suite-no-secure-path
+printf 'Defaults !secure_path\n%s ALL=(root) NOPASSWD: /usr/local/sbin/suite-path-probe\n' "$U" > "$NOSP"
+chmod 440 "$NOSP"
+yes "(sudoers without secure_path is valid)" visudo -c
+no "(and sudo has no secure_path now)" bash -c 'sudo -V | grep -q "override user.s \$PATH"'
+FAKE=$(mktemp -d /tmp/suite-fakebin.XXXXXX); chmod 755 "$FAKE"
+cat > "$FAKE/.fake" <<'EOF'
+#!/usr/bin/bash
+[[ $EUID -eq 0 ]] && printf '%s\n' "${0##*/}" >> /run/suite-fake-ran
+exec "/usr/bin/${0##*/}" "$@"
+EOF
+chmod 755 "$FAKE/.fake"
+for c in /usr/bin/*; do ln -s .fake "$FAKE/${c##*/}"; done
+# A root script that does NOT set its PATH (test-only, its own sudo rule):
+# the control that shows the fakes catch exactly what B1 is about.
+printf '#!/usr/bin/bash\nid -u >/dev/null\nprintf "%%s" "$PATH"\n' > /usr/local/sbin/suite-path-probe
+chmod 755 /usr/local/sbin/suite-path-probe
+asfake() { runuser -u $U -- env HOME=$UHOME USER=$U XDG_RUNTIME_DIR=/run/user/$UID_T PATH="$FAKE:$PATH" "$@"; }
+rm -f /run/suite-fake-ran
+OUT=$(asfake sudo -n /usr/local/sbin/suite-path-probe 2>&1)
+is "control: sudo now hands the caller's PATH to root" "${OUT%%:*}" "$FAKE"
+is "control: and a root script without a PATH of its own runs the caller's fake" "$(sort -u /run/suite-fake-ran 2>/dev/null | paste -sd, -)" "id"
+# fake_free <description> <check> <helper and arguments...>: run the helper
+# through passwordless sudo with the fakes first in PATH; nothing of them may
+# run as root, and <check> (a jq-free shell test on $OUT and $rc) must hold,
+# which shows the helper really ran.
+fake_free() {
+  local d="$1" chk="$2" ran; shift 2
+  rm -f /run/suite-fake-ran
+  OUT=$(asfake timeout 120 sudo -n "$@" 2>&1 </dev/null); rc=$?
+  ran=$(sort -u /run/suite-fake-ran 2>/dev/null | paste -sd, -)
+  if [[ -n "$ran" ]]; then bad "$d: ran the caller's $ran as root"
+  elif ! eval "$chk"; then bad "$d: did not run as expected (rc $rc: $(head -c 160 <<<"$OUT" | tr '\n' ' '))"
+  else ok "$d"; fi
+}
+fake_free "qbt-netns-status runs none of the caller's commands" 'jq -e .exists <<<"$OUT" >/dev/null' \
+  /usr/local/bin/qbt-netns-status
+fake_free "qbt-launch neither (it started qBittorrent in the namespace)" '(( rc == 0 ))' \
+  /usr/local/bin/qbt-launch 1
+fake_free "vpnkit-killswitch on neither" '[[ $OUT == "kill switch on (proton-ca-1)" ]]' \
+  /usr/local/bin/vpnkit-killswitch on proton-ca-1
+fake_free "vpnkit-killswitch off neither" '[[ $OUT == "kill switch off" ]]' \
+  /usr/local/bin/vpnkit-killswitch off
+fake_free "vpnkit-sync neither" 'jq -e ".imported | type == \"array\"" <<<"$OUT" >/dev/null' \
+  /usr/local/bin/vpnkit-sync sync
+fake_free "vpnkit-direct neither" 'jq -e ".enabled == false" <<<"$OUT" >/dev/null' \
+  /usr/local/bin/vpnkit-direct status
+fake_free "direct-launch neither (it refuses: Chrome direct is off)" '(( rc == 1 )) && grep -q "Chrome direct is off" <<<"$OUT"' \
+  /usr/local/bin/direct-launch
+fake_free "vpn-verify neither" 'grep -q "^Result: " <<<"$OUT"' \
+  /usr/local/bin/vpn-verify
+rm -rf "$FAKE" /usr/local/sbin/suite-path-probe /run/suite-fake-ran
+# secure_path stays off until the reinstall in section 6, which must say so.
+
+# ---------------------------------------------------------------------------
 section "5. The leak check, the rescue, and deleting a server"
 as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
 OUT=$(vpn-verify --fail-closed 2>&1); rc=$?
@@ -1235,6 +1345,68 @@ no "its profile is gone" nmcli connection show proton-se-2
 no "its stored config is gone" test -e /etc/wireguard/proton-se-2.conf
 no "names outside the kit are refused" as_user sudo -n /usr/local/bin/vpnkit-sync remove "Wired connection 1"
 no "the torrent server cannot be deleted" as_user sudo -n /usr/local/bin/vpnkit-sync remove proton-nl-3
+# Kit servers are told apart from the user's own WireGuard profiles and
+# configs by their uuid, not by the name prefix. A profile of the user's that
+# happens to be called proton-*, and a wg-quick config of theirs:
+as_user /usr/local/bin/vpn-toggle off >/dev/null 2>&1
+nmcli connection add type wireguard con-name proton-mine ifname proton-mine autoconnect no \
+  wireguard.private-key "$(cat "$WG/deskB.key")" ipv4.method manual ipv4.addresses 10.9.0.2/32 >/dev/null
+MINE_UUID=$(nmcli -g connection.uuid connection show proton-mine)
+printf '# the user own wg-quick config (suite)\n[Interface]\n' > /etc/wireguard/proton-mine.conf
+printf '# the user own wg-quick config (suite)\n[Interface]\n' > /etc/wireguard/proton-de-4.conf
+MINE_SUM=$(sha256sum < /etc/wireguard/proton-de-4.conf)
+OUT=$(as_user sudo -n /usr/local/bin/vpnkit-sync remove proton-mine 2>&1); rc=$?
+is "a profile of the user's with the kit's prefix cannot be deleted through the panel" "$rc" "1"
+yes "it is still there" nmcli connection show uuid "$MINE_UUID"
+yes "and so is its config" test -e /etc/wireguard/proton-mine.conf
+no "nor be chosen for torrents" as_user sudo -n /usr/local/bin/vpnkit-sync torrent proton-mine
+# The NetworkManager hook arms the kill switch for the kit's servers only.
+CONNECTION_ID=proton-mine CONNECTION_UUID=$MINE_UUID /etc/NetworkManager/dispatcher.d/50-vpnkit proton-mine up
+no "the hook does not arm the kill switch for the user's own proton-* profile" nft list table inet vpnkit_kill
+CONNECTION_ID=proton-ca-1 CONNECTION_UUID=$(nmcli -g connection.uuid connection show proton-ca-1) \
+  /etc/NetworkManager/dispatcher.d/50-vpnkit proton-ca-1 up
+yes "(it does for a kit server)" nft list table inet vpnkit_kill
+/usr/local/bin/vpnkit-killswitch off >/dev/null
+# A config whose name would be proton-de-4, while /etc/wireguard/proton-de-4.conf
+# is the user's: imported under another name, the user's file untouched.
+conf "$DROP/wg-DE-4.conf" "$WG/deskB.key" 10.3.0.2 10.3.0.1 "DE#4" "$WG/srvB.pub" 51821
+OUT=$(as_user sudo -n /usr/local/bin/vpnkit-sync sync)
+DE4=$(jq -r '.imported[0] // empty' <<<"$OUT")
+yes "a config whose name is taken by a file of the user's is imported under another name ($DE4)" \
+  bash -c "[[ '$DE4' == proton-de-* && '$DE4' != proton-de-4 ]]"
+is "and the user's file is untouched" "$(sha256sum < /etc/wireguard/proton-de-4.conf)" "$MINE_SUM"
+yes "that server is the kit's: it can be deleted" as_user sudo -n /usr/local/bin/vpnkit-sync remove "$DE4"
+# A server imported under another provider's prefix (the setting changed
+# since) is still the kit's: --purge removes it (section 6).
+sed -i 's/^VPNKIT_PROVIDER=.*/VPNKIT_PROVIDER="generic"/' /etc/vpnkit/vpnkit.conf
+conf "$DROP/wg-AT-5.conf" "$WG/deskB.key" 10.3.0.2 10.3.0.1 "AT#5" "$WG/srvB.pub" 51821
+OLDP=$(as_user sudo -n /usr/local/bin/vpnkit-sync sync | jq -r '.imported[0] // empty')
+sed -i 's/^VPNKIT_PROVIDER=.*/VPNKIT_PROVIDER="proton"/' /etc/vpnkit/vpnkit.conf
+yes "(a server imported under the generic preset's prefix: $OLDP)" bash -c "[[ '$OLDP' == vpn-* ]]"
+
+# The leak check reads files in the user's folder with the user's rights: a
+# symlink there to a file only root may read gives nothing away, and a FIFO
+# does not hang it.
+install -d -o $U -g $U "$UHOME/.config/qBittorrent"
+printf '[BitTorrent]\nSession\\Interface=rootonly0\n' > /root/suite-secret.conf; chmod 600 /root/suite-secret.conf
+QCONF_U="$UHOME/.config/qBittorrent/qBittorrent.conf"
+[[ -e "$QCONF_U" ]] && mv "$QCONF_U" "$QCONF_U.suite"
+ln -s /root/suite-secret.conf "$QCONF_U"
+as_user mkfifo "$UHOME/.local/share/applications/suite-fifo.desktop"
+OUT=$(timeout 90 vpn-verify 2>&1); rc=$?
+yes "the leak check finishes with a FIFO among the launchers (rc $rc)" test "$rc" -ne 124
+no "and does not read a root-only file through a symlink" grep -q rootonly0 <<<"$OUT"
+rm -f "$QCONF_U" "$UHOME/.local/share/applications/suite-fifo.desktop" /root/suite-secret.conf
+[[ -e "$QCONF_U.suite" ]] && mv "$QCONF_U.suite" "$QCONF_U"
+
+# Setup run by another user stops before changing anything: the kit acts for
+# one desktop user, and the passwordless rules would go to the other.
+OUT=$(bash "$PLUGIN/system/install-root.sh" "$PLUGIN" admin 2>&1); rc=$?
+is "setup run by another user stops" "$rc" "1"
+yes "and says the kit is set up for $U" grep -q "set up for the desktop user '$U'" <<<"$OUT"
+yes "the passwordless rules still name $U" grep -q "^$U ALL=(root) NOPASSWD: /usr/local/bin/qbt-netns-status" /etc/sudoers.d/99-vpnkit
+is "and the version stamp is still there" "$(cat /usr/local/lib/vpnkit/VERSION 2>/dev/null)" "$(cat "$PLUGIN/VERSION")"
+as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
 nmcli connection down proton-ca-1 >/dev/null 2>&1; sleep 1
 is "blocked before the rescue" "$(myip)" "none"
 yes "vpn-rescue succeeds" as_user env PATH="$PATH" /usr/local/bin/vpn-rescue
@@ -1242,63 +1414,9 @@ is "home address after the rescue" "$(myip)" "$HOME_IP"
 
 # ---------------------------------------------------------------------------
 section "6. Reinstall keeps settings; uninstall removes the kit"
-direct on >/dev/null 2>&1
-in_terminal "$PLUGIN/install.sh" > /tmp/install2.log 2>&1; rc=$?
-is "install.sh can be run again" "$rc" "0"
-is "settings survive a reinstall" "$(. /etc/vpnkit/vpnkit.conf; echo "$BYPASS_CIDRS")" "198.51.100.80/32"
-is "the running torrent tunnel was left alone" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "10.2.0.3"
-yes "Chrome direct stays on through a reinstall" systemctl is-active --quiet vpnkit-direct.service
-yes "with its rules" nft list table inet vpnkit_direct
-is "a reinstall writes the launcher override while it is on" "$(head -1 "$DESK" 2>/dev/null)" "$MARK"
-as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
-is "and a probe in the slice still exits from the home address" "$(slice_ip)" "$HOME_IP"
-# A line saved by a version before 0.4.1 (name, method, dns, dns-search) must
-# still be restored; and a profile switched off by a version before 0.3.6,
-# which saved nothing, gets ipv6.method=auto back as before.
-OPROF="suite legacy"
-nmcli connection add type ethernet con-name "$OPROF" ifname suitest2 autoconnect no ipv4.method disabled ipv6.method disabled >/dev/null
-printf '%s\tauto\t2001:db8::53\texample.test\n' "$OPROF" >> /etc/vpnkit/ipv6-profiles.saved
-# Profiles the install never changed must come out of the restore exactly as
-# they went in: one the user had switched off, and one joined after setup
-# with IPv6 DNS servers of its own.
-NPROF="suite user-disabled"
-nmcli connection add type ethernet con-name "$NPROF" ifname suitest3 autoconnect no ipv4.method disabled ipv6.method disabled >/dev/null
-JPROF="suite joined later"
-nmcli connection add type ethernet con-name "$JPROF" ifname suitest5 autoconnect no ipv4.method disabled \
-  ipv6.method auto ipv6.dns 2001:db8::99 ipv6.dns-search joined.example.test >/dev/null
-JDUMP=$(nmcli -e no -f ipv6 connection show "$JPROF")
-in_terminal "$PLUGIN/uninstall.sh" --restore-ipv6 > /tmp/uninstall.log 2>&1; rc=$?
-is "uninstall.sh exits 0" "$rc" "0"
-(( rc == 0 )) || sed 's/^/      /' /tmp/uninstall.log | tail -15
-is "home address after uninstall" "$(myip)" "$HOME_IP"
-no "kill switch gone" nft list table inet vpnkit_kill
-no "Chrome direct rules gone" nft list table inet vpnkit_direct
-no "Chrome direct fwmark rules gone" direct_rule
-no "Chrome direct slice gone" test -d "$DSLICE"
-no "Chrome direct units gone" bash -c 'ls /etc/systemd/system/vpnkit-direct.service /etc/systemd/system/vpnkitdirect.slice 2>/dev/null | grep -q .'
-no "Chrome direct state gone" test -e /etc/vpnkit/direct-apps
-no "namespace gone" bash -c "ip netns list | grep -qw qbtvpn"
-no "helpers gone" test -e /usr/local/bin/vpn-status
-no "Chrome direct helpers gone" bash -c 'ls /usr/local/bin/vpnkit-direct /usr/local/bin/vpnkit-direct-rules /usr/local/bin/vpn-direct /usr/local/bin/direct-launch /usr/local/bin/google-chrome-stable 2>/dev/null | grep -q .'
-no "Chrome direct's library and xdg-open gone" bash -c 'ls /usr/local/lib/vpnkit/direct.sh /usr/local/lib/vpnkit/direct-bin 2>/dev/null | grep -q .'
-no "uninstall removes the launcher override" test -e "$DESK"
-no "sudoers rule gone" test -e /etc/sudoers.d/99-vpnkit
-no "dispatcher hook gone" test -e /etc/NetworkManager/dispatcher.d/50-vpnkit
-no "service gone" test -e /etc/systemd/system/qbt-netns.service
-is "IPv6 back on" "$(sysctl -n net.ipv6.conf.all.disable_ipv6)" "0"
-is "the physical profile's IPv6 method is back" "$(nmcli -g ipv6.method connection show "$PPROF")" "auto"
-is "and its IPv6 DNS server is back" "$(nmcli -g ipv6.dns connection show "$PPROF" | sed 's/\\:/:/g')" "2606:4700:4700::1111"
-no "the saved IPv6 settings are cleared" test -e /etc/vpnkit/ipv6-profiles.saved
-same_static "uninstall --restore-ipv6 restores the static profile"
-is "a line saved before 0.4.1 is restored: method" "$(nmcli -g ipv6.method connection show "$OPROF")" "auto"
-is "a line saved before 0.4.1 is restored: dns" "$(nmcli -g ipv6.dns connection show "$OPROF" | sed 's/\\:/:/g')" "2001:db8::53"
-is "a line saved before 0.4.1 is restored: dns-search" "$(nmcli -g ipv6.dns-search connection show "$OPROF")" "example.test"
-is "a profile the user had switched off stays off (nothing saved for it)" "$(nmcli -g ipv6.method connection show "$NPROF")" "disabled"
-is "a profile joined after setup keeps its IPv6 DNS and everything else" "$(nmcli -e no -f ipv6 connection show "$JPROF")" "$JDUMP"
-is "a profile the install never changed is left alone by the restore" "$(nmcli -e no -f ipv6 connection show uuid "$LUUID")" "$LDUMP"
-no "the uninstall printed no IPv6 warning" grep -q "IPv6: could not" /tmp/uninstall.log
-nmcli connection delete "$OPROF" "$NPROF" "$JPROF" >/dev/null
-
+QMARK=$(bash -c '. "$1"; printf %s "$VPNKIT_QBT_DESK_MARK"' _ "$PLUGIN/system/lib/owned.sh")
+SAVED=/etc/vpnkit/ipv6-profiles.saved
+SUPERSEDED=/etc/vpnkit/ipv6-profiles.superseded
 # The install's rollback: the internet answers before the install and not
 # after it (a lookup service that answers exactly once), so the installer
 # must undo its network changes, IPv6 settings included, exactly.
@@ -1333,6 +1451,176 @@ has_v6_ll() {
   done
   return 1
 }
+# shim <command> <bash condition on "$*">: a stand-in in /usr/local/sbin (first
+# in the installer's PATH) that fails when the condition holds, else runs the
+# real command. For one run of the installer only.
+shim() {
+  printf '#!/usr/bin/env bash\n# suite.sh: %s fails for this test\nif %s; then echo "suite: %s fails" >&2; exit 1; fi\nexec /usr/bin/%s "$@"\n' \
+    "$1" "$2" "$1" "$1" > "/usr/local/sbin/$1"
+  chmod 755 "/usr/local/sbin/$1"
+}
+
+direct on >/dev/null 2>&1
+# A command as 0.4.0 installed it carries no marker line: an update must still
+# know it as the kit's (by its checksum) and replace it without --move-aside.
+sed -i 2d /usr/local/bin/vpn-import
+no "(vpn-import as 0.4.0 left it: no marker)" grep -qxF "$BIN_MARK" /usr/local/bin/vpn-import
+in_terminal "$PLUGIN/install.sh" --qbt-launcher > /tmp/install2.log 2>&1; rc=$?
+is "install.sh can be run again" "$rc" "0"
+(( rc == 0 )) || sed 's/^/      /' /tmp/install2.log | tail -15
+is "settings survive a reinstall" "$(. /etc/vpnkit/vpnkit.conf; echo "$BYPASS_CIDRS")" "198.51.100.80/32"
+is "the running torrent tunnel was left alone" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "10.2.0.3"
+yes "Chrome direct stays on through a reinstall" systemctl is-active --quiet vpnkit-direct.service
+yes "with its rules" nft list table inet vpnkit_direct
+is "a reinstall writes the launcher override while it is on" "$(head -1 "$DESK" 2>/dev/null)" "$MARK"
+is "an update replaces a command 0.4.0 installed (no marker) without --move-aside" "$(sed -n 2p /usr/local/bin/vpn-import)" "$BIN_MARK"
+yes "with secure_path off in sudoers, setup says so" grep -q "sudo has no secure_path" /tmp/install2.log
+rm -f "$NOSP"
+is "--qbt-launcher replaces the user's own qBittorrent entry with the kit's" "$(head -1 "$QDESK" 2>/dev/null)" "$QMARK"
+yes "which starts the wrapper" grep -qx 'Exec=/usr/local/bin/qbittorrent %U' "$QDESK"
+is "the user's entry is backed up next to it" "$(cat "$QDESK".bak.* 2>/dev/null | sha256sum)" "$QDESK_SUM"
+as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
+is "and a probe in the slice still exits from the home address" "$(slice_ip)" "$HOME_IP"
+
+# --keep-ipv6 (DISABLE_IPV6=0) on an existing install gives IPv6 back, as
+# the sysctl file and the settings say: sysctl file gone, IPv6 on, every saved
+# profile restored and applied to its running link.
+in_terminal "$PLUGIN/install.sh" --keep-ipv6 > /tmp/install-keep.log 2>&1; rc=$?
+is "install.sh --keep-ipv6 on an existing install exits 0" "$rc" "0"
+(( rc == 0 )) || sed 's/^/      /' /tmp/install-keep.log | tail -15
+is "it sets DISABLE_IPV6=0" "$(sed -n 's/^DISABLE_IPV6=//p' /etc/vpnkit/vpnkit.conf)" "0"
+yes "after backing vpnkit.conf up" bash -c 'grep -qx DISABLE_IPV6=1 /etc/vpnkit/vpnkit.conf.bak.*'
+no "the sysctl file is gone" test -e /etc/sysctl.d/99-vpnkit-disable-ipv6.conf
+is "IPv6 is on again" "$(sysctl -n net.ipv6.conf.all.disable_ipv6)" "0"
+is "the physical profile's IPv6 method is back" "$(nmcli -g ipv6.method connection show "$PPROF")" "auto"
+is "and its IPv6 DNS server" "$(nmcli -g ipv6.dns connection show "$PPROF" | sed 's/\\:/:/g')" "2606:4700:4700::1111"
+yes "and IPv6 is back on the running link" has_v6_ll
+same_static "--keep-ipv6 restores the static profile"
+no "the saved settings are cleared" test -s "$SAVED"
+sed -i 's/^DISABLE_IPV6=.*/DISABLE_IPV6=1/' /etc/vpnkit/vpnkit.conf
+
+# Profiles for the restore below. TPROF: switched off by setup, then turned
+# back on by the user with new settings. TW1/TW2: two profiles of the same
+# name, TW1 switched off by a version before 0.4.1 (a line by name), TW2
+# with IPv6 on. GPROF: switched off by setup, then deleted.
+TPROF="suite turned on"
+nmcli connection add type ethernet con-name "$TPROF" ifname suitest6 autoconnect no ipv4.method disabled \
+  ipv6.method auto ipv6.dns 2001:db8::71 >/dev/null
+TW="suite twin"
+nmcli connection add type ethernet con-name "$TW" ifname suitest7 autoconnect no ipv4.method disabled ipv6.method disabled >/dev/null
+TW1=$(nmcli -g connection.uuid connection show "$TW")
+nmcli connection add type ethernet con-name "$TW" ifname suitest8 autoconnect no ipv4.method disabled \
+  ipv6.method auto ipv6.dns 2001:db8::72 >/dev/null 2>&1   # (NetworkManager warns: same name)
+TW2=$(nmcli -g UUID,NAME connection show | awk -F: -v n="$TW" -v u="$TW1" '$2 == n && $1 != u {print $1}')
+printf '%s\tauto\t2001:db8::73\texample.test\n' "$TW" >> "$SAVED"
+GPROF="suite gone"
+nmcli connection add type ethernet con-name "$GPROF" ifname suitest9 autoconnect no ipv4.method disabled ipv6.method auto >/dev/null
+# The qBittorrent entry as 0.3.0 to 0.4.0 wrote it (no marker line): an update
+# takes it over without --qbt-launcher, and keeps the user's backup.
+cp "$PLUGIN/applications/org.qbittorrent.qBittorrent.desktop" "$QDESK"; chown $U:$U "$QDESK"
+# A kernel started with ipv6.disable=1 has no /proc/sys/net/ipv6/conf (hidden
+# here under a tmpfs, in a mount namespace of the test's own, which the
+# installer inherits): sysctl fails on those keys, and setup must still finish.
+unshare --mount --propagation slave bash -c 'mount -t tmpfs suite-noipv6 /proc/sys/net/ipv6 || exit 9; exec "$@"' _ \
+  runuser -u $U -- env HOME=$UHOME USER=$U XDG_RUNTIME_DIR=/run/user/$UID_T PATH="$PATH" \
+  python3 "$PLUGIN/tests/vm/with-password.py" tester "$PLUGIN/install.sh" > /tmp/install-noipv6.log 2>&1; rc=$?
+is "on a kernel without IPv6, setup finishes" "$rc" "0"
+(( rc == 0 )) || sed 's/^/      /' /tmp/install-noipv6.log | tail -15
+yes "and says there is nothing to switch off now" grep -q "this kernel has no IPv6" /tmp/install-noipv6.log
+is "it writes the version stamp" "$(cat /usr/local/lib/vpnkit/VERSION 2>/dev/null)" "$(cat "$PLUGIN/VERSION")"
+is "and switches the profiles off all the same" "$(nmcli -g ipv6.method connection show "$PPROF")" "disabled"
+is "the qBittorrent entry 0.4.0 wrote is taken over" "$(head -1 "$QDESK" 2>/dev/null)" "$QMARK"
+is "and the user's backup is still the only one" "$(ls "$QDESK".bak.* 2>/dev/null | wc -l):$(cat "$QDESK".bak.* 2>/dev/null | sha256sum)" "1:$QDESK_SUM"
+# What the next boot, with IPv6 in the kernel, does with the file.
+sysctl -q -p /etc/sysctl.d/99-vpnkit-disable-ipv6.conf
+yes "a line from before 0.4.1 is not taken over by another profile of that name" \
+  grep -qP "^\Q$TW\E\tauto\t" "$SAVED"
+is "(that other profile is switched off and saved)" "$(nmcli -g ipv6.method connection show uuid "$TW2")" "disabled"
+nmcli connection modify "$TPROF" ipv6.method auto ipv6.dns 2001:db8::77
+TDUMP=$(nmcli -e no -f ipv6 connection show "$TPROF")
+nmcli connection delete "$GPROF" >/dev/null
+# A line saved by a version before 0.4.1 (name, method, dns, dns-search) must
+# still be restored; and a profile switched off by a version before 0.3.6,
+# which saved nothing, gets ipv6.method=auto back as before.
+OPROF="suite legacy"
+nmcli connection add type ethernet con-name "$OPROF" ifname suitest2 autoconnect no ipv4.method disabled ipv6.method disabled >/dev/null
+printf '%s\tauto\t2001:db8::53\texample.test\n' "$OPROF" >> "$SAVED"
+# Profiles the install never changed must come out of the restore exactly as
+# they went in: one the user had switched off, and one joined after setup
+# with IPv6 DNS servers of its own.
+NPROF="suite user-disabled"
+nmcli connection add type ethernet con-name "$NPROF" ifname suitest3 autoconnect no ipv4.method disabled ipv6.method disabled >/dev/null
+JPROF="suite joined later"
+nmcli connection add type ethernet con-name "$JPROF" ifname suitest5 autoconnect no ipv4.method disabled \
+  ipv6.method auto ipv6.dns 2001:db8::99 ipv6.dns-search joined.example.test >/dev/null
+JDUMP=$(nmcli -e no -f ipv6 connection show "$JPROF")
+# A file of the user's where the kit has a command: the uninstaller keeps it.
+printf '#!/bin/sh\n# the user own vpnkit-pick (suite)\n' > /usr/local/bin/vpnkit-pick
+# The README's way when the plugin folder is already gone: the system part's
+# own copy of the uninstaller, as root. It also switches to the normal
+# connection, and removes the launcher entries (as the user).
+bash /usr/local/lib/vpnkit/uninstall-root.sh --restore-ipv6 > /tmp/uninstall.log 2>&1; rc=$?
+is "the installed uninstaller (plugin folder gone) exits 0" "$rc" "0"
+(( rc == 0 )) || sed 's/^/      /' /tmp/uninstall.log | tail -15
+is "home address after uninstall" "$(myip)" "$HOME_IP"
+no "kill switch gone" nft list table inet vpnkit_kill
+no "Chrome direct rules gone" nft list table inet vpnkit_direct
+no "Chrome direct fwmark rules gone" direct_rule
+no "Chrome direct slice gone" test -d "$DSLICE"
+no "Chrome direct units gone" bash -c 'ls /etc/systemd/system/vpnkit-direct.service /etc/systemd/system/vpnkitdirect.slice 2>/dev/null | grep -q .'
+no "Chrome direct state gone" test -e /etc/vpnkit/direct-apps
+no "namespace gone" bash -c "ip netns list | grep -qw qbtvpn"
+no "helpers gone" test -e /usr/local/bin/vpn-status
+no "Chrome direct helpers gone" bash -c 'ls /usr/local/bin/vpnkit-direct /usr/local/bin/vpnkit-direct-rules /usr/local/bin/vpn-direct /usr/local/bin/direct-launch 2>/dev/null | grep -q .'
+is "the admin's own google-chrome-stable is put back" "$(sha256sum < /usr/local/bin/google-chrome-stable)" "$ADMIN_SUM"
+is "a file of the user's with a kit command's name is kept" "$(sed -n 2p /usr/local/bin/vpnkit-pick)" "# the user own vpnkit-pick (suite)"
+yes "and the uninstaller says so" grep -q "kept /usr/local/bin/vpnkit-pick: it is not omarchy-proton's" /tmp/uninstall.log
+rm -f /usr/local/bin/vpnkit-pick /usr/local/bin/google-chrome-stable
+no "nothing is left in /usr/local/lib/vpnkit" test -e /usr/local/lib/vpnkit
+no "uninstall removes the Chrome launcher override (as the user)" test -e "$DESK"
+is "and puts the user's own qBittorrent entry back" "$(sha256sum < "$QDESK" 2>/dev/null)" "$QDESK_SUM"
+no "from its backup (moved back, not copied)" bash -c "ls '$QDESK'.bak.* 2>/dev/null | grep -q ."
+no "sudoers rule gone" test -e /etc/sudoers.d/99-vpnkit
+no "dispatcher hook gone" test -e /etc/NetworkManager/dispatcher.d/50-vpnkit
+no "service gone" test -e /etc/systemd/system/qbt-netns.service
+is "IPv6 back on" "$(sysctl -n net.ipv6.conf.all.disable_ipv6)" "0"
+is "the physical profile's IPv6 method is back" "$(nmcli -g ipv6.method connection show "$PPROF")" "auto"
+is "and its IPv6 DNS server is back" "$(nmcli -g ipv6.dns connection show "$PPROF" | sed 's/\\:/:/g')" "2606:4700:4700::1111"
+no "the saved IPv6 settings are cleared" test -e "$SAVED"
+same_static "uninstall --restore-ipv6 restores the static profile"
+is "a line saved before 0.4.1 is restored: method" "$(nmcli -g ipv6.method connection show "$OPROF")" "auto"
+is "a line saved before 0.4.1 is restored: dns" "$(nmcli -g ipv6.dns connection show "$OPROF" | sed 's/\\:/:/g')" "2001:db8::53"
+is "a line saved before 0.4.1 is restored: dns-search" "$(nmcli -g ipv6.dns-search connection show "$OPROF")" "example.test"
+is "a profile the user had switched off stays off (nothing saved for it)" "$(nmcli -g ipv6.method connection show "$NPROF")" "disabled"
+is "a profile joined after setup keeps its IPv6 DNS and everything else" "$(nmcli -e no -f ipv6 connection show "$JPROF")" "$JDUMP"
+is "a profile the install never changed is left alone by the restore" "$(nmcli -e no -f ipv6 connection show uuid "$LUUID")" "$LDUMP"
+is "a profile turned back on after setup keeps the user's new settings" "$(nmcli -e no -f ipv6 connection show "$TPROF")" "$TDUMP"
+yes "and the uninstaller says why it left it" grep -qF "\"$TPROF\" was turned back on since setup" /tmp/uninstall.log
+is "of two profiles of one name, the one switched off before 0.4.1 gets that line: method" \
+  "$(nmcli -g ipv6.method connection show uuid "$TW1")" "auto"
+is "and dns" "$(nmcli -g ipv6.dns connection show uuid "$TW1" | sed 's/\\:/:/g')" "2001:db8::73"
+is "the other gets its own settings back" "$(nmcli -g ipv6.dns connection show uuid "$TW2" | sed 's/\\:/:/g')" "2001:db8::72"
+yes "a deleted profile is named" grep -qF "the profile \"$GPROF\" no longer exists" /tmp/uninstall.log
+yes "and its saved settings are kept aside, not thrown away" grep -qF "$(printf '%s' "$GPROF" | base64 -w0)" "$SUPERSEDED"
+no "the uninstall printed no IPv6 warning" grep -q "IPv6: could not" /tmp/uninstall.log
+nmcli connection delete "$OPROF" "$NPROF" "$JPROF" "$TPROF" >/dev/null
+nmcli connection delete uuid "$TW1" uuid "$TW2" >/dev/null
+
+# A step that fails half way (here systemctl daemon-reload), after the
+# profiles were switched off, on a run that also loses the internet: the
+# connectivity check and its rollback still run, and the run does not count
+# as finished.
+shim systemctl '[[ "$*" == daemon-reload ]]'
+no "an install that stops half way fails" rollback_install /tmp/install-abort.log
+rm -f /usr/local/sbin/systemctl
+yes "it says where it stopped" grep -q "Setup stopped during: Installing qbt-netns.service" /tmp/install-abort.log
+yes "the connectivity check still ran, and rolled back" grep -q "No internet after the install - undoing" /tmp/install-abort.log
+same_static "the rollback after a failed step restores the static profile"
+is "and the physical profile" "$(nmcli -g ipv6.method connection show "$PPROF")" "auto"
+no "and removes the sysctl file" test -e /etc/sysctl.d/99-vpnkit-disable-ipv6.conf
+no "there is no version stamp: the panel keeps offering setup" test -e /usr/local/lib/vpnkit/VERSION
+is "vpn-status reports the version as unknown" "$(status .version)" "unknown"
+
 no "an install that loses the internet fails" rollback_install /tmp/install-rollback.log
 yes "and undoes its network changes" grep -q "No internet after the install - undoing" /tmp/install-rollback.log
 yes "it had switched the static profile off first" grep -qF "\"$SPROF\" had static IPv6" /tmp/install-rollback.log
@@ -1342,13 +1630,34 @@ is "and its IPv6 DNS server" "$(nmcli -g ipv6.dns connection show "$PPROF" | sed
 yes "and applies it to the running link: IPv6 is back on $PHYS without a reconnect" has_v6_ll
 is "the rollback turns IPv6 back on" "$(sysctl -n net.ipv6.conf.all.disable_ipv6)" "0"
 no "the rollback removes the sysctl file" test -e /etc/sysctl.d/99-vpnkit-disable-ipv6.conf
-no "the rollback forgets the entries it restored" test -s /etc/vpnkit/ipv6-profiles.saved
+no "the rollback forgets the entries it restored" test -s "$SAVED"
 no "the rollback printed no IPv6 warning" grep -q "IPv6: could not" /tmp/install-rollback.log
+no "and leaves no version stamp" test -e /usr/local/lib/vpnkit/VERSION
 yes "servers are kept by a plain uninstall" nmcli connection show proton-ca-1
 yes "settings are kept by a plain uninstall" test -f /etc/vpnkit/vpnkit.conf
 yes "the leak-check reports are kept by a plain uninstall" test -s "$REPORTS/latest.txt"
-in_terminal "$PLUGIN/install.sh" > /tmp/install3.log 2>&1
+
+# Steps that fail without stopping the run: a reapply NetworkManager refuses
+# (only a warning), no systemd-resolved to ask (the global-DNS note is
+# skipped), and a unit that cannot be enabled (the run goes on to the
+# connectivity check, then says it is not finished). Run without
+# XDG_RUNTIME_DIR, as over SSH.
+rm -f /tmp/vpnkit-install.log "$UHOME/.cache/vpnkit-install.log"
+shim nmcli '[[ " $* " == *" device reapply "* ]]'
+shim resolvectl 'true'
+shim systemctl '[[ "$*" == "enable qbt-netns.service" ]]'
+in_terminal env -u XDG_RUNTIME_DIR "$PLUGIN/install.sh" > /tmp/install3.log 2>&1; rc=$?
+rm -f /usr/local/sbin/nmcli /usr/local/sbin/resolvectl /usr/local/sbin/systemctl
+is "an install with a step that failed exits 1" "$rc" "1"
+yes "and says it is not finished, naming the step" grep -A3 "Setup is not finished" /tmp/install3.log
+yes "(enabling qbt-netns.service)" grep -q "^    enabling qbt-netns.service" <(tr -d '\r' < /tmp/install3.log)
+yes "a reapply NetworkManager refuses is only a warning" grep -q "could not apply the change to the running link $PHYS" /tmp/install3.log
+yes "the run went on to the connectivity check" grep -q "internet OK" /tmp/install3.log
+no "and wrote no version stamp" test -e /usr/local/lib/vpnkit/VERSION
 is "the static profile is switched off again" "$(nmcli -g ipv6.method connection show uuid "$SUUID")" "disabled"
+is "without XDG_RUNTIME_DIR the install log is in ~/.cache, the user's only" \
+  "$(stat -c '%a %U' "$UHOME/.cache/vpnkit-install.log" 2>/dev/null)" "600 $U"
+no "and not in /tmp" test -e /tmp/vpnkit-install.log
 # A rollback during an update leaves IPv6 as the earlier install set it.
 no "an update that loses the internet fails" rollback_install /tmp/install-rollback2.log
 yes "and rolls back" grep -q "No internet after the install - undoing" /tmp/install-rollback2.log
@@ -1360,11 +1669,12 @@ is "and its saved settings stay" "$(saved "$SUUID" addresses)" "2001:db8:1::10/6
 # not saved and are gone. Restoring it must fail loudly, name it, and keep it.
 MPROF="suite legacy manual"
 nmcli connection add type ethernet con-name "$MPROF" ifname suitest4 autoconnect no ipv4.method disabled ipv6.method disabled >/dev/null
-printf '%s\tmanual\t2001:db8::53\texample.test\n' "$MPROF" >> /etc/vpnkit/ipv6-profiles.saved
+printf '%s\tmanual\t2001:db8::53\texample.test\n' "$MPROF" >> "$SAVED"
 # A step of the root half that fails (here: Chrome direct's unit refuses to
 # stop) is reported, and everything else is still removed, the user's part
-# included.
+# included. A temporary folder an aborted qbt-netns-up left is removed too.
 direct on >/dev/null 2>&1
+install -d /etc/netns/.vpnkit-qbtvpn.suite1
 install -d /run/systemd/system/vpnkit-direct.service.d
 printf '[Unit]\nRefuseManualStop=yes\n' > /run/systemd/system/vpnkit-direct.service.d/suite.conf
 systemctl daemon-reload
@@ -1378,9 +1688,16 @@ rm -rf /run/systemd/system/vpnkit-direct.service.d; systemctl daemon-reload
 systemctl stop vpnkit-direct.service vpnkitdirect.slice >/dev/null 2>&1
 no "--purge removes the servers" nmcli connection show proton-ca-1
 no "--purge removes the torrent config" test -e /etc/wireguard/vpnkit-torrent.conf
+no "--purge removes a server imported under another provider's prefix ($OLDP)" nmcli connection show "$OLDP"
+no "and its config" test -e "/etc/wireguard/$OLDP.conf"
+yes "--purge leaves a profile of the user's with the kit's prefix" nmcli connection show uuid "$MINE_UUID"
+yes "and the user's own WireGuard configs" test -e /etc/wireguard/proton-mine.conf -a -e /etc/wireguard/proton-de-4.conf
 no "--purge removes the settings" test -e /etc/vpnkit/vpnkit.conf
-is "but keeps the saved IPv6 settings, the only copy of the static ones" "$(ls -A /etc/vpnkit)" "ipv6-profiles.saved"
+is "but keeps the saved IPv6 settings (the only copy of the static ones) and the superseded ones" \
+  "$(ls -A /etc/vpnkit | paste -sd' ' -)" "ipv6-profiles.saved ipv6-profiles.superseded"
 yes "and says how to put them back" grep -q "Kept /etc/vpnkit/ipv6-profiles" /tmp/uninstall2.log
+is "the user's own qBittorrent entry is left alone" "$(sha256sum < "$QDESK" 2>/dev/null)" "$QDESK_SUM"
+no "a temporary folder qbt-netns-up left behind is removed" test -e /etc/netns/.vpnkit-qbtvpn.suite1
 # With the system part gone, the plugin folder's uninstall.sh still restores
 # them (its own copy of the library), in the combined form the README gives.
 # The legacy static profile cannot be restored: reported, named, kept;
@@ -1389,17 +1706,39 @@ in_terminal "$PLUGIN/uninstall.sh" --purge --restore-ipv6 > /tmp/uninstall3.log 
 is "uninstall.sh --purge --restore-ipv6 reports the profile it could not restore" "$rc" "1"
 yes "it names that profile" grep -qF "could not restore \"$MPROF\" (ipv6.method manual)" /tmp/uninstall3.log
 yes "and says its addresses were never saved" grep -q "cleared by a version before 0.4.1" /tmp/uninstall3.log
+yes "and that the saved file is kept for those profiles" grep -q "which could not be put back" /tmp/uninstall3.log
+no "and does not claim IPv6 is re-enabled" grep -q "IPv6 re-enabled" /tmp/uninstall3.log
 is "that profile keeps IPv6 off, not a guessed auto" "$(nmcli -g ipv6.method connection show "$MPROF")" "disabled"
-is "only its entry is left, and --purge keeps it" "$(cut -f1 /etc/vpnkit/ipv6-profiles.saved)" "$MPROF"
+is "only its entry is left, and --purge keeps it" "$(cut -f1 "$SAVED")" "$MPROF"
 same_static "the plugin folder's uninstall restores the static profile"
 is "and the physical profile's IPv6 method" "$(nmcli -g ipv6.method connection show "$PPROF")" "auto"
 yes "and IPv6 is back on the running link" has_v6_ll
-# Once nothing is left to restore, --purge --restore-ipv6 removes it all.
+# NetworkManager not running: nothing can be restored, and nothing saved may
+# be lost (no profile can be looked up, which is not "the profile is gone").
+SAVED_SUM=$(sha256sum < "$SAVED")
+systemctl stop NetworkManager
+in_terminal "$PLUGIN/uninstall.sh" --purge --restore-ipv6 > /tmp/uninstall-nm.log 2>&1; rc=$?
+systemctl start NetworkManager
+for i in $(seq 1 60); do
+  [[ "$(nmcli -t -f RUNNING general status 2>/dev/null)" == running ]] \
+    && nmcli -t -f GENERAL.STATE device show "$PHYS" 2>/dev/null | grep -q '(connected)' && break
+  sleep 0.5
+done
+gateway on
+is "with NetworkManager stopped, --restore-ipv6 fails" "$rc" "1"
+yes "and says why" grep -q "NetworkManager is not running, so no profile was restored" /tmp/uninstall-nm.log
+is "the saved settings are kept, unchanged" "$(sha256sum < "$SAVED" 2>/dev/null)" "$SAVED_SUM"
+# Once nothing is left to restore, --purge --restore-ipv6 removes it all. A
+# saved line whose profile was deleted is named and put aside.
 nmcli connection delete "$MPROF" >/dev/null
 in_terminal "$PLUGIN/uninstall.sh" --purge --restore-ipv6 > /tmp/uninstall4.log 2>&1; rc=$?
 is "uninstall.sh --purge --restore-ipv6 then exits 0" "$rc" "0"
+(( rc == 0 )) || sed 's/^/      /' /tmp/uninstall4.log | tail -15
+yes "naming the deleted profile whose line it put aside" grep -qF "the profile \"$MPROF\" no longer exists" /tmp/uninstall4.log
 no "and /etc/vpnkit is gone" test -e /etc/vpnkit
 nmcli connection delete "$SPROF" "$LPROF" >/dev/null
+nmcli connection delete uuid "$MINE_UUID" >/dev/null
+rm -f /etc/wireguard/proton-mine.conf /etc/wireguard/proton-de-4.conf
 no "--purge removes the leak-check reports" test -e "$REPORTS"
 is "home address at the end" "$(myip)" "$HOME_IP"
 gateway off

@@ -42,25 +42,100 @@
   - `--purge` no longer deletes the saved file while it holds settings not yet put back: alone
     it keeps the file and says so plainly; `--purge --restore-ipv6` restores first, then
     removes everything.
-  - A rollback during an update no longer turns IPv6 back on when an earlier setup had switched
-    it off (it undoes only what that run changed).
+  - A rollback during an update undoes only what that run changed: the earlier setup's sysctl
+    file and the profiles it switched off stay as they were (before, IPv6 came back on).
   - Profiles are addressed by UUID: a profile with a colon in its name was skipped by setup and
     by the restore, and two profiles with the same name shared one saved line.
+- **The restore never loses or overrides what it should keep** (found in the review of the
+  above): with NetworkManager not running (moving to another network manager, say),
+  `--restore-ipv6` treated every saved profile as deleted, dropped the whole file and exited 0;
+  now it changes nothing, keeps the file and exits with an error, and only a profile
+  NetworkManager reports as gone has its line put aside (named, in
+  `ipv6-profiles.superseded`; nothing saved is thrown away any more). A profile you turned back
+  on since setup is left as you set it, its old line put aside. A line from before 0.4.1 is
+  applied only to a profile of its name that has no line of its own, and setup no longer takes
+  such a line over while another profile of that name is switched off. A failing `nmcli device
+  reapply` (NetworkManager refuses it while a profile has other unapplied changes) now only
+  warns; it used to stop setup right after the profiles were switched off. The uninstaller
+  says "IPv6 re-enabled" only when it was, explains a kept saved file after any uninstall (not
+  only `--purge`), and removes a leftover `/etc/vpnkit` once everything is restored.
+- **Root helpers no longer run commands from your PATH** (security, found in the marketplace
+  maintainer's audit of 0.4.0's privileged code). With `env_reset`, sudo replaces the caller's
+  `PATH` only when sudoers sets `secure_path`. On a machine whose `/etc/sudoers` has none (an
+  older or edited one), the passwordless helpers ran `id`, `nft`, `ip` and the like from the
+  desktop user's `PATH` as root, for example from `~/.local/bin`: a way to root without a
+  password through the rules SECURITY.md calls safe. Every script that runs as root now sets a
+  fixed `PATH` before anything else (`tests/check.sh` enforces it), the settings folder is
+  always `/etc/vpnkit` for root, and setup warns when sudo has no `secure_path` (it does not
+  edit `/etc/sudoers`). Arch's sudo is built with a default `secure_path`, so a stock Omarchy
+  was not exposed.
+- **A half-finished setup no longer looks finished.** The version stamp the panel reads is now
+  written last, only when every step succeeded, and removed when a run starts changing things,
+  so the panel keeps offering setup after a failed run. A step that fails half way is named,
+  and the connectivity check (with its rollback of the IPv6 changes) still runs. Steps that used
+  to stop setup silently are fixed: the global-DNS note without systemd-resolved, and a kernel
+  started with `ipv6.disable=1` (no IPv6 keys for sysctl; the torrent namespace is built too).
+  A unit that cannot be enabled is reported and the run counts as not finished.
+- **`install.sh --keep-ipv6`, or `DISABLE_IPV6=0`, on an existing install gives IPv6 back**, as
+  the docs and the sysctl file said: it removes the sysctl file, turns IPv6 on and restores
+  every saved profile on its running link. Before, `DISABLE_IPV6=0` only deleted the file and
+  `--keep-ipv6` was ignored after the first install. `--keep-ipv6` now sets `DISABLE_IPV6=0`
+  (after a backup of `vpnkit.conf`).
+- **Your own files are left alone, or put back.** Setup no longer replaces a qBittorrent
+  launcher entry of yours (it says whether yours reaches the tunnel); `install.sh
+  --qbt-launcher` replaces it with a backup that the uninstaller puts back. Turning Chrome
+  direct off now puts your own Chrome entry back too. Commands in `/usr/local/bin` carry a
+  marker line: setup stops, changing nothing, when a file of yours has one of their names
+  (`install.sh --move-aside` keeps it aside and the uninstaller puts it back), and the
+  uninstaller deletes only marked files (and the unmarked commands earlier versions installed,
+  known by their checksums, `system/lib/released-bin.sha256`). `sudo bash /usr/local/lib/vpnkit/uninstall-root.sh`, the way out after the plugin
+  folder is gone, now also disconnects the VPN and removes the kit's launcher entries (as you),
+  which used to be left pointing at deleted wrappers.
+- **Servers are the kit's by their uuid, not by name.** `--purge` deleted every WireGuard
+  profile named `<prefix>-*` with its `/etc/wireguard` config, yours included, and missed the
+  kit's servers imported under an earlier provider prefix; the NetworkManager hook armed the
+  kill switch for any such profile; the panel's delete could remove one; an import overwrote a
+  WireGuard config of yours of the same name. All now go by the uuid the import gives each
+  server; an import whose name is taken by something of yours gets another name.
+- Smaller fixes from the audit: the leak check reads files in your home folder with your
+  permissions (a symlink there could make it read root-only files, a FIFO hang it), and checks
+  a running qBittorrent's files as that process's owner; the install log is readable by you
+  only and goes to `~/.cache` instead of `/tmp` without `XDG_RUNTIME_DIR`; the uninstaller
+  reports every failed step in its exit code, removes the namespace folder by its configured
+  name and the temporary folders an interrupted tunnel start left; setup run by a second user
+  stops instead of giving that user the passwordless rules while the kit keeps acting for the
+  first; the docs say that IPv6 goes off on every interface but loopback (Tailscale and
+  container bridges included), not only on "real" ones.
 - **Upgrading:** "Update the system part" changes nothing on profiles that already have IPv6
-  off. It only matters for profiles setup switches off from now on, and for the restore.
-- Tests: static checks pass; the marketplace security baseline is `review-required` with no
-  findings. VM suite: 507 passed, 0 failed. New VM tests: a wired profile with static IPv6
-  (two addresses, a gateway, two routes one with a metric, DNS servers, search domains, a colon
-  in its name) is switched off with every field saved, then restored field for field (and every
-  other `ipv6.*` setting unchanged) by a forced install rollback, by `uninstall.sh
+  off. If you keep your own qBittorrent launcher entry, setup now leaves it alone; the kit's
+  entry from 0.4.0 is recognised and updated.
+- Tests: static checks pass (now also: every root-run script sets its PATH first; every
+  command carries the marker and is in the uninstaller's list); the marketplace security
+  baseline is `review-required` with no findings. VM suite: @VMRESULT@. VM tests added in
+  this release: a wired profile with static IPv6 (two addresses, a gateway, two routes, one
+  with a metric and the attributes `table` and `onlink`, DNS servers, search domains, a colon
+  in its name) is switched off with every field saved, then restored field for field (and
+  every other `ipv6.*` setting unchanged) by a forced install rollback, by a rollback after a
+  step failed half way, by `install.sh --keep-ipv6`, by the installed `uninstall-root.sh
   --restore-ipv6`, and by the plugin folder's `uninstall.sh --purge --restore-ipv6` after the
-  system part is gone; the rollback brings IPv6 back on the running link; a profile
-  NetworkManager refuses to change is left exactly as it was and not saved; an old-format line
-  restores as before; an old-format `manual` line fails loudly, is named and kept, and IPv6
-  stays off on it; profiles the install never changed (switched off by the user, joined later
-  with IPv6 DNS) are left alone; `--purge` alone keeps the saved file; a rollback during an
-  update leaves IPv6 off. The suite also waits for its simulated lookup service to listen
-  before using it (it could refuse for a few seconds after start).
+  system part is gone; every restore brings IPv6 back on the running link; a profile
+  NetworkManager refuses to change is left exactly as it was and not saved; old-format lines
+  restore as before, an old-format `manual` line fails loudly and is kept, and one is not taken
+  over by a same-named profile; profiles never changed, or turned back on since, are left
+  alone; a deleted profile's line is named and put aside; with NetworkManager stopped the saved
+  file survives unchanged; a refused reapply, a missing resolver and a unit that cannot be
+  enabled do not stop setup, and a failed step leaves no version stamp; a kernel without IPv6
+  (simulated) installs and builds the torrent namespace; with `secure_path` switched off and a
+  fake of every command first in the caller's PATH, none of the seven passwordless helpers runs
+  one as root (a control script without its own PATH does); setup refuses, then with
+  `--move-aside` keeps, an admin's own `google-chrome-stable`, and the uninstaller puts it back
+  and keeps a file of the user's; the user's qBittorrent and Chrome launcher entries are kept,
+  backed up only when asked, and put back; a 0.4.0 command and launcher entry are recognised;
+  a profile or config of the user's with the kit's prefix is not deleted, armed for, chosen for
+  torrents or overwritten, and a server under an earlier prefix is purged; the leak check does
+  not read a root-only file through a symlink or hang on a FIFO; setup run by another user
+  changes nothing; the install log is private. The suite also waits for its simulated lookup
+  service to listen before using it.
 
 ## 0.4.0 (2026-11-09)
 

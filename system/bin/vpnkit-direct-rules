@@ -1,4 +1,5 @@
 #!/usr/bin/bash
+# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
 # ============================================================================
 #  vpnkit-direct-rules - load or remove Chrome direct's rules.
 #
@@ -29,6 +30,9 @@
 #
 #  The kill switch's own line for the mark lives in vpnkit-killswitch.
 # ============================================================================
+# Runs as root (through sudo, or systemd): a fixed PATH before any command,
+# because sudo hands the caller's PATH on when sudoers has no secure_path.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"
 set -euo pipefail
 . /usr/local/lib/vpnkit/common.sh
 . /usr/local/lib/vpnkit/direct.sh

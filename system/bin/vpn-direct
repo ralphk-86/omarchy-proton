@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
 # ============================================================================
 #  vpn-direct - turn Chrome direct on or off.
 #
@@ -16,30 +17,31 @@
 #  The launcher entry is ~/.local/share/applications/google-chrome.desktop, a
 #  copy of the packaged one with every Exec= pointing at
 #  /usr/local/bin/google-chrome-stable. Its first line marks it as ours; a file
-#  there without that line is yours: it is backed up before being replaced,
-#  and never removed.
+#  there without that line is yours: it is backed up before being replaced
+#  (turning Chrome direct on is the request), never removed, and put back
+#  when the kit's entry goes (off, or the uninstaller). lib/owned.sh does it.
 #
 #  Close Chrome once after turning it on or off, so its next start lands in
 #  the right place.
 # ============================================================================
 set -euo pipefail
 
+# shellcheck disable=SC1091
+. /usr/local/lib/vpnkit/owned.sh || { echo "vpn-direct: the kit is not installed (run its setup)" >&2; exit 1; }
 SRC_DESK="/usr/share/applications/google-chrome.desktop"
 APPS="$HOME/.local/share/applications"
-DESK="$APPS/google-chrome.desktop"
-MARKER="# Written by omarchy-proton (Chrome direct). Removed when it is turned off."
+DESK=$(vpnkit_chrome_desk "$HOME")
+MARKER="$VPNKIT_CHROME_DESK_MARK"
 WRAPPER="/usr/local/bin/google-chrome-stable"
 
-ours() { [[ -f "$DESK" && ! -L "$DESK" ]] && [[ "$(head -n 1 "$DESK" 2>/dev/null)" == "$MARKER" ]]; }
-refresh_db() { command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APPS" >/dev/null 2>&1 || true; }
+ours() { vpnkit_desk_ours "$DESK" "$MARKER"; }
 
 launcher_on() {
   [[ -f "$SRC_DESK" ]] || return 0    # Chrome is not installed: nothing to point
   install -d -m 755 "$APPS"
   if { [[ -e "$DESK" || -L "$DESK" ]]; } && ! ours; then
-    local bak; bak="$DESK.bak.$(date +%Y%m%d-%H%M%S)"
-    cp -a "$DESK" "$bak"
-    echo "Your own $DESK is kept as $bak"
+    local bak; bak=$(vpnkit_desk_backup "$DESK")
+    echo "Your own $DESK is kept as $bak (put back when Chrome direct is turned off)"
   fi
   local tmp; tmp=$(mktemp "$APPS/.google-chrome.desktop.XXXXXX")
   { printf '%s\n' "$MARKER"
@@ -47,14 +49,11 @@ launcher_on() {
   } > "$tmp"
   chmod 644 "$tmp"
   mv -f "$tmp" "$DESK"
-  refresh_db
+  vpnkit_desk_refresh "$APPS"
 }
 
-launcher_off() {
-  ours || return 0
-  rm -f "$DESK"
-  refresh_db
-}
+# Removes the kit's entry and puts a backup of yours back.
+launcher_off() { vpnkit_desk_remove "$DESK" "$MARKER"; }
 
 direct_is_on() { ( . /usr/local/lib/vpnkit/common.sh && . /usr/local/lib/vpnkit/direct.sh && vpnkit_direct_on ); }
 
@@ -79,7 +78,7 @@ case "$#:${1:-}:${2:-}" in
     launcher_off
     ;;
   *)
-    sed -n '2,24p' "$0" >&2
+    sed -n '3,26p' "$0" >&2
     exit 2
     ;;
 esac

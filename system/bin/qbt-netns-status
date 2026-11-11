@@ -1,4 +1,5 @@
 #!/usr/bin/bash
+# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
 # ============================================================================
 #  qbt-netns-status - read-only status of the qBittorrent VPN namespace,
 #  AND verification that any running qBittorrent is actually inside it, and
@@ -17,6 +18,9 @@
 #  Takes no arguments and only reads state. The only files it writes are its
 #  own caches in /run (the torrent exit IP, and whether DIRECT_DNS answered).
 # ============================================================================
+# Runs as root (through sudo, or systemd): a fixed PATH before any command,
+# because sudo hands the caller's PATH on when sudoers has no secure_path.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"
 set -uo pipefail
 . /usr/local/lib/vpnkit/common.sh   # NS, WG_IF, QBT_CONF, HANDSHAKE_MAX_AGE, ...
 . /usr/local/lib/vpnkit/direct.sh   # Chrome direct

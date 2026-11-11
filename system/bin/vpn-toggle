@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
 # ============================================================================
 #  vpn-toggle - switch the DESKTOP VPN between off and a specific server.
 #

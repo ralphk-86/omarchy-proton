@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
 # ============================================================================
 #  qbt-netns-up - build an isolated network namespace containing ONLY a
 #                 WireGuard tunnel, for qBittorrent to run inside.
@@ -15,6 +16,9 @@
 #
 #  Run via: systemctl start qbt-netns.service
 # ============================================================================
+# Runs as root (through sudo, or systemd): a fixed PATH before any command,
+# because sudo hands the caller's PATH on when sudoers has no secure_path.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"
 set -euo pipefail
 
 # All names, paths and provider quirks come from /etc/vpnkit/vpnkit.conf.
@@ -73,6 +77,8 @@ mkdir -p "/etc/netns/$NS"
 # Temporary files live next to the folder, not in it: `ip netns exec` bind-mounts
 # every entry of /etc/netns/<ns>/ over /etc. Same filesystem, so the renames are atomic.
 NSDNS_TMP=$(mktemp -d "/etc/netns/.vpnkit-$NS.XXXXXX")
+# Not left behind when a step below fails.
+trap 'rm -rf "$NSDNS_TMP"' EXIT
 {
   echo "# In-tunnel DNS. Only reachable via the WireGuard tunnel."
   echo "# No tunnel => no resolver => no DNS leak, by construction."
@@ -92,7 +98,7 @@ vpnkit_ns_nsswitch > "$NSDNS_TMP/nsswitch.conf"
 chmod 644 "$NSDNS_TMP/resolv.conf" "$NSDNS_TMP/nsswitch.conf"
 mv -f "$NSDNS_TMP/nsswitch.conf" "/etc/netns/$NS/nsswitch.conf"
 mv -f "$NSDNS_TMP/resolv.conf" "/etc/netns/$NS/resolv.conf"
-rmdir "$NSDNS_TMP"
+rmdir "$NSDNS_TMP"; trap - EXIT
 if ! vpnkit_resolver_safe "/etc/netns/$NS"; then
   log "ERROR: the namespace resolver files in /etc/netns/$NS are not safe - not building the tunnel."
   exit 1
@@ -101,9 +107,10 @@ fi
 # --- build the namespace ----------------------------------------------------
 log "creating namespace $NS"
 ip netns add "$NS"
-if [[ "${DISABLE_IPV6:-1}" == "1" ]]; then
+if [[ "${DISABLE_IPV6:-1}" == "1" && -e /proc/sys/net/ipv6/conf/all/disable_ipv6 ]]; then
   # A fresh namespace starts from the kernel's defaults, not the host's sysctl,
-  # so IPv6 has to be switched off here as well.
+  # so IPv6 has to be switched off here as well. (A kernel started with
+  # ipv6.disable=1 has no IPv6 and no such keys: nothing to switch off.)
   ip netns exec "$NS" sysctl -qw net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1
 fi
 ip -n "$NS" link set lo up

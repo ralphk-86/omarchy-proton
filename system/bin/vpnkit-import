@@ -1,4 +1,5 @@
 #!/usr/bin/bash
+# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
 # ============================================================================
 #  vpnkit-import - turn one WireGuard config into a desktop VPN profile.
 #  Root only; called by vpnkit-sync for every file in the drop folder.
@@ -24,6 +25,9 @@
 #  Usage: vpnkit-import <file.conf> [--print]
 #         --print writes the keyfile to stdout and changes nothing
 # ============================================================================
+# Runs as root (through sudo, or systemd): a fixed PATH before any command,
+# because sudo hands the caller's PATH on when sudoers has no secure_path.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"
 set -euo pipefail
 . /usr/local/lib/vpnkit/common.sh
 
@@ -61,6 +65,28 @@ keyfile="/etc/NetworkManager/system-connections/${name}.nmconnection"
 if [[ -r "$keyfile" ]] && ! grep -qF "[wireguard-peer.$PEERKEY]" "$keyfile"; then
   name="${name:0:11}"; name="${name%-}-$(printf '%s' "$PEERKEY" | sha256sum | cut -c1-3)"
   keyfile="/etc/NetworkManager/system-connections/${name}.nmconnection"
+fi
+# A name already used by something that is not the kit's (a NetworkManager
+# profile with another uuid, or a WireGuard config of yours without the kit's
+# profile) is never taken over: the server gets the hashed name instead, and
+# if that is taken too, it is refused. Kit profiles carry the uuid below.
+kit_uuid() { uuidgen --sha1 --namespace @dns --name "vpnkit-$1"; }
+name_taken() {  # name_taken <name>
+  local n="$1" u kf="/etc/NetworkManager/system-connections/$1.nmconnection" ours=0
+  u=$(kit_uuid "$n")
+  [[ -e "$kf" ]] && grep -qx "uuid=$u" "$kf" && ours=1
+  [[ -e "$kf" ]] && (( ! ours )) && return 0
+  [[ -e "/etc/wireguard/$n.conf" ]] && (( ! ours )) && return 0
+  # A profile of that name elsewhere (another file name, another uuid).
+  nmcli -e no -g UUID,NAME connection show 2>/dev/null \
+    | U="$u" N="$n" awk '{ i = index($0, ":"); if (substr($0, i + 1) == ENVIRON["N"] && substr($0, 1, i - 1) != ENVIRON["U"]) f = 1 } END { exit !f }'
+}
+if (( ! PRINT )) && name_taken "$name"; then
+  name="${name:0:11}"; name="${name%-}-$(printf '%s' "$PEERKEY" | sha256sum | cut -c1-3)"
+  keyfile="/etc/NetworkManager/system-connections/${name}.nmconnection"
+  if name_taken "$name"; then
+    echo "skip: the names for $SRC are taken by profiles or WireGuard configs that are not the kit's" >&2; exit 1
+  fi
 fi
 dest="/etc/wireguard/${name}.conf"
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
 # ============================================================================
 #  vpn-status - report VPN state, including the current external IPs.
 #

@@ -11,6 +11,8 @@ system/bin/                    everything that lands in /usr/local/bin
 system/lib/common.sh           settings loader shared by all scripts
 system/lib/direct.sh           Chrome direct's settings and helpers (sourced after common.sh)
 system/lib/ipv6.sh             saves and restores profiles' IPv6 settings (install, rollback, uninstall)
+system/lib/owned.sh            which files are the kit's: marker lines, launcher entries (install, uninstall)
+system/lib/released-bin.sha256 checksums of the commands 0.3.0 to 0.4.0 installed (no marker then); frozen
 system/vpnkit.settings         template for /etc/vpnkit/vpnkit.conf
 providers/                     naming presets per VPN provider
 tests/                         see below
@@ -72,7 +74,14 @@ See `tests/vm/README.md`.
 - Nothing a script downloads may be executed. Packages come from `pacman`, from the official
   repositories only.
 - A helper that gets a passwordless sudo rule takes no paths from the caller and validates
-  every argument. Add it to the table in `SECURITY.md`.
+  every argument. Add it to the table in `SECURITY.md`, and to the PATH test in section 4d
+  of `tests/vm/suite.sh`.
+- Every script that runs as root sets `export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"`
+  before its first command (sudo may hand the caller's `PATH` on). `tests/check.sh` checks the
+  ones the sudoers file names and the scripts they start; add a new one there.
+- Every file in `system/bin` carries the marker line from `system/lib/owned.sh` as its second
+  line and is listed in `system/uninstall-root.sh`; `tests/check.sh` checks both. The
+  uninstaller removes only marked files.
 - Never overwrite a user's existing configuration without them asking. Back up what you
   replace.
 - Fail closed. When state is unknown, show "unknown" or block; never show a guess.

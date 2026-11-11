@@ -34,6 +34,27 @@ for f in install.sh uninstall.sh system/install-root.sh system/uninstall-root.sh
 done
 (( fail )) || ok "modes fine"
 
+echo "4b. Root-run scripts set a fixed PATH first (sudo may pass the caller's on)"
+# Every command the sudoers file names, and every script those (or systemd,
+# NetworkManager, setup) run as root.
+ROOT_RUN=$(sed -nE 's#^@USER@ .*NOPASSWD: /usr/local/bin/([^ ]+).*#system/bin/\1#p' system/sudoers.d/99-vpnkit | sort -u)
+ROOT_RUN+=$'\n'"system/bin/vpnkit-import system/bin/vpnkit-direct-rules system/bin/qbt-netns-up system/bin/qbt-netns-down"
+ROOT_RUN+=$'\n'"system/dispatcher.d/50-vpnkit system/install-root.sh system/uninstall-root.sh"
+for f in $ROOT_RUN; do
+  first=$(awk '/^#/ || /^[[:space:]]*$/ || /^set -[euo]+( pipefail)?$/ {next} {print; exit}' "$f")
+  [[ "$first" == 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"' ]] || bad "$f does not set PATH before its first command (first: $first)"
+done
+(( fail )) || ok "$(wc -w <<<"$ROOT_RUN") root-run scripts pin PATH"
+
+echo "4c. Ownership: every command carries the kit's marker, and the uninstaller lists each"
+mark=$(sed -nE 's/^VPNKIT_BIN_MARK="(.*)"$/\1/p' system/lib/owned.sh)
+[[ -n "$mark" ]] || bad "no VPNKIT_BIN_MARK in system/lib/owned.sh"
+for f in system/bin/*; do
+  [[ "$(sed -n 2p "$f")" == "$mark" ]] || bad "$f: line 2 is not the marker"
+  tr -s ' \\;\t' '\n' < system/uninstall-root.sh | grep -qxF "$(basename "$f")" || bad "uninstall-root.sh does not list $(basename "$f")"
+done
+(( fail )) || ok "$(ls system/bin | wc -l) commands marked and listed"
+
 echo "5. Profile generator (dry run on the example config)"
 work=$(mktemp -d); mkdir -p "$work/etc/providers"
 cp system/vpnkit.settings "$work/etc/vpnkit.conf"

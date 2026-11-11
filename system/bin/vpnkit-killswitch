@@ -1,4 +1,5 @@
 #!/usr/bin/bash
+# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
 # ============================================================================
 #  vpnkit-killswitch - the desktop VPN's kill switch.
 #
@@ -24,6 +25,9 @@
 #  Allowed passwordless via /etc/sudoers.d/99-vpnkit. Arguments are validated
 #  here; nothing from the caller reaches a shell or a ruleset unchecked.
 # ============================================================================
+# Runs as root (through sudo, or systemd): a fixed PATH before any command,
+# because sudo hands the caller's PATH on when sudoers has no secure_path.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"
 set -euo pipefail
 . /usr/local/lib/vpnkit/common.sh
 . /usr/local/lib/vpnkit/direct.sh

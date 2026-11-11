@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
 """vpnkit-pick - choose WireGuard configs in the standard file dialog.
 
 Prints the chosen paths, one per line, and exits 0; exits 1 when cancelled.

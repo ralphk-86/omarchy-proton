@@ -13,11 +13,21 @@
 #
 #  USAGE
 #    install.sh                 install or update
-#    install.sh --keep-ipv6     first install only: leave IPv6 on (see README)
+#    install.sh --keep-ipv6     leave IPv6 on (see README); on an existing
+#                               install it sets DISABLE_IPV6=0 (vpnkit.conf is
+#                               backed up) and gives IPv6 back
 #    install.sh --qbt-config    also apply the recommended qBittorrent settings
 #                               (qbittorrent/qBittorrent.conf.template) to your
 #                               qBittorrent.conf; a backup is kept. Never done
 #                               unless you ask for it.
+#    install.sh --qbt-launcher  replace a qBittorrent launcher entry of your
+#                               own with the kit's; yours is backed up and the
+#                               uninstaller puts it back
+#    install.sh --move-aside    move files of yours in /usr/local/bin that have
+#                               the names of the kit's commands aside (the
+#                               uninstaller puts them back); without it setup
+#                               stops and names them
+#  Options combine.
 # ============================================================================
 set -euo pipefail
 
@@ -26,19 +36,68 @@ set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-LOG="${XDG_RUNTIME_DIR:-/tmp}/vpnkit-install.log"
-ROOT_ARGS=(); DO_QBT_CONF=0
+# The log holds the status output (external IPs, server names): readable by
+# you only, in your runtime folder, or in ~/.cache without one (over SSH).
+if [[ -n "${XDG_RUNTIME_DIR:-}" && -d "$XDG_RUNTIME_DIR" && -O "$XDG_RUNTIME_DIR" ]]; then
+  LOG="$XDG_RUNTIME_DIR/vpnkit-install.log"
+else
+  install -d -m 700 "$HOME/.cache"
+  LOG="$HOME/.cache/vpnkit-install.log"
+fi
+rm -f -- "$LOG"
+( umask 077; : > "$LOG" )
+ROOT_ARGS=(); DO_QBT_CONF=0; DO_QBT_LAUNCHER=0
 for a in "$@"; do
   case "$a" in
     --keep-ipv6)     ROOT_ARGS+=("--keep-ipv6") ;;
+    --move-aside)    ROOT_ARGS+=("--move-aside") ;;
     --qbt-config)    DO_QBT_CONF=1 ;;
-    -h|--help)       sed -n '2,22p' "$0"; exit 0 ;;
+    --qbt-launcher)  DO_QBT_LAUNCHER=1 ;;
+    -h|--help)       sed -n '2,31p' "$0"; exit 0 ;;
     *) echo "unknown option: $a"; exit 1 ;;
   esac
 done
 
 say()  { printf '==> %s\n' "$*"; }
 warn() { printf '[!] %s\n' "$*"; }
+
+# Which launcher entries are the kit's (marker line): the same code the
+# uninstallers use. Run as you.
+# shellcheck disable=SC1091
+. "$SRC/system/lib/owned.sh"
+
+# The qBittorrent launcher entry (menus, magnet links) has to start the
+# wrapper. The kit's own entry is written or updated; one of yours is left
+# alone unless you pass --qbt-launcher (then it is backed up first, and the
+# uninstaller puts it back).
+qbt_launcher() {
+  local apps="$HOME/.local/share/applications" desk tmp bak exe
+  desk=$(vpnkit_qbt_desk "$HOME")
+  if [[ -e "$desk" || -L "$desk" ]] && ! vpnkit_desk_ours "$desk" "$VPNKIT_QBT_DESK_MARK" "$VPNKIT_QBT_DESK_LEGACY_SHA"; then
+    if (( ! DO_QBT_LAUNCHER )); then
+      exe=$(vpnkit_desk_exec "$desk")
+      case "$exe" in
+        qbittorrent|/usr/local/bin/qbittorrent)
+          echo "    your own qBittorrent launcher entry is kept; it starts $exe, which reaches the tunnel" ;;
+        *)
+          warn "Your own qBittorrent launcher entry ($desk) starts ${exe:-nothing},"
+          warn "which skips the torrent tunnel. It is left as it is. Change its Exec= to"
+          warn "/usr/local/bin/qbittorrent, or run install.sh --qbt-launcher to replace it"
+          warn "(yours is backed up, and the uninstaller puts it back)." ;;
+      esac
+      return 0
+    fi
+    bak=$(vpnkit_desk_backup "$desk")
+    echo "    your own qBittorrent launcher entry is kept as $bak (the uninstaller puts it back)"
+  fi
+  say "Pointing the qBittorrent launcher at the namespace wrapper"
+  install -d -m 755 "$apps"
+  tmp=$(mktemp "$apps/.qbittorrent.desktop.XXXXXX")
+  { printf '%s\n' "$VPNKIT_QBT_DESK_MARK"; cat "$SRC/applications/org.qbittorrent.qBittorrent.desktop"; } > "$tmp"
+  chmod 644 "$tmp"
+  mv -f "$tmp" "$desk"
+  vpnkit_desk_refresh "$apps"
+}
 
 main() {
   say "omarchy-proton $(cat "$SRC/VERSION"): system setup (one password prompt)"
@@ -53,15 +112,7 @@ main() {
   /usr/local/bin/vpn-direct launcher || warn "Chrome direct: could not update the Chrome launcher entry"
 
   if command -v qbittorrent >/dev/null 2>&1 || [[ -x /usr/bin/qbittorrent ]]; then
-    say "Pointing the qBittorrent launcher at the namespace wrapper"
-    local apps="$HOME/.local/share/applications" desk
-    desk="$apps/org.qbittorrent.qBittorrent.desktop"
-    install -d -m 755 "$apps"
-    if [[ -f "$desk" ]] && ! cmp -s "$SRC/applications/org.qbittorrent.qBittorrent.desktop" "$desk"; then
-      cp -a "$desk" "$desk.bak.$STAMP"
-    fi
-    install -m 644 "$SRC/applications/org.qbittorrent.qBittorrent.desktop" "$desk"
-    command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps" >/dev/null 2>&1 || true
+    qbt_launcher
 
     local qconf="$HOME/.config/qBittorrent/qBittorrent.conf"
     if (( DO_QBT_CONF )); then

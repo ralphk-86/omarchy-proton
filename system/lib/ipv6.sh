@@ -26,10 +26,11 @@
 #  they are gone, and a restore of such a profile says so.
 # ============================================================================
 
-V6_SAVED="${V6_SAVED:-/etc/vpnkit/ipv6-profiles.saved}"
-# Entries replaced by a later install (the profile had been changed since):
-# kept for reference, never applied by the kit.
-V6_SUPERSEDED="${V6_SUPERSEDED:-/etc/vpnkit/ipv6-profiles.superseded}"
+V6_SAVED=/etc/vpnkit/ipv6-profiles.saved
+# Saved lines the kit will not apply any more, dated: replaced by a later
+# install, or not restored because the profile was turned back on or deleted
+# since. Kept for reference (nothing saved is thrown away), never applied.
+V6_SUPERSEDED=/etc/vpnkit/ipv6-profiles.superseded
 # In this order in a v2 line, after version, uuid and name.
 V6_FIELDS=(method dns dns-search addresses gateway routes)
 
@@ -89,6 +90,13 @@ v6_disable_profile() {
   line=$(v6_current "$uuid") || return 1
   name=$(v6_get "$uuid" connection.id)
   prev=$(v6_entry "$uuid" "$name")
+  # A line from before 0.4.1 names its profile, and the name may belong to
+  # more than one profile. It is taken over only when no other profile of
+  # that name is switched off (it may be that one's): else it stays for the
+  # restore.
+  if [[ -n "$prev" && "$(cut -f1 <<< "$prev")" != "v2" ]] && v6_name_off_elsewhere "$uuid" "$name"; then
+    prev=""
+  fi
   v6_replace "$uuid" "$prev" "$line" || return 1
   if ! nmcli connection modify uuid "$uuid" ipv6.method disabled ipv6.dns "" ipv6.dns-search "" \
          ipv6.addresses "" ipv6.gateway "" ipv6.routes ""; then
@@ -96,12 +104,41 @@ v6_disable_profile() {
     return 1
   fi
   if [[ -n "$prev" && "$prev" != "$line" ]]; then
-    printf '%s\t%s\n' "$(date +%Y-%m-%d)" "$prev" >> "$V6_SUPERSEDED" && chmod 644 "$V6_SUPERSEDED"
+    v6_supersede "$prev"
     v6_say "\"$name\": replaced the IPv6 settings saved by an earlier install (the profile was changed since); the earlier ones are kept in $V6_SUPERSEDED"
   fi
   [[ "$(v6_field "$line" method)" == "manual" ]] \
     && v6_say "\"$name\" had static IPv6 (ipv6.method manual): saved, uninstall.sh --restore-ipv6 puts it back"
   return 0
+}
+
+# v6_supersede <saved line>: keep a line the kit will not apply any more, dated.
+v6_supersede() {
+  printf '%s\t%s\n' "$(date +%Y-%m-%d)" "$1" >> "$V6_SUPERSEDED" && chmod 644 "$V6_SUPERSEDED"
+}
+
+# v6_line_name <saved line>: the profile name a saved line is for.
+v6_line_name() {
+  if [[ "$(cut -f1 <<< "$1")" == "v2" ]]; then cut -f3 <<< "$1" | base64 -d 2>/dev/null
+  else cut -f1 <<< "$1"; fi
+}
+
+# v6_profiles: "uuid:type:name" of every profile (-e no: the name is
+# everything after the second colon, and may contain colons itself).
+v6_profiles() { nmcli -e no -g UUID,TYPE,NAME connection show 2>/dev/null; }
+
+# v6_name_off_elsewhere <uuid> <name>: another wired or Wi-Fi profile called
+# <name> has IPv6 switched off. True as well when that cannot be found out.
+v6_name_off_elsewhere() {
+  local all u t n
+  all=$(v6_profiles) || return 0
+  while IFS= read -r u; do
+    t=${u#*:}; n=${t#*:}; t=${t%%:*}; u=${u%%:*}
+    [[ "$u" != "$1" && "$n" == "$2" ]] || continue
+    case "$t" in 802-3-ethernet|802-11-wireless) ;; *) continue ;; esac
+    [[ "$(v6_get "$u" ipv6.method)" == "disabled" ]] && return 0
+  done <<< "$all"
+  return 1
 }
 
 # v6_field <v2-line> <field>: one decoded field of a v2 line.
@@ -122,21 +159,34 @@ v6_field() {
 v6_reapply() {
   local dev
   dev=$(nmcli -g GENERAL.DEVICES connection show uuid "$1" 2>/dev/null | head -1) || dev=""
-  [[ -n "$dev" ]] && nmcli device reapply "$dev" >/dev/null 2>&1
+  [[ -n "$dev" ]] || return 0
+  # Never fatal: the stored profile is already right, and the link picks it
+  # up when it reconnects. (NetworkManager refuses a reapply while the
+  # profile has other changes not yet applied, or when the link just went.)
+  nmcli device reapply "$dev" >/dev/null 2>&1 \
+    || v6_warn "IPv6: could not apply the change to the running link $dev; it applies when the link reconnects (or: nmcli device reapply $dev)"
   return 0
 }
 
 # v6_restore_profile <uuid>: put back what was saved for the profile, all
 # fields in one call, apply it to the running link, then forget the entry.
 # A profile with nothing saved is left alone: the install did not change it.
-# Returns 1 when the profile could not be restored: it is named, IPv6 stays
-# off on it, and its entry stays saved.
+# So is one whose IPv6 was turned back on since: its settings are the user's
+# now; the saved line goes to $V6_SUPERSEDED. Returns 1 when the profile
+# could not be restored: it is named, IPv6 stays off on it, and its entry
+# stays saved.
 v6_restore_profile() {
-  local uuid="$1" name entry method dns search addrs gw routes legacy=0
+  local uuid="$1" name entry method dns search addrs gw routes legacy=0 cur
   name=$(v6_get "$uuid" connection.id) || name=""
   [[ -n "$name" ]] || { v6_warn "IPv6: cannot read the profile $uuid"; return 1; }
   entry=$(v6_entry "$uuid" "$name")
   [[ -n "$entry" ]] || return 0
+  cur=$(v6_get "$uuid" ipv6.method) || { v6_warn "IPv6: cannot read the profile \"$name\"; its saved settings stay in $V6_SAVED"; return 1; }
+  if [[ "$cur" != "disabled" ]]; then
+    v6_supersede "$entry" && v6_replace "$uuid" "$entry" "" || return 1
+    v6_say "IPv6: \"$name\" was turned back on since setup (ipv6.method $cur) and is left as it is; the settings saved before setup are kept in $V6_SUPERSEDED"
+    return 0
+  fi
   if [[ "$(cut -f1 <<< "$entry")" == "v2" ]]; then
     method=$(v6_field "$entry" method);   dns=$(v6_field "$entry" dns)
     search=$(v6_field "$entry" dns-search); addrs=$(v6_field "$entry" addresses)
@@ -165,32 +215,51 @@ v6_restore_profile() {
 }
 
 # v6_restore_saved: restore every profile listed in $V6_SAVED, and no other.
-# A line whose profile no longer exists is dropped (there is nothing left to
-# put it back into). Returns 1 when any profile could not be restored.
+# A line whose profile no longer exists (NetworkManager says so: exit 10) is
+# moved to $V6_SUPERSEDED: there is nothing left to put it back into. Any other
+# failure to look a profile up keeps its line. Returns 1 when any profile
+# could not be restored, and at once, changing nothing, when NetworkManager
+# is not running.
 v6_restore_saved() {
   local -a lines uuids
-  local line uuid rc=0 u t n
+  local line uuid rc=0 r u t n all name
   [[ -s "$V6_SAVED" ]] || return 0
+  if [[ "$(nmcli -t -f RUNNING general status 2>/dev/null)" != "running" ]]; then
+    v6_warn "IPv6: NetworkManager is not running, so no profile was restored; the saved settings stay in $V6_SAVED."
+    return 1
+  fi
   mapfile -t lines < "$V6_SAVED"
   for line in "${lines[@]}"; do
     [[ -n "$line" ]] || continue
     uuids=()
+    name=$(v6_line_name "$line")
     if [[ "$(cut -f1 <<< "$line")" == "v2" ]]; then
       uuid=$(cut -f2 <<< "$line")
-      nmcli -g connection.uuid connection show uuid "$uuid" >/dev/null 2>&1 && uuids=("$uuid")
+      nmcli -g connection.uuid connection show uuid "$uuid" >/dev/null 2>&1; r=$?
+      case "$r" in
+        0)  uuids=("$uuid") ;;
+        10) ;;
+        *)  v6_warn "IPv6: could not look up the profile \"$name\" (nmcli exit $r); its saved settings stay in $V6_SAVED."
+            rc=1; continue ;;
+      esac
     else
       # A line from before 0.4.1 names the profile: every wired or Wi-Fi
-      # profile of that name. -e no: a name may contain colons; the uuid and
-      # the type cannot, so the name is everything after the second one.
+      # profile of that name that has no line of its own.
+      if ! all=$(v6_profiles); then
+        v6_warn "IPv6: could not list the profiles to find \"$name\"; its saved settings stay in $V6_SAVED."
+        rc=1; continue
+      fi
       while IFS= read -r u; do
         t=${u#*:}; n=${t#*:}; t=${t%%:*}; u=${u%%:*}
-        [[ "$n" == "$(cut -f1 <<< "$line")" ]] || continue
-        case "$t" in 802-3-ethernet|802-11-wireless) uuids+=("$u") ;; esac
-      done < <(nmcli -e no -g UUID,TYPE,NAME connection show)
+        [[ "$n" == "$name" ]] || continue
+        case "$t" in 802-3-ethernet|802-11-wireless) ;; *) continue ;; esac
+        U="$u" awk -F'\t' '$1 == "v2" && $2 == ENVIRON["U"] { f = 1 } END { exit !f }' "$V6_SAVED" && continue
+        uuids+=("$u")
+      done <<< "$all"
     fi
     if (( ${#uuids[@]} == 0 )); then
-      v6_say "IPv6: a saved profile no longer exists; its saved settings are dropped"
-      v6_replace "" "$line" ""
+      v6_say "IPv6: the profile \"$name\" no longer exists; its saved settings are moved to $V6_SUPERSEDED"
+      v6_supersede "$line" && v6_replace "" "$line" "" || rc=1
       continue
     fi
     for uuid in "${uuids[@]}"; do

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
+# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
 # Tear down the qBittorrent VPN namespace. Deleting the namespace destroys the
 # WireGuard interface inside it, so nothing is left behind.
+# Runs as root (through sudo, or systemd): a fixed PATH before any command,
+# because sudo hands the caller's PATH on when sudoers has no secure_path.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"
 set -euo pipefail
 . /usr/local/lib/vpnkit/common.sh   # NS, WG_IF, QBT_CONF, FALLBACK_DNS, TARGET_USER, ...
 ip netns del "$NS" 2>/dev/null || true

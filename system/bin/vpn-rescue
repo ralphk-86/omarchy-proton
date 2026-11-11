@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
 # ============================================================================
 #  vpnkit-rescue.sh - get the normal internet connection back, now.
 #  Installed as /usr/local/bin/vpn-rescue; also runs straight from the repo.

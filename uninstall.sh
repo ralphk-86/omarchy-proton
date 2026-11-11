@@ -46,19 +46,26 @@ for a in "$@"; do
 done
 
 echo "==> Removing the launcher overrides (qBittorrent, Chrome)"
-rm -f "$HOME/.local/share/applications/org.qbittorrent.qBittorrent.desktop"
-# Chrome's, only if it is ours (a file of your own there is left alone).
-[[ -x /usr/local/bin/vpn-direct ]] && /usr/local/bin/vpn-direct launcher off || true
+# Only the kit's own entries; an entry of yours that setup replaced (it kept a
+# backup) is put back. The root half checks again, as you, in case this part
+# could not run.
+OWNED="$SRC/system/lib/owned.sh"
+[[ -r "$OWNED" ]] || OWNED=/usr/local/lib/vpnkit/owned.sh
+if [[ -r "$OWNED" ]]; then
+  # shellcheck disable=SC1090
+  ( . "$OWNED" && vpnkit_launchers_remove "$HOME" ) || echo "[!] Could not remove the launcher overrides; the system part's uninstaller tries again."
+fi
 
 echo "==> Removing the system files (one password prompt)"
 # The root half removes what it can even when one step fails (it says which),
 # and then exits non-zero; the rest here still runs. If it did not run at all
 # (no password, cancelled), its last step, removing /usr/local/lib/vpnkit,
-# did not happen either: stop here.
+# did not happen either: stop here. (Files of yours it could not put back
+# stay in /usr/local/lib/vpnkit/moved-aside; that alone is not "not run".)
 rc=0
 if [[ -t 0 ]]; then sudo /usr/bin/bash "$ROOT" "$@" || rc=$?; else pkexec /usr/bin/bash "$ROOT" "$@" || rc=$?; fi
 if (( rc != 0 )); then
-  [[ -e /usr/local/lib/vpnkit ]] && { echo "The system part was not removed (exit $rc)."; exit "$rc"; }
+  [[ -e /usr/local/lib/vpnkit/common.sh ]] && { echo "The system part was not removed (exit $rc)."; exit "$rc"; }
   echo "[!] The system part was removed, but reported a problem (exit $rc): see above. Running uninstall.sh again retries it."
 fi
 

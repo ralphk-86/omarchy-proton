@@ -216,7 +216,10 @@ The Omarchy plugin marketplace lists this plugin as *Manual setup*, because of t
 step, so it shows no install button there; use the line above.
 
 Setup does not connect anything and does not change your normal route or DNS. It checks that
-the internet answers before and after, and undoes its network changes if it stopped.
+the internet answers before and after, and undoes its network changes if it stopped; that
+check runs as well when a step fails half way. Setup counts as finished only when every step
+succeeded: until then the panel keeps showing **Finish setup** (or **Update the system part**),
+and the terminal names the step that failed.
 
 Setup changes these things outside the plugin folder, and nothing else:
 
@@ -226,12 +229,20 @@ Setup changes these things outside the plugin folder, and nothing else:
   NetworkManager profiles. Each profile's IPv6 settings (method, DNS servers, search domains,
   static addresses, gateway, routes) are saved first, so they can be put back exactly; see
   [IPv6](#ipv6-and-your-network-profiles). Skip this with `install.sh --keep-ipv6`; undo it
-  with `uninstall.sh --restore-ipv6`
-- adds a launcher entry for qBittorrent in `~/.local/share/applications` (an existing one is
-  backed up next to it)
+  with `uninstall.sh --restore-ipv6`, or with `install.sh --keep-ipv6` on an existing install
+  (that sets `DISABLE_IPV6=0`, after a backup of `vpnkit.conf`, and gives IPv6 back)
+- adds a launcher entry for qBittorrent in `~/.local/share/applications` that starts it in the
+  tunnel. If you already have your own entry there, it is left alone (with a warning when it
+  starts qBittorrent outside the tunnel); `install.sh --qbt-launcher` replaces it, keeping
+  yours next to it as a backup that the uninstaller puts back
 
 It never edits your existing configuration files. The recommended qBittorrent settings are
 applied only if you ask: `install.sh --qbt-config` (a backup of `qBittorrent.conf` is kept).
+The commands it puts in `/usr/local/bin` carry a marker line; if a file of yours is already
+there under one of their names (your own `google-chrome-stable` wrapper, say), setup stops
+before changing anything and names it. `install.sh --move-aside` then keeps it in
+`/usr/local/lib/vpnkit/moved-aside/` while the kit is installed, and the uninstaller puts it
+back. Options combine.
 
 Read the scripts before you run them; a plugin that asks for root deserves that.
 
@@ -339,9 +350,12 @@ only when the inode of `/proc/<pid>/ns/net` equals the namespace's, and the torr
 fetched from inside the namespace. If a qBittorrent process is ever found outside, the bar
 flashes `TORRENT LEAK`.
 
-**IPv6** is switched off on real interfaces (loopback keeps `::1`), because the tunnels carry
-IPv4 only. To keep IPv6 while no VPN is selected, install with `install.sh --keep-ipv6`; the
-kill switch still blocks it whenever a server is picked.
+**IPv6** is switched off on every interface except loopback, which keeps `::1`: wired and
+Wi-Fi, and also Tailscale, Docker, Podman and libvirt bridges and the like (the sysctl covers
+all of them). The tunnels carry IPv4 only. To keep IPv6 while no VPN is selected, install with
+`install.sh --keep-ipv6` (on an existing install too: it then gives IPv6 back); the kill
+switch still blocks it whenever a server is picked. On a kernel started with `ipv6.disable=1`
+there is no IPv6 to switch off, and setup says so.
 
 ### IPv6 and your network profiles
 
@@ -356,13 +370,18 @@ with a warning that names it. A profile with static IPv6 (`manual`) is named in 
 
 Setup puts every saved setting back if the internet stops answering after it (and applies
 it to the running connection at once, so a network that needs IPv6 works again without a
-reconnect), and so does `uninstall.sh --restore-ipv6`. Both touch only the profiles listed in
-that file: a profile setup never changed (already off, or joined later) is left exactly as it
-is. A rollback during an update leaves IPv6 off if an earlier setup had switched it off. A
-profile that cannot be restored is named, keeps IPv6 off rather than getting a guessed `auto`,
-and keeps its saved line; the uninstaller then exits with an error. If a later setup finds a
-profile turned back on with different settings, it saves the new ones and keeps the earlier
-line in `/etc/vpnkit/ipv6-profiles.superseded`, for reference.
+reconnect), and so do `uninstall.sh --restore-ipv6` and `install.sh --keep-ipv6`. They touch
+only the profiles listed in that file, and only while IPv6 is still off on them: a profile
+setup never changed (already off, or joined later) is left exactly as it is, and so is one you
+turned back on since (its saved line is kept aside, see below). A rollback during an update
+undoes only that run's changes: the earlier setup's sysctl file and switched-off profiles stay.
+A profile that cannot be restored is named, keeps IPv6 off rather than getting a guessed
+`auto`, and keeps its saved line; the uninstaller then exits with an error. Nothing is
+restored, and nothing saved is dropped, while NetworkManager is not running. Saved lines the
+kit will not apply any more go to `/etc/vpnkit/ipv6-profiles.superseded`, dated, for
+reference: a profile turned back on with different settings (a later setup saves the new
+ones; a restore leaves it as you set it), or a profile that was deleted since (named in the
+output). Nothing saved is thrown away.
 
 **Profiles switched off by a version before 0.4.1** were saved with method, DNS servers and
 search domains only. Those versions also cleared static addresses, gateway and routes without
@@ -370,7 +389,10 @@ saving them: those are gone, and no version of this kit can bring them back. The
 back what was saved; for a profile that had `ipv6.method manual` it says so, names the profile
 and leaves IPv6 off on it. Set its addresses again yourself, for example
 `nmcli connection modify "<profile>" ipv6.method manual ipv6.addresses <address/prefix> ipv6.gateway <gateway>`.
-Profiles that used automatic IPv6 (the usual case) lost nothing. Versions before 0.3.6 saved
+Profiles that used automatic IPv6 (the usual case) lost nothing. Lines from those versions
+name their profile instead of identifying it; they are applied only to a profile of that name
+that has no line of its own, and a later setup does not take such a line over while another
+profile of that name is switched off. Versions before 0.3.6 saved
 nothing at all; a profile they switched off is not in the file and stays off: turn it back on
 with `nmcli connection modify "<profile>" ipv6.method auto`.
 
@@ -553,7 +575,7 @@ Everything else is in `/etc/vpnkit/vpnkit.conf`, which the installer never overw
 | `CONFIG_DIR` | `~/Documents/WireGuard` | the drop folder |
 | `BYPASS_CIDRS` | empty | addresses that keep using your normal connection while a VPN is up, for example a server whose SSH is firewalled to your home IP. Applied to servers imported afterwards |
 | `KILLSWITCH_ALLOW_LAN` | `1` | keep the local network reachable while the kill switch is on |
-| `DISABLE_IPV6` | `1` | see above |
+| `DISABLE_IPV6` | `1` | IPv6 off on every interface but loopback; see above. Setting it to `0` and running setup again gives IPv6 back (the same as `install.sh --keep-ipv6`) |
 | `VPNKIT_PROVIDER` | `proton` | naming preset; `generic`, `mullvad`, `ivpn`, `airvpn`, `windscribe` for other providers |
 | `DIRECT_DNS` | empty | the resolver Chrome asks while [Chrome direct](#chrome-direct) is on. Empty: the system resolver, which follows the bar. Otherwise a loopback address only (`127.x.x.x`), such as a local ad-blocking resolver on `127.0.0.1` |
 
@@ -563,8 +585,8 @@ The engine underneath is called `vpnkit`; that is the name you will see in paths
 
 | Path | What |
 |---|---|
-| `/usr/local/bin/vpn-*`, `vpnkit-*`, `qbt-*`, `direct-launch`, `qbittorrent`, `google-chrome-stable` | the commands and helpers; `qbittorrent` and `google-chrome-stable` are wrappers that come first in `PATH` (the Chrome one starts Chrome unchanged while Chrome direct is off) |
-| `/usr/local/lib/vpnkit/` | shared libraries, version, a copy of the uninstaller, the `diagnose-vpn` skill for AI troubleshooting |
+| `/usr/local/bin/vpn-*`, `vpnkit-*`, `qbt-*`, `direct-launch`, `qbittorrent`, `google-chrome-stable` | the commands and helpers, each with the marker line `# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).`; `qbittorrent` and `google-chrome-stable` are wrappers that come first in `PATH` (the Chrome one starts Chrome unchanged while Chrome direct is off) |
+| `/usr/local/lib/vpnkit/` | shared libraries, version stamp (written last, once setup succeeded), a copy of the uninstaller, the `diagnose-vpn` skill for AI troubleshooting; `moved-aside/` only with `install.sh --move-aside` |
 | `/etc/vpnkit/` | settings (no secrets); `ipv6-profiles.saved`, your profiles' IPv6 settings from before setup (see [IPv6](#ipv6-and-your-network-profiles)) |
 | `/etc/sudoers.d/99-vpnkit` | passwordless rules for seven specific helpers, validated with `visudo -c` before install |
 | `/etc/NetworkManager/dispatcher.d/50-vpnkit` | arms the kill switch, reconnects after resume |
@@ -573,14 +595,16 @@ The engine underneath is called `vpnkit`; that is the name you will see in paths
 | `/etc/vpnkit/direct-apps` | only while Chrome direct is on: says that it is |
 | `/etc/sysctl.d/99-vpnkit-disable-ipv6.conf` | IPv6 off (unless `--keep-ipv6`) |
 | `/etc/wireguard/`, `/etc/NetworkManager/system-connections/` | your imported configs, mode 0600, root |
-| `~/.local/share/applications/org.qbittorrent.qBittorrent.desktop` | launcher pointing at the wrapper |
-| `~/.local/share/applications/google-chrome.desktop` | only while Chrome direct is on: Chrome's launcher entry pointing at the wrapper (a file of your own there is backed up next to it first) |
+| `~/.local/share/applications/org.qbittorrent.qBittorrent.desktop` | launcher pointing at the wrapper, first line a marker; not written over an entry of yours unless you pass `--qbt-launcher` (yours is backed up next to it, and put back by the uninstaller) |
+| `~/.local/share/applications/google-chrome.desktop` | only while Chrome direct is on: Chrome's launcher entry pointing at the wrapper (a file of your own there is backed up next to it first, and put back when Chrome direct is turned off) |
 | `~/Documents/VPN leak checks/` | your saved leak-check reports, created by the first check; removed only by `uninstall.sh --purge` |
 | `~/.config/qBittorrent/qBittorrent.conf` | only with `install.sh --qbt-config`: merged with `qbittorrent/qBittorrent.conf.template` (backup kept): bind to the tunnel interface, anonymous mode, require encryption, no UPnP, no local discovery |
 
-The passwordless helpers are written to be safe to grant: they take no paths from the caller,
-validate every argument, the launchers drop to your user before starting qBittorrent or
-Chrome, and the status helper only reads.
+The passwordless helpers are written to be safe to grant: they set a fixed `PATH` before
+running anything (sudo passes your own on when `/etc/sudoers` has no `secure_path`; setup
+warns if yours has none), take no paths from the caller, validate every argument, the
+launchers drop to your user before starting qBittorrent or Chrome, the status helper only
+reads, and the leak check reads files in your home folder with your permissions, not root's.
 
 ## Update
 
@@ -609,20 +633,31 @@ omarchy plugin remove io.github.ralphk-86.omarchy-proton
 
 The uninstaller switches to the normal connection, removes the kill switch, the torrent
 namespace and every file from the table above. It also turns Chrome direct off and removes its
-rules; a Chrome still running with your own IP is closed. Without `--purge` it keeps your
+rules; a Chrome still running with your own IP is closed. It removes only what is the kit's:
+commands with its marker line (a file of yours under one of their names is kept, and one setup
+moved aside is put back), its own launcher entries (an entry of yours it replaced is put back),
+and, with `--purge`, the servers it imported, recognised by the uuid it gave them (also those
+imported under another provider's prefix; a WireGuard profile or config of your own with the
+same prefix is left alone). Without `--purge` it keeps your
 servers, the torrent config, `/etc/vpnkit/vpnkit.conf` and your saved leak-check reports, so a later
 reinstall picks up where you left off. `--purge` deletes the reports too (only the files the
-check wrote; the folder stays if you put anything else in it).
+check wrote; the folder stays if you put anything else in it). A step that fails is named, the
+rest still runs, and the uninstaller then exits with an error.
 IPv6 stays off unless you pass `--restore-ipv6`, which puts back each profile's saved IPv6
 settings exactly (see [IPv6](#ipv6-and-your-network-profiles)). Options combine:
 `--purge --restore-ipv6` restores first, then removes everything. `--purge` alone keeps
-`/etc/vpnkit/ipv6-profiles.saved` (and `ipv6-profiles.superseded`) and says so: they can be
-your only copy of a static IPv6 setup. Run `uninstall.sh --restore-ipv6` from the plugin
-folder **before** `omarchy plugin remove`; after that nothing on the machine reads the file.
+`/etc/vpnkit/ipv6-profiles.saved` (and `ipv6-profiles.superseded`) and says so, and so does
+any uninstall that leaves saved settings behind: they can be your only copy of a static IPv6
+setup. Run `uninstall.sh --restore-ipv6` from the plugin folder **before**
+`omarchy plugin remove`: once both the plugin and the system part are gone, nothing on the
+machine reads the file. A later `uninstall.sh --restore-ipv6` that restores everything also
+removes what is left of `/etc/vpnkit`.
 qBittorrent is no longer confined afterwards.
 
 If you removed the plugin folder first, the system part can still be removed:
-`sudo bash /usr/local/lib/vpnkit/uninstall-root.sh` (same options).
+`sudo bash /usr/local/lib/vpnkit/uninstall-root.sh` (same options). It does the whole job:
+it also disconnects the VPN and removes the kit's launcher entries in your home folder (as
+you, not as root), putting back any of yours.
 
 ## Security and privacy
 

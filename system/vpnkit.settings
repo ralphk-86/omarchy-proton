@@ -40,9 +40,12 @@ BYPASS_CIDRS=""
 KILLSWITCH_ALLOW_LAN=1
 #LAN_CIDRS="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 224.0.0.0/4 255.255.255.255/32"
 
-# 1: IPv6 off on every real interface (loopback keeps ::1). The tunnels carry
-# IPv4 only, so a live IPv6 stack is a way around them. With 0 the host keeps
-# IPv6 while no VPN is selected; the kill switch still blocks it when one is.
+# 1: IPv6 off on every interface except loopback (which keeps ::1): wired and
+# Wi-Fi, and also Tailscale, Docker/Podman/libvirt bridges and the like. The
+# tunnels carry IPv4 only, so a live IPv6 stack is a way around them. With 0
+# the host keeps IPv6 while no VPN is selected; the kill switch still blocks
+# it when one is. Changing it to 0 and running setup again gives IPv6 back
+# (the same as install.sh --keep-ipv6).
 DISABLE_IPV6=1
 
 # Where the external-IP lookup goes (any URL returning a bare IP), and how

@@ -14,7 +14,13 @@
 #  running as root and by scripts running as you.
 # ============================================================================
 
-VPNKIT_ETC="${VPNKIT_ETC:-/etc/vpnkit}"
+# The settings folder. Only an unprivileged caller (the static tests) may point
+# it elsewhere; as root it is always /etc/vpnkit, whatever the environment says.
+if [ "${EUID:-$(/usr/bin/id -u)}" = 0 ]; then
+  VPNKIT_ETC=/etc/vpnkit
+else
+  VPNKIT_ETC="${VPNKIT_ETC:-/etc/vpnkit}"
+fi
 
 # ------------------------------------------------------------- defaults -----
 # Chosen so the kit still works if vpnkit.conf is missing entirely.
@@ -90,6 +96,19 @@ vpnkit_find_vpn_iface() {
     case "$_i" in "$PROFILE_PREFIX"-*) printf '%s' "$_i"; return 0 ;; esac
   done
   return 1
+}
+
+# A server the kit imported. Its name has the provider prefix, but so may a
+# WireGuard profile of the user's own; what tells them apart is the uuid:
+# vpnkit-import gives every profile one derived from its name.
+vpnkit_profile_uuid() {  # vpnkit_profile_uuid <name>: the uuid vpnkit-import gives that profile
+  uuidgen --sha1 --namespace @dns --name "vpnkit-$1"
+}
+vpnkit_kit_profile() {  # vpnkit_kit_profile <name>: a profile of that name with the kit's uuid exists
+  local u
+  [[ "$1" =~ ^[A-Za-z0-9._-]{1,15}$ ]] || return 1
+  u=$(vpnkit_profile_uuid "$1" 2>/dev/null) || return 1
+  [[ -n "$u" && "$(nmcli -g connection.id connection show uuid "$u" 2>/dev/null)" == "$1" ]]
 }
 
 # The body of a URL with whitespace removed; empty when it cannot be reached.

@@ -1,4 +1,5 @@
 #!/usr/bin/bash
+# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
 # ============================================================================
 #  vpn-verify - prove the isolation, do not assume it.
 #
@@ -15,6 +16,10 @@
 #                   down. If a desktop VPN is up, take that down too and prove
 #                   the kill switch holds. Transfers and browsing stall briefly.
 # ============================================================================
+# Run as root through sudo (the panel's check) or as you: a fixed PATH before
+# any command, because sudo hands the caller's PATH on when sudoers has no
+# secure_path.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"
 set -uo pipefail
 
 [ "$(uname -s)" = "Linux" ] || { echo "Linux only"; exit 1; }
@@ -28,6 +33,16 @@ FAIL_CLOSED=0
 SUDO=""
 [[ $EUID -ne 0 ]] && SUDO="sudo"
 nsx() { $SUDO ip netns exec "$NS" "$@"; }
+# Files in the desktop user's folder are read with the user's rights (and a
+# time limit; callers cap the size), never root's: a symlink or a FIFO there
+# must not make root read, or hang on, something the user chooses.
+as_target() {
+  if [[ $EUID -eq 0 ]]; then
+    setpriv --reuid="$TARGET_UID" --regid="$(id -g "$TARGET_USER" 2>/dev/null || echo 65534)" --init-groups -- timeout 5 "$@"
+  else
+    timeout 5 "$@"
+  fi
+}
 
 # Body of a URL (whitespace removed), fetched on the host or inside the
 # namespace. Empty means "could not be reached". Held in a variable only, and
@@ -185,7 +200,12 @@ for pid in $(pgrep -x qbittorrent 2>/dev/null); do
     # when it entered. A process that entered before the namespace's resolver
     # files existed keeps the host's nsswitch.conf, whose `resolve` module
     # answers over systemd-resolved's Unix socket, outside the tunnel.
-    if $SUDO bash -c '. /usr/local/lib/vpnkit/common.sh; vpnkit_resolver_safe "$1"' _ "/proc/$pid/root/etc" 2>/dev/null; then
+    # Read as the process's owner, not as root: its root is its own (a
+    # process can build a mount namespace with a symlink anywhere in it).
+    PIDS_OWNER=$($SUDO stat -c '%u %g' "/proc/$pid" 2>/dev/null) || PIDS_OWNER=""
+    if [[ "$PIDS_OWNER" =~ ^[0-9]+\ [0-9]+$ ]] \
+       && $SUDO setpriv --reuid="${PIDS_OWNER% *}" --regid="${PIDS_OWNER#* }" --clear-groups -- \
+            timeout 5 bash -c '. /usr/local/lib/vpnkit/common.sh; vpnkit_resolver_safe "$1"' _ "/proc/$pid/root/etc" 2>/dev/null; then
       ok "pid $pid resolves names only through the tunnel (its nsswitch.conf excludes resolve/mdns)"
     else
       no "pid $pid sees the host's DNS settings (entered the namespace before they were set up) - names can resolve outside the tunnel; restart qBittorrent"
@@ -208,8 +228,8 @@ fi
 echo
 echo "9b. qBittorrent settings and launchers"
 QCONF="$TARGET_HOME/.config/qBittorrent/qBittorrent.conf"
-if [[ -r "$QCONF" ]]; then
-  QIF=$(sed -nE 's/^Session\\Interface=(.*)$/\1/p' "$QCONF" | head -1)
+if QTEXT=$(as_target bash -c '[[ -f $1 && -r $1 ]] || exit 3; head -c 1048576 -- "$1"' _ "$QCONF" 2>/dev/null); then
+  QIF=$(sed -nE 's/^Session\\Interface=(.*)$/\1/p' <<<"$QTEXT" | head -1)
   if [[ -z "$QIF" || "$QIF" == "$WG_IF" ]]; then
     ok "qBittorrent's network interface is ${QIF:-any} (inside the namespace only $WG_IF exists)"
   else
@@ -222,9 +242,13 @@ else
 fi
 # A launcher that calls the real binary by its full path skips the wrapper and
 # starts qBittorrent outside the namespace: that is a leak path.
-BYPASS=$(grep -lsE '(^|[[:space:]=])/usr/bin/qbittorrent([[:space:]]|$)' \
-  "$TARGET_HOME"/.config/autostart/*.desktop "$TARGET_HOME"/.local/share/applications/*.desktop \
-  "$TARGET_HOME"/.config/hypr/*.lua "$TARGET_HOME"/.config/hypr/*.conf 2>/dev/null | tr '\n' ' ')
+# shellcheck disable=SC2016
+BYPASS=$(as_target bash -c 'shopt -s nullglob
+  for f in "$1"/.config/autostart/*.desktop "$1"/.local/share/applications/*.desktop \
+           "$1"/.config/hypr/*.lua "$1"/.config/hypr/*.conf; do
+    [[ -f $f ]] && head -c 1048576 -- "$f" 2>/dev/null \
+      | grep -qE "(^|[[:space:]=])/usr/bin/qbittorrent([[:space:]]|\$)" && printf "%s " "$f"
+  done; true' _ "$TARGET_HOME" 2>/dev/null)
 if [[ -z "$BYPASS" ]]; then
   ok "no launcher or autostart entry calls /usr/bin/qbittorrent directly"
 else
@@ -234,9 +258,12 @@ fi
 # one, else the packaged one. A bare "qbittorrent" is fine: /usr/local/bin
 # comes first in PATH, so it reaches the wrapper.
 DESK="$TARGET_HOME/.local/share/applications/org.qbittorrent.qBittorrent.desktop"
-[[ -r "$DESK" ]] || DESK=/usr/share/applications/org.qbittorrent.qBittorrent.desktop
-if [[ -r "$DESK" ]]; then
-  EXEC=$(sed -nE 's/^Exec=([^ ]+).*/\1/p' "$DESK" | head -1)
+DESKTXT=$(as_target bash -c '[[ -f $1 && -r $1 ]] || exit 3; head -c 65536 -- "$1"' _ "$DESK" 2>/dev/null) || {
+  DESK=/usr/share/applications/org.qbittorrent.qBittorrent.desktop
+  DESKTXT=$(head -c 65536 -- "$DESK" 2>/dev/null) || DESKTXT=""
+}
+if [[ -n "$DESKTXT" ]]; then
+  EXEC=$(sed -nE 's/^Exec=([^ ]+).*/\1/p' <<<"$DESKTXT" | head -1)
   case "$EXEC" in
     qbittorrent|/usr/local/bin/qbittorrent) ok "the qBittorrent launcher and magnet links reach the wrapper ($EXEC)" ;;
     *) no "the qBittorrent launcher runs $EXEC, which skips the wrapper: $DESK" ;;

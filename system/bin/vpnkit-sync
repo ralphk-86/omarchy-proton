@@ -1,4 +1,5 @@
 #!/usr/bin/bash
+# omarchy-proton: installed by its setup, removed by its uninstaller (vpnkit).
 # ============================================================================
 #  vpnkit-sync - import WireGuard configs from the drop folder.
 #
@@ -27,8 +28,10 @@
 #  the caller: the folder comes from /etc/vpnkit/vpnkit.conf, and files are
 #  read with the desktop user's own permissions, never root's.
 # ============================================================================
-set -uo pipefail
+# Runs as root (through sudo, or systemd): a fixed PATH before any command,
+# because sudo hands the caller's PATH on when sudoers has no secure_path.
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/bin"
+set -uo pipefail
 . /usr/local/lib/vpnkit/common.sh
 
 [[ $EUID -eq 0 ]] || { echo "vpnkit-sync: must run as root" >&2; exit 2; }
@@ -138,6 +141,9 @@ do_sync() {
 TORRENT_FILE=/etc/vpnkit/torrent-server
 
 valid_name() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,15}$ && "$1" == "$PROFILE_PREFIX"-* ]]; }
+# Deleting a server or moving the torrent tunnel onto it: only a server the
+# kit imported (its uuid), never a WireGuard profile of yours with the prefix.
+kit_server() { vpnkit_kit_profile "$1"; }
 in_regular_use() {  # the server carries, or is wanted for, regular traffic
   nmcli -t -f NAME connection show --active 2>/dev/null | grep -qxF "$1" \
     || [[ "$(head -1 /run/vpnkit/wanted 2>/dev/null)" == "$1" ]]
@@ -146,7 +152,7 @@ in_regular_use() {  # the server carries, or is wanted for, regular traffic
 select_torrent() {  # select_torrent <server name>
   local name="$1"
   valid_name "$name" || { echo "vpnkit-sync: not a server name" >&2; return 2; }
-  [[ -r "/etc/wireguard/$name.conf" ]] || { echo "vpnkit-sync: no such server: $name" >&2; return 1; }
+  [[ -r "/etc/wireguard/$name.conf" ]] && kit_server "$name" || { echo "vpnkit-sync: no such server: $name" >&2; return 1; }
   if in_regular_use "$name"; then
     echo "vpnkit-sync: $name carries your regular traffic; pick another server for torrents, or switch regular traffic first" >&2
     return 1
@@ -172,6 +178,7 @@ do_remove() {
   valid_name "$name" || { echo "vpnkit-sync: not a server name" >&2; exit 2; }
   nmcli -t -f NAME,TYPE connection show 2>/dev/null | grep -qxF "$name:wireguard" \
     || { echo "vpnkit-sync: no such server: $name" >&2; exit 1; }
+  kit_server "$name" || { echo "vpnkit-sync: $name was not imported by the kit; it is left alone" >&2; exit 1; }
   if in_regular_use "$name"; then
     echo "vpnkit-sync: $name is in use; switch to another server or the normal connection first" >&2
     exit 1
@@ -180,7 +187,7 @@ do_remove() {
     echo "vpnkit-sync: $name carries the torrent tunnel; choose another torrent server first" >&2
     exit 1
   fi
-  nmcli connection delete "$name" >/dev/null 2>&1 || { echo "vpnkit-sync: could not delete $name" >&2; exit 1; }
+  nmcli connection delete uuid "$(vpnkit_profile_uuid "$name")" >/dev/null 2>&1 || { echo "vpnkit-sync: could not delete $name" >&2; exit 1; }
   rm -f "/etc/wireguard/$name.conf"
   echo "removed: $name"
 }

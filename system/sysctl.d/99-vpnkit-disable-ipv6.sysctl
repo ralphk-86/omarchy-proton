@@ -1,5 +1,6 @@
-# Disable IPv6 on every real interface. Installed as
-# /etc/sysctl.d/99-vpnkit-disable-ipv6.conf.
+# Disable IPv6 on every interface except loopback: wired and Wi-Fi, and also
+# Tailscale, container and VM bridges (net.ipv6.conf.all/default cover them
+# all). Installed as /etc/sysctl.d/99-vpnkit-disable-ipv6.conf.
 #
 # Rationale: the VPN tunnels carry IPv4 only, and this ISP hands out public
 # IPv6. A live IPv6 stack is the classic VPN leak: traffic reaches IPv6
@@ -9,8 +10,10 @@
 # Loopback keeps ::1. It is not a leak path, and development servers that bind
 # "localhost" expect it to exist.
 #
-# TO REVERT: the plugin's uninstall.sh --restore-ipv6, or set DISABLE_IPV6=0 in
-# /etc/vpnkit/vpnkit.conf and run install.sh again.
+# TO REVERT: the plugin's uninstall.sh --restore-ipv6, or install.sh
+# --keep-ipv6 (the same as setting DISABLE_IPV6=0 in /etc/vpnkit/vpnkit.conf
+# and running install.sh again). Either removes this file, turns IPv6 back on
+# and puts back the network profiles' saved IPv6 settings.
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 0
