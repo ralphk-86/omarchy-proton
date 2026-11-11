@@ -132,6 +132,9 @@ regular=$(jq -r 'if .blocked then "BLOCKED by the kill switch (\(.wanted) is sel
                  else "Normal connection (no VPN)" end' <<<"$st" 2>/dev/null) || regular=""
 torrents=$(jq -r 'if (.qbt_configured | not) then "no torrent tunnel set up"
                   else "\(.qbt_conn // "?") (tunnel \(if .qbt_tunnel then "up" else "DOWN" end))" end' <<<"$st" 2>/dev/null) || torrents=""
+firefox=$(jq -r 'if (.ff_configured | not) then "no Firefox tunnel (off)"
+                 elif (.ff_known | not) then "\(.ff_conn) (tunnel state unknown)"
+                 else "\(if .ff_conn != "" then .ff_conn else "?" end) (tunnel \(if .ff_tunnel then "up" else "DOWN" end))" end' <<<"$st" 2>/dev/null) || firefox=""
 mode="standard"; [[ "${1:-}" == "--fail-closed" ]] && mode="--fail-closed (tunnels taken down on purpose)"
 
 {
@@ -140,6 +143,7 @@ mode="standard"; [[ "${1:-}" == "--fail-closed" ]] && mode="--fail-closed (tunne
   echo "Plugin:          omarchy-proton, system part $VPNKIT_VERSION"
   echo "Regular traffic: ${regular:-unknown}"
   echo "Torrents:        ${torrents:-unknown}"
+  echo "Firefox:         ${firefox:-unknown}"
   echo "Check:           $mode"
   echo
 } > "$tmp"

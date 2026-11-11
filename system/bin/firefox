@@ -32,12 +32,9 @@ fi
 # Is the tunnel on? The record of its server (written when a Firefox server is
 # chosen, removed when the tunnel is turned off), its boot unit and its
 # namespace say so; the config itself is root-only. Any one of them means on:
-# a half-made or half-removed tunnel refuses rather than lets Firefox out.
-tunnel_on() {
-  [[ -s "$FF_SERVER_FILE" || -e "/run/netns/$FF_NS" ]] && return 0
-  systemctl is-enabled --quiet ff-netns.service 2>/dev/null
-}
-tunnel_on || exec "$REAL" "$@"
+# a half-made or half-removed tunnel refuses rather than lets Firefox out
+# (vpnkit_ff_opted_in, common.sh).
+vpnkit_ff_opted_in || exec "$REAL" "$@"
 
 # Started from the launcher, nobody sees stderr.
 say_refused() {  # say_refused <one line for the notification>

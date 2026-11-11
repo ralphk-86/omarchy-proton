@@ -65,6 +65,8 @@ as_user() { runuser -u $U -- env HOME=$UHOME USER=$U XDG_RUNTIME_DIR=/run/user/$
 myip()    { local a; a=$(curl -4 -s --max-time 3 "$@" "$LOOKUP" 2>/dev/null) || a=""; printf '%s' "${a:-none}"; }
 status()  { as_user /usr/local/bin/vpn-status --refresh --json | jq -r "$1"; }
 resolves() { timeout 5 getent hosts "$1" >/dev/null 2>&1; }
+# The Firefox part of a leak-check report (vpn-verify's section 10b).
+ffsect()  { sed -n '/^10b\. Firefox tunnel/,/^11\. /p' <<<"$1"; }
 PHYS=$(ip -4 route show default | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
 
 # ---------------------------------------------------------------------------
@@ -712,6 +714,21 @@ yes "and sees the namespace's resolver files" bash -c '. /usr/local/lib/vpnkit/c
 as_user /usr/local/bin/firefox 600 </dev/null >/dev/null 2>&1 &
 sleep 2
 is "a second start lands inside too (nothing outside)" "$(for p in $(ffpids); do stat -Lc %i /proc/$p/ns/net; done | sort -u | paste -sd, -)" "$FFNSINO"
+# The status and the leak check: the Firefox tunnel and where Firefox runs.
+is "status: Firefox tunnel up" "$(status .ff_tunnel)" "true"
+is "status: Firefox exit" "$(status .ff_ip)" "10.3.0.4"
+is "status: its server" "$(status .ff_conn)" "proton-se-4"
+is "status: its interface and namespace" "$(status '.firefox_if + " " + .firefox_ns')" "pff0 ffvpn"
+is "status: Firefox runs, inside, protected" "$(status '[.ff_running, .ff_protected, .ff_unprotected] | map(tostring) | join(",")')" "true,true,false"
+OUT=$(as_user /usr/local/bin/vpn-status 2>&1)
+yes "vpn-status shows the Firefox tunnel" grep -q "^Firefox tunnel     : UP · se-4 · exit 10.3.0.4 · interface pff0 (inside ffvpn)" <<<"$OUT"
+yes "and Firefox verified inside it" grep -q "^Firefox app        : running, VERIFIED inside the Firefox namespace" <<<"$OUT"
+OUT=$(vpn-verify 2>&1)
+is "the leak check passes the Firefox tunnel with Firefox inside" "$(ffsect "$OUT" | grep -c FAIL)" "0"
+ffsect "$OUT" | grep FAIL | sed 's/^/      /'
+yes "(it checked Firefox's resolver files)" grep -qE "PASS.*Firefox \(pid [0-9]+\) runs inside the Firefox namespace and resolves names only through the tunnel" <<<"$OUT"
+yes "(and its own exit)" grep -q "PASS.*Firefox exits from its own address (10.3.0.4), not the host's nor the torrent tunnel's" <<<"$OUT"
+yes "(and that the launcher reaches the wrapper)" grep -q "PASS.*the Firefox launcher and links reach the wrapper (/usr/local/bin/firefox)" <<<"$OUT"
 ffkill
 # A Firefox already outside the namespace would be handed what a new one opens.
 as_user /usr/lib/firefox/firefox 600 </dev/null >/dev/null 2>&1 &
@@ -723,6 +740,11 @@ yes "and names its pid" grep -q "pid $P" <<<"$OUT"
 no "with one outside, ff-launch refuses" as_user sudo -n /usr/local/bin/ff-launch 5
 no "with one outside, the wrapper refuses even from inside the namespace" ip netns exec ffvpn runuser -u "$U" -- /usr/local/bin/firefox 5
 is "(no second Firefox was started)" "$(ffpids | wc -l)" "1"
+is "status: a Firefox outside the namespace is unprotected" "$(status .ff_unprotected)" "true"
+is "(and named)" "$(status '.ff_pids | join(",")')" "$P"
+OUT=$(vpn-verify 2>&1); rc=$?
+is "the leak check fails on a Firefox outside" "$rc" "1"
+yes "and names its pid" grep -q "FAIL.*Firefox is running OUTSIDE the Firefox tunnel (pid $P)" <<<"$OUT"
 ffkill
 # Fail closed: no route, no resolver files, no namespace: no Firefox.
 ip -n ffvpn link set pff0 down
@@ -730,11 +752,32 @@ no "tunnel down: Firefox refuses to start" as_user /usr/local/bin/firefox 5
 no "tunnel down: ff-launch refuses" as_user sudo -n /usr/local/bin/ff-launch 5
 ip -n ffvpn link set pff0 up; ip -n ffvpn route replace default dev pff0
 is "(tunnel restored)" "$(ip netns exec ffvpn curl -4 -s --max-time 4 $LOOKUP)" "10.3.0.4"
+# One server can sit behind several endpoints: the leak check compares the
+# addresses the two tunnels really leave from. Here the provider makes the
+# torrent tunnel's requests arrive from the Firefox tunnel's address.
+ip netns exec provider nft -f - <<'EOF'
+table ip suite_sameexit {
+  chain in { type nat hook input priority 100; ip saddr 10.2.0.3 snat to 10.3.0.4; }
+}
+EOF
+is "(torrents now seem to leave from the Firefox tunnel's address)" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "10.3.0.4"
+OUT=$(vpn-verify 2>&1); rc=$?
+is "the leak check fails when both tunnels share an exit" "$rc" "1"
+yes "and says so" grep -q "FAIL.*Firefox and torrents leave from the same address (10.3.0.4)" <<<"$OUT"
+ip netns exec provider nft delete table ip suite_sameexit
+is "(torrents leave from their own address again)" "$(ip netns exec qbtvpn curl -4 -s --max-time 4 $LOOKUP)" "10.2.0.3"
 NSBAK=$(mktemp -d); mv /etc/netns/ffvpn/nsswitch.conf "$NSBAK/"
 no "without the namespace's nsswitch.conf, ff-launch refuses" as_user sudo -n /usr/local/bin/ff-launch 5
 no "and so does the wrapper" as_user /usr/local/bin/firefox 5
 no "and the wrapper refuses inside a namespace entered without them" ip netns exec ffvpn runuser -u "$U" -- /usr/local/bin/firefox 5
+# A Firefox that entered too early (not through the kit) is caught by the leak check.
+ip netns exec ffvpn runuser -u "$U" -- /usr/lib/firefox/firefox 600 </dev/null >/dev/null 2>&1 &
+sleep 1
 mv "$NSBAK/nsswitch.conf" /etc/netns/ffvpn/; rm -rf "$NSBAK"
+OUT=$(vpn-verify 2>&1); rc=$?
+is "a Firefox that entered before the resolver files existed fails the leak check" "$rc" "1"
+yes "and is named" grep -qE "FAIL.*Firefox \(pid [0-9]+\) sees the host's DNS settings" <<<"$OUT"
+ffkill
 yes "inside the namespace, the wrapper starts Firefox directly" ip netns exec ffvpn runuser -u "$U" -- /usr/local/bin/firefox 1
 systemctl stop ff-netns.service
 OUT=$(as_user /usr/local/bin/firefox 5 2>&1); rc=$?
@@ -765,6 +808,11 @@ P=$(ffpids | head -1)
 no "no override while off" test -e "$FDESK"
 is "firefox off: the wrapper execs the real binary" "$(stat -Lc %i /proc/${P:-none}/ns/net 2>/dev/null)" "$HOSTINO"
 is "(directly, as the user)" "$(ps -o user= -p "${P:-1}" | tr -d ' ')" "$U"
+is "firefox off: status says the Firefox tunnel is off" "$(status '[.ff_configured, .ff_unprotected] | map(tostring) | join(",")')" "false,false"
+yes "and vpn-status says it is not set up" bash -c 'grep -q "^Firefox tunnel     : not set up" <<<"$1"' _ "$(as_user /usr/local/bin/vpn-status 2>&1)"
+OUT=$(vpn-verify 2>&1)
+is "firefox off: no Firefox FAIL lines in the leak check (a Firefox runs, on the regular connection)" "$(ffsect "$OUT" | grep -c FAIL)" "0"
+yes "(one line says it is off)" grep -q "SKIP.*no Firefox tunnel" <<<"$OUT"
 ffkill
 no "firefox off: ff-launch refuses" as_user sudo -n /usr/local/bin/ff-launch 5
 is "(back on for the rest of the suite)" "$(as_user sudo -n /usr/local/bin/vpnkit-sync firefox proton-se-4 2>&1)" "firefox: proton-se-4"
@@ -1553,6 +1601,7 @@ is "vpn-verify --fail-closed passes with a VPN up" "$rc" "0"
 (( rc == 0 )) || grep -E "FAIL|Result" <<<"$OUT" | sed 's/^/      /'
 echo "      $(grep Result <<<"$OUT")"
 no "no direct lines in the leak check when off" grep -qi "chrome direct" <<<"$OUT"
+yes "the leak check covers the Firefox tunnel" grep -q "PASS.*Firefox exits from its own address (10.3.0.4)" <<<"$OUT"
 OUT=$(as_user sudo -n /usr/local/bin/vpn-verify 2>&1); rc=$?
 is "the panel's leak check runs without a password and passes" "$rc" "0"
 # The desktop VPN's own checks: handshake, where DNS really goes.
@@ -1614,6 +1663,7 @@ yes "vpn-check saved a report" test -s "$NEWEST"
 is "the report belongs to the desktop user" "$(stat -c %U "$NEWEST")" "$U"
 is "the reports folder is private" "$(stat -c %a "$REPORTS")" "700"
 yes "the report names the selected server" grep -q "^Regular traffic: proton-ca-1 (kill switch on)" "$NEWEST"
+yes "and the Firefox tunnel's" grep -q "^Firefox: *proton-se-4 (tunnel up)" "$NEWEST"
 yes "the report ends with the summary" grep -q "^Result: .* 0 failed" "$NEWEST"
 yes "latest.txt is the newest report" cmp -s "$NEWEST" "$REPORTS/latest.txt"
 yes "vpn-check says where it saved it" grep -qF "Report saved: $NEWEST" <<<"$OUT"

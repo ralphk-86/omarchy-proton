@@ -3,9 +3,11 @@
 # ============================================================================
 #  vpn-status - report VPN state, including the current external IPs.
 #
-#  Two independent things are reported:
+#  Independent things are reported:
 #    1. Desktop VPN  - the connection you switch between off and your servers
 #    2. qBittorrent  - the isolated always-on namespace tunnel (separate)
+#    3. Firefox      - its own always-on namespace tunnel, once opted in
+#    4. Chrome direct, when it is on
 #
 #  The external IP lookup is cached (default 30s) so the bar widget polling
 #  every few seconds doesn't hammer the network or the lookup service.
@@ -93,6 +95,13 @@ fi
 DIRECT_ON=false; vpnkit_direct_on && DIRECT_ON=true
 CHROME_THERE=false; [[ -x "$DIRECT_BIN" ]] && CHROME_THERE=true
 
+# --- the Firefox tunnel ------------------------------------------------------
+# How it is doing comes from the status helper (null there: unknown). Whether
+# it is on, and its server, can also be read here (the record is 644), so the
+# panel still knows which server it holds when the helper does not answer.
+FF_ON=false; vpnkit_ff_opted_in && FF_ON=true
+FF_RECORD=$(head -1 "$FF_SERVER_FILE" 2>/dev/null | tr -cd 'A-Za-z0-9._-')
+
 # --- configs waiting in the drop folder -------------------------------------
 INBOX=$(find "$CONFIG_DIR" "$CONFIG_DIR/torrent" "$CONFIG_DIR/firefox" -maxdepth 1 -type f -name '*.conf' 2>/dev/null | wc -l)
 
@@ -103,8 +112,10 @@ STATUS=$(jq -cn \
   --arg conn "$ACTIVE" --arg iface "$IFACE" --arg ip "$EXT_IP" --arg profiles "$PROFILES" \
   --arg version "$VPNKIT_VERSION" --arg folder "$CONFIG_DIR" --arg prefix "$PROFILE_PREFIX" --arg agent "$AGENT" --arg torrent_if "$WG_IF" --arg torrent_ns "$NS" --arg regular_if "$REGULAR_IF" --arg report_dir "$(vpnkit_report_dir)" \
   --arg direct_dns "$DIRECT_DNS" --argjson direct_on "$DIRECT_ON" --argjson chrome "$CHROME_THERE" \
+  --arg firefox_if "$FF_WG_IF" --arg firefox_ns "$FF_NS" --argjson ff_on "$FF_ON" --arg ff_record "$FF_RECORD" \
   --argjson inbox "$INBOX" --argjson blocked "$BLOCKED" --argjson known "$KNOWN" --argjson ns "$NS_JSON" '
   ($ns.direct | if type == "object" and (.enabled | type) == "boolean" then . else null end) as $d
+  | ($ns.firefox | if type == "object" and (.configured | type) == "boolean" then . else null end) as $f
   | def d(k): if $d == null or $direct_on == false then null else $d[k] end;
     def names(k): if $d == null then [] else ($d[k] // "") | split(",") | map(select(. != "")) end;
   {
@@ -136,6 +147,19 @@ STATUS=$(jq -cn \
     qbt_protected:   ($ns.qbt_protected == true),
     qbt_unprotected: ($ns.qbt_unprotected == true),
     other_torrent_apps: (($ns.other_clients // "") | split(",") | map(select(. != ""))),
+    ff_known:        ($f != null),
+    ff_configured:   (if $f != null then $f.configured else $ff_on end),
+    ff_ns:           ($f.exists == true),
+    ff_tunnel:       ($f.tunnel_up == true),
+    ff_ip:           ($f.exit_ip // ""),
+    ff_server:       ($f.server // ""),
+    ff_conn:         (if $f != null then ($f.conn // "") else $ff_record end),
+    ff_running:      ($f.running == true),
+    ff_protected:    ($f.protected == true),
+    ff_unprotected:  ($f.unprotected == true),
+    ff_pids:         (($f.pids // "") | split(",") | map(select(. != ""))),
+    firefox_if:      $firefox_if,
+    firefox_ns:      $firefox_ns,
     direct_available:   $chrome,
     direct_known:       ($d != null),
     direct_enabled:     $direct_on,
@@ -188,6 +212,20 @@ case "$MODE" in
       (if (.other_torrent_apps | length) > 0 then
          "Other torrent apps : \(.other_torrent_apps | join(", ")) - NOT in the torrent tunnel, they use your regular connection"
        else empty end),
+      (if .ff_configured | not then
+         (if .ff_known then "Firefox tunnel     : not set up - put one config in \(.folder)/firefox and run vpn-import" else empty end)
+       elif .ff_known | not then
+         "Firefox tunnel     : state unknown - the status helper did not answer"
+       elif .ff_tunnel then
+         "Firefox tunnel     : UP · \(if .ff_server != "" then .ff_server + " · " else "" end)exit \(.ff_ip) · interface \(.firefox_if) (inside \(.firefox_ns))"
+       else
+         "Firefox tunnel     : DOWN - Firefox has no network (blocked)"
+       end),
+      (if (.ff_configured and .ff_known) | not then empty
+       elif .ff_unprotected then "Firefox app        : *** RUNNING OUTSIDE THE FIREFOX TUNNEL (pid \(.ff_pids | join(" "))) - CLOSE IT ***"
+       elif .ff_protected then   "Firefox app        : running, VERIFIED inside the Firefox namespace"
+       elif .ff_running then     "Firefox app        : running, namespace state unknown"
+       else                      "Firefox app        : not running" end),
       (if .direct_enabled then
          "Chrome direct      : on · home IP · \(if .direct_dns != "" then "DNS " + .direct_dns else "system DNS" end)",
          (if .direct_known | not then

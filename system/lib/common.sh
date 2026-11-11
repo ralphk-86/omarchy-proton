@@ -183,15 +183,16 @@ TORRENT_CLIENTS="qbittorrent-nox transmission-gtk transmission-qt transmission-d
 transmission-cli deluge deluge-gtk deluged rtorrent ktorrent fragments tixati biglybt
 frostwire webtorrent"
 
-vpnkit_app_pids() {  # vpnkit_app_pids <user> <exe ERE> <inside|outside> <netns:INODE | slice:NAME> [<names ERE>]
+vpnkit_app_pids() {  # vpnkit_app_pids <user> <exe ERE> <inside|outside|both> <netns:INODE | slice:NAME> [<names ERE>]
   # Prints each process of <user> whose program (/proc/<pid>/exe) matches
   # <exe ERE> and that is inside (or outside) <place>: the network namespace
   # with that inode (with an empty inode nothing is inside), or the systemd
-  # slice of that name (the process's cgroup). With <names ERE>, only
-  # processes of exactly those names (pgrep -x) are looked at. A process that
-  # vanished, or whose place cannot be read, is skipped. The one check behind
-  # "is this app running outside its tunnel or slice" for qBittorrent,
-  # Firefox and Chrome.
+  # slice of that name (the process's cgroup). With "both", every such
+  # process, as "inside <pid>" or "outside <pid>" (one pass for the status).
+  # With <names ERE>, only processes of exactly those names (pgrep -x) are
+  # looked at. A process that vanished, or whose place cannot be read, is
+  # skipped. The one check behind "is this app running outside its tunnel or
+  # slice" for qBittorrent, Firefox and Chrome.
   local user="$1" re="$2" want="$3" place="$4" pid v ins
   local pids
   if [[ -n "${5:-}" ]]; then pids=$(pgrep -x "$5" -u "$user" 2>/dev/null) || pids=""
@@ -209,11 +210,12 @@ vpnkit_app_pids() {  # vpnkit_app_pids <user> <exe ERE> <inside|outside> <netns:
         ins=0; [[ "$v" == "0::/${place#slice:}/"* ]] && ins=1 ;;
       *) return 1 ;;
     esac
-    if [[ "$want" == inside ]]; then
-      (( ins == 1 )) && printf '%s\n' "$pid"
-    else
-      (( ins == 0 )) && printf '%s\n' "$pid"
-    fi
+    case "$want" in
+      inside)  (( ins == 1 )) && printf '%s\n' "$pid" ;;
+      outside) (( ins == 0 )) && printf '%s\n' "$pid" ;;
+      both)    if (( ins == 1 )); then printf 'inside %s\n' "$pid"; else printf 'outside %s\n' "$pid"; fi ;;
+      *) return 1 ;;
+    esac
   done
   return 0
 }
@@ -241,6 +243,16 @@ vpnkit_ff_outside_pids() {  # vpnkit_ff_outside_pids <namespace inode or ""> <us
 }
 vpnkit_ff_inside_pids() {  # vpnkit_ff_inside_pids <namespace inode or ""> <user>
   vpnkit_app_pids "$2" "$VPNKIT_FF_EXE_RE" inside "netns:$1"
+}
+
+vpnkit_ff_opted_in() {  # vpnkit_ff_opted_in: the Firefox tunnel is on (or half on)
+  # The record of its server (644, written when a Firefox server is chosen,
+  # removed when the tunnel is turned off), its namespace, or its boot unit:
+  # any one of them counts, so a tunnel that is half set up or half removed
+  # is treated as on (Firefox refused, the status showing what is missing)
+  # rather than as off. Readable by anyone; FF_CONF itself is root-only.
+  [[ -s "$FF_SERVER_FILE" || -e "/run/netns/$FF_NS" ]] && return 0
+  systemctl is-enabled --quiet ff-netns.service 2>/dev/null
 }
 
 vpnkit_ns_nsswitch() {  # vpnkit_ns_nsswitch: prints the nsswitch.conf for a private namespace

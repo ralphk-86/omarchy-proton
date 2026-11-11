@@ -7,8 +7,8 @@
 #  to catch the case where the config looks right but the kernel disagrees.
 #
 #  Exit code 0 only if every critical check passes. Run it after install, after
-#  changing the torrent config, and any time you are about to trust this with
-#  real traffic.
+#  changing the torrent or Firefox config, and any time you are about to trust
+#  this with real traffic.
 #
 #  Usage: vpn-verify [--fail-closed]
 #    --fail-closed  also take the torrent tunnel down for a few seconds and
@@ -42,6 +42,21 @@ as_target() {
   else
     timeout 5 "$@"
   fi
+}
+
+# Does this process see resolver files that keep names inside its tunnel?
+# Inside a namespace, the /etc a process sees is what `ip netns exec` mounted
+# when it entered. A process that entered before the namespace's resolver
+# files existed keeps the host's nsswitch.conf, whose `resolve` module answers
+# over systemd-resolved's Unix socket, outside the tunnel. Read as the
+# process's owner, not as root: its root is its own (a process can build a
+# mount namespace with a symlink anywhere in it).
+entered_safely() {  # entered_safely <pid>
+  local owner
+  owner=$($SUDO stat -c '%u %g' "/proc/$1" 2>/dev/null) || owner=""
+  [[ "$owner" =~ ^[0-9]+\ [0-9]+$ ]] \
+    && $SUDO setpriv --reuid="${owner% *}" --regid="${owner#* }" --clear-groups -- \
+         timeout 5 bash -c '. /usr/local/lib/vpnkit/common.sh; vpnkit_resolver_safe "$1"' _ "/proc/$1/root/etc" 2>/dev/null
 }
 
 # Body of a URL (whitespace removed), fetched on the host or inside the
@@ -199,16 +214,8 @@ for pid in $(pgrep -x qbittorrent 2>/dev/null); do
   PNS=$($SUDO stat -Lc '%i' "/proc/$pid/ns/net" 2>/dev/null)
   if [[ "$PNS" == "$NS_INODE" ]]; then
     ok "pid $pid is inside the namespace (inode match)"
-    # Inside is not enough: the /etc it sees is what `ip netns exec` mounted
-    # when it entered. A process that entered before the namespace's resolver
-    # files existed keeps the host's nsswitch.conf, whose `resolve` module
-    # answers over systemd-resolved's Unix socket, outside the tunnel.
-    # Read as the process's owner, not as root: its root is its own (a
-    # process can build a mount namespace with a symlink anywhere in it).
-    PIDS_OWNER=$($SUDO stat -c '%u %g' "/proc/$pid" 2>/dev/null) || PIDS_OWNER=""
-    if [[ "$PIDS_OWNER" =~ ^[0-9]+\ [0-9]+$ ]] \
-       && $SUDO setpriv --reuid="${PIDS_OWNER% *}" --regid="${PIDS_OWNER#* }" --clear-groups -- \
-            timeout 5 bash -c '. /usr/local/lib/vpnkit/common.sh; vpnkit_resolver_safe "$1"' _ "/proc/$pid/root/etc" 2>/dev/null; then
+    # Inside is not enough: see entered_safely.
+    if entered_safely "$pid"; then
       ok "pid $pid resolves names only through the tunnel (its nsswitch.conf excludes resolve/mdns)"
     else
       no "pid $pid sees the host's DNS settings (entered the namespace before they were set up) - names can resolve outside the tunnel; restart qBittorrent"
@@ -283,6 +290,131 @@ elif [[ -n "$W" ]]; then
   no "'qbittorrent' resolves to $W, not /usr/local/bin/qbittorrent - a hand-started client would leak"
 else
   meh "qbittorrent is not installed"
+fi
+
+# --- 10b. the Firefox tunnel (opt-in) ----------------------------------------
+# Off until a Firefox server is chosen; then Firefox may only run inside its
+# own namespace, whose only way out is its own tunnel, with an exit of its own.
+echo
+echo "10b. Firefox tunnel"
+FF_ON=0
+{ vpnkit_ff_opted_in || $SUDO test -r "$FF_CONF"; } && FF_ON=1
+if (( ! FF_ON )); then
+  meh "no Firefox tunnel (off until a config is put in $CONFIG_DIR/firefox and imported): Firefox uses the regular connection"
+else
+  ffx() { $SUDO ip netns exec "$FF_NS" "$@"; }
+  ff_get() { local b; b=$(ffx curl -4 -s --max-time "$1" --max-filesize "$VPNKIT_MAX_BODY" "${@:2}" 2>/dev/null) || b=""; printf '%s' "${b//[[:space:]]/}"; }
+  FFOK=0
+  if [[ "$FF_NS" == "$NS" || ! "$FF_NS" =~ ^[A-Za-z0-9._-]{1,32}$ ]]; then
+    no "FF_NS in vpnkit.conf ('$FF_NS') is not a namespace name of its own - Firefox cannot start"
+  elif [[ -e "/run/netns/$FF_NS" ]]; then
+    ok "namespace '$FF_NS' exists"; FFOK=1
+  else
+    no "the Firefox tunnel is on but its namespace '$FF_NS' does not exist - Firefox is refused; run: sudo systemctl start ff-netns.service"
+  fi
+  FFINO=""
+  if (( FFOK )); then
+    FFINO=$($SUDO stat -Lc '%i' "/run/netns/$FF_NS" 2>/dev/null) || FFINO=""
+    FFIFACES=$(ffx ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1 | sort | paste -sd, -)
+    WANT_IFACES=$(printf '%s\n' lo "$FF_WG_IF" | sort | paste -sd, -)
+    if [[ "$FFIFACES" == "$WANT_IFACES" ]]; then
+      ok "only lo and $FF_WG_IF are inside the Firefox namespace"
+    else
+      no "the Firefox namespace holds ${FFIFACES:-nothing}, expected $WANT_IFACES"
+    fi
+    FFRT=$(ffx ip route show default 2>/dev/null)
+    if [[ -z "$FFRT" ]]; then
+      no "the Firefox tunnel has no default route - it is down (Firefox has no network, nothing leaks)"
+    elif grep -q "$FF_WG_IF" <<<"$FFRT"; then
+      ok "the Firefox namespace's default route is via $FF_WG_IF"
+    else
+      no "the Firefox namespace's default route does NOT use $FF_WG_IF: $FFRT"
+    fi
+    if $SUDO bash -c '. /usr/local/lib/vpnkit/common.sh; vpnkit_resolver_safe "$1"' _ "/etc/netns/$FF_NS" 2>/dev/null; then
+      ok "the Firefox namespace's resolver files send names through the tunnel only"
+    else
+      no "the Firefox namespace's resolver files (/etc/netns/$FF_NS) are missing or use systemd-resolved - run: sudo systemctl restart ff-netns.service"
+    fi
+    FFGUARD=$(ffx nft list table inet ffguard 2>/dev/null) || FFGUARD=""
+    if grep -q 'policy drop' <<< "$FFGUARD"; then ok "the Firefox namespace's default-deny ruleset is loaded"
+    else no "ffguard default-deny ruleset is not loaded in the Firefox namespace"; fi
+    FFMARK=$(ffx wg show "$FF_WG_IF" fwmark 2>/dev/null)
+    if [[ -n "${VPN_FWMARK:-}" && "$VPN_FWMARK" != "0" ]]; then
+      if [[ "$FFMARK" == "$(printf '0x%x' "$VPN_FWMARK")" ]]; then ok "the Firefox tunnel carries fwmark $FFMARK, so a desktop VPN never wraps it"
+      else no "the Firefox tunnel's fwmark is '${FFMARK:-off}', expected $(printf '0x%x' "$VPN_FWMARK")"; fi
+    fi
+    if [[ "${DISABLE_IPV6:-1}" == "1" ]]; then
+      if ffx ip -6 addr show scope global 2>/dev/null | grep -q inet6; then
+        no "the Firefox namespace has a global IPv6 address despite DISABLE_IPV6=1"
+      else
+        ok "no global IPv6 address inside the Firefox namespace"
+      fi
+    fi
+    if ffx getent hosts example.com >/dev/null 2>&1; then ok "DNS resolves inside the Firefox namespace"
+    else no "DNS does not resolve inside the Firefox namespace"; fi
+    # Its own exit: not the host's, and not the torrent tunnel's (one server
+    # can sit behind several endpoints, so the endpoints alone prove nothing).
+    FFIP=$(ff_get 8 "$IP_LOOKUP_URL")
+    FFHS=$(ffx wg show "$FF_WG_IF" latest-handshakes 2>/dev/null | awk '{print $2}' | head -1)
+    if [[ -n "${FFHS:-}" && "$FFHS" -gt 0 ]] && (( $(date +%s) - FFHS < HANDSHAKE_MAX_AGE )); then
+      ok "the Firefox tunnel: last handshake $(( $(date +%s) - FFHS ))s ago"
+    else
+      no "the Firefox tunnel has no recent handshake - its server is not answering"
+    fi
+    FFREAL=${REAL:-$(host_get 6 -4 "$IP_LOOKUP_URL")}
+    QIP=""; (( NSOK )) && QIP=${NSIP:-$(ns_get 8 -4 "$IP_LOOKUP_URL")}
+    echo "     Firefox exit IP   : ${FFIP:-<none>}"
+    if [[ -z "$FFIP" ]]; then
+      no "the Firefox namespace could not reach the internet"
+    elif [[ -n "$FFREAL" && "$FFIP" == "$FFREAL" ]]; then
+      no "THE FIREFOX EXIT IP EQUALS THE HOST'S - Firefox is NOT going through its own tunnel"
+    elif [[ -n "$QIP" && "$FFIP" == "$QIP" ]]; then
+      no "Firefox and torrents leave from the same address ($FFIP): websites could link your browsing to your torrents - choose a Firefox server on another exit"
+    else
+      if [[ -n "$QIP" ]]; then ok "Firefox exits from its own address ($FFIP), not the host's nor the torrent tunnel's"
+      else ok "Firefox exits from its own address ($FFIP), not the host's"; fi
+    fi
+  fi
+  # Every Firefox of the desktop user: inside the namespace, and entered
+  # with its resolver files (one check per mount namespace: its processes
+  # share what they see).
+  FFPS=$(vpnkit_app_pids "$TARGET_USER" "$VPNKIT_FF_EXE_RE" both "netns:$FFINO")
+  FFOUT=$(awk '$1 == "outside" {print $2}' <<<"$FFPS" | paste -sd' ' -)
+  if [[ -n "$FFOUT" ]]; then
+    no "Firefox is running OUTSIDE the Firefox tunnel (pid $FFOUT) - its pages use your regular connection; close it, then start Firefox again"
+  fi
+  declare -A FFMNT=()
+  for pid in $(awk '$1 == "inside" {print $2}' <<<"$FFPS"); do
+    m=$($SUDO stat -Lc '%i' "/proc/$pid/ns/mnt" 2>/dev/null) || continue
+    [[ -n "${FFMNT[$m]:-}" ]] && continue
+    FFMNT[$m]=$pid
+    if entered_safely "$pid"; then
+      ok "Firefox (pid $pid) runs inside the Firefox namespace and resolves names only through the tunnel"
+    else
+      no "Firefox (pid $pid) sees the host's DNS settings (entered the namespace before they were set up) - names can resolve outside the tunnel; restart Firefox"
+    fi
+  done
+  [[ -n "$FFPS" ]] || meh "Firefox is not running"
+  # The launcher entry that menus and links use: the user's copy if there is
+  # one, else the packaged one. It must reach the wrapper.
+  FDESK="$TARGET_HOME/.local/share/applications/firefox.desktop"
+  FDESKTXT=$(as_target bash -c '[[ -f $1 && -r $1 ]] || exit 3; head -c 65536 -- "$1"' _ "$FDESK" 2>/dev/null) || {
+    FDESK=/usr/share/applications/firefox.desktop
+    FDESKTXT=$(head -c 65536 -- "$FDESK" 2>/dev/null) || FDESKTXT=""
+  }
+  if [[ -n "$FDESKTXT" ]]; then
+    FEXEC=$(sed -nE 's/^Exec=([^ ]+).*/\1/p' <<<"$FDESKTXT" | sort -u | paste -sd' ' -)
+    case "$FEXEC" in
+      firefox|/usr/local/bin/firefox) ok "the Firefox launcher and links reach the wrapper ($FEXEC)" ;;
+      *) no "the Firefox launcher runs $FEXEC, which skips the wrapper: $FDESK (run: vpn-firefox-launcher)" ;;
+    esac
+  fi
+  W=$(PATH="/usr/local/sbin:/usr/local/bin:/usr/bin" command -v firefox 2>/dev/null || true)
+  if [[ "$W" == "/usr/local/bin/firefox" ]]; then
+    ok "'firefox' resolves to the Firefox tunnel's wrapper"
+  else
+    no "'firefox' resolves to ${W:-nothing}, not /usr/local/bin/firefox - Firefox typed in a terminal would start outside the tunnel"
+  fi
 fi
 
 # --- 11. desktop profiles ---------------------------------------------------
