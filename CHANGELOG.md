@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.4.1 (2026-11-10)
+
+- **Static IPv6 in a network profile is now saved in full and put back exactly.** To switch
+  IPv6 off, setup sets `ipv6.method=disabled` in each wired and Wi-Fi profile, and has to clear
+  the profile's IPv6 DNS servers, search domains, addresses, gateway and routes in the same
+  call (NetworkManager refuses it otherwise). Since 0.3.6 it saved only the method, DNS servers
+  and search domains. The addresses, gateway and routes were dropped, and neither the rollback
+  (when the internet stops answering after setup) nor `uninstall.sh --restore-ipv6` could put
+  them back; restoring a `manual` profile then failed and fell back to `auto` without saying
+  so. **Who is affected:** only profiles with static IPv6 (`ipv6.method manual`, or addresses,
+  a gateway or routes set by hand). Profiles with automatic IPv6, the usual case, lost nothing.
+  Reported in the marketplace review of 0.4.0.
+- **What changed.** Setup now saves every field it clears (method, DNS servers, search domains,
+  addresses, gateway, routes with next hop, metric and attributes), each exactly as
+  NetworkManager reports it, encoded so no character can break the file, keyed by the profile's
+  UUID. The rollback and the uninstaller use one shared implementation (`system/lib/ipv6.sh`,
+  installed to `/usr/local/lib/vpnkit/ipv6.sh`) and restore all fields in one call. A profile
+  that cannot be restored is named, keeps IPv6 off instead of getting a guessed `auto`, keeps
+  its saved line, and the uninstaller exits with an error. A profile NetworkManager will not
+  change is left exactly as it was (before, its settings were saved anyway and could be
+  applied later). A profile turned back on with different settings before a later setup has
+  the new ones saved; the earlier line is kept in `/etc/vpnkit/ipv6-profiles.superseded`.
+- **Profiles switched off by 0.3.6 to 0.4.0 cannot get their static addresses back.** Those
+  versions never saved them; no version of this kit can recover them. Their saved lines (old
+  format) are still read: method, DNS servers and search domains are restored as before. For a
+  profile that had `ipv6.method manual`, `--restore-ipv6` now says that its addresses, gateway
+  and routes were not saved, names the profile and leaves IPv6 off on it; set them again with
+  `nmcli` (README: "IPv6 and your network profiles").
+- **The restore touches only what setup changed, and the running link follows.** Found in the
+  same review's audit of this code:
+  - The rollback now applies the restored settings to the running connection (`nmcli device
+    reapply`, which keeps it up). Before, on a network that needs IPv6 (DNS only over IPv6, an
+    IPv6-only uplink) the machine stayed offline until `vpn-rescue` or a reconnect.
+    `--restore-ipv6` does the same.
+  - `--restore-ipv6` restores only the profiles listed in the saved file. Before, it set every
+    other wired and Wi-Fi profile to `ipv6.method=auto` and cleared its IPv6 DNS servers and
+    search domains: a profile you had switched off yourself came back on, and a network joined
+    after setup lost its IPv6 DNS. A profile switched off by a version before 0.3.6 (which saved
+    nothing) now stays off; README says how to turn it back on.
+  - `--purge` no longer deletes the saved file while it holds settings not yet put back: alone
+    it keeps the file and says so plainly; `--purge --restore-ipv6` restores first, then
+    removes everything.
+  - A rollback during an update no longer turns IPv6 back on when an earlier setup had switched
+    it off (it undoes only what that run changed).
+  - Profiles are addressed by UUID: a profile with a colon in its name was skipped by setup and
+    by the restore, and two profiles with the same name shared one saved line.
+- **Upgrading:** "Update the system part" changes nothing on profiles that already have IPv6
+  off. It only matters for profiles setup switches off from now on, and for the restore.
+- Tests: static checks pass; the marketplace security baseline is `review-required` with no
+  findings. VM suite: 507 passed, 0 failed. New VM tests: a wired profile with static IPv6
+  (two addresses, a gateway, two routes one with a metric, DNS servers, search domains, a colon
+  in its name) is switched off with every field saved, then restored field for field (and every
+  other `ipv6.*` setting unchanged) by a forced install rollback, by `uninstall.sh
+  --restore-ipv6`, and by the plugin folder's `uninstall.sh --purge --restore-ipv6` after the
+  system part is gone; the rollback brings IPv6 back on the running link; a profile
+  NetworkManager refuses to change is left exactly as it was and not saved; an old-format line
+  restores as before; an old-format `manual` line fails loudly, is named and kept, and IPv6
+  stays off on it; profiles the install never changed (switched off by the user, joined later
+  with IPv6 DNS) are left alone; `--purge` alone keeps the saved file; a rollback during an
+  update leaves IPv6 off. The suite also waits for its simulated lookup service to listen
+  before using it (it could refuse for a few seconds after start).
+
 ## 0.4.0 (2026-11-09)
 
 - **New, off until you turn it on: Chrome direct.** Google Chrome keeps your normal connection

@@ -16,7 +16,9 @@ outside its namespace.
 ## What runs as root
 
 - `system/install-root.sh` and `system/uninstall-root.sh`, once each, when you run setup or
-  the uninstaller and enter your password.
+  the uninstaller and enter your password. Both save and restore the IPv6 settings of your
+  network profiles through the same code, `system/lib/ipv6.sh` (installed to
+  `/usr/local/lib/vpnkit/ipv6.sh`; the uninstaller uses the copy next to it).
 - Seven helpers the desktop user may run through `sudo` without a password
   (`/etc/sudoers.d/99-vpnkit`):
 

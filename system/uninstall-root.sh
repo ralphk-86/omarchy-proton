@@ -25,6 +25,14 @@ if [[ -r /usr/local/lib/vpnkit/common.sh ]]; then
   . /usr/local/lib/vpnkit/common.sh
   PREFIX="$PROFILE_PREFIX"
 fi
+# The IPv6 save/restore code install-root.sh uses: next to this script, from
+# the plugin folder (system/lib/) or from the installed copy.
+V6_LIB=""
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+for f in "$HERE/lib/ipv6.sh" "$HERE/ipv6.sh"; do
+  [[ -r "$f" ]] && { V6_LIB="$f"; break; }
+done
+V6_KEEP=0   # IPv6 settings still saved that only the user has: --purge keeps them
 
 nft delete table inet vpnkit_kill 2>/dev/null || true
 rm -rf /run/vpnkit /run/qbt-netns-exit-ip
@@ -62,31 +70,46 @@ for f in qbt-netns-up qbt-netns-down qbt-netns-status qbt-launch qbittorrent \
 done
 rm -rf /etc/netns/qbtvpn /etc/vpnkit/providers
 # Your settings survive a plain uninstall, so a reinstall behaves the same.
-# Before --purge removes /etc/vpnkit: ipv6-profiles.saved holds each profile's
-# IPv6 settings from before the install (method, dns, dns-search).
+# ipv6-profiles.saved holds each profile's IPv6 settings from before the
+# install (lib/ipv6.sh says what and how).
+V6_SAVED=/etc/vpnkit/ipv6-profiles.saved
 if (( RESTORE_V6 )); then
-  V6_SAVED=/etc/vpnkit/ipv6-profiles.saved
   rm -f /etc/sysctl.d/99-vpnkit-disable-ipv6.conf
   sysctl -qw net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0
-  while IFS=: read -r name type; do
-    case "$type" in
-      802-3-ethernet|802-11-wireless)
-        saved=""; method="auto"; dns=""; search=""
-        [[ -f "$V6_SAVED" ]] && saved=$(awk -F'\t' -v n="$name" '$1 == n { print; exit }' "$V6_SAVED")
-        if [[ -n "$saved" ]]; then
-          IFS=$'\t' read -r _ method dns search <<< "$saved"
-          [[ -n "$method" && "$method" != "disabled" ]] || method="auto"
-        fi
-        nmcli connection modify "$name" ipv6.method "$method" ipv6.dns "$dns" ipv6.dns-search "$search" \
-          || nmcli connection modify "$name" ipv6.method auto || true
-        ;;
-    esac
-  done < <(nmcli -t -f NAME,TYPE connection show)
-  rm -f "$V6_SAVED"
-  echo "IPv6 re-enabled; reconnect the network (or reboot) for addresses to come back."
+  if [[ -z "$V6_LIB" ]]; then
+    echo "[!] IPv6: lib/ipv6.sh is missing, so no profile was changed; their saved settings stay in $V6_SAVED."
+    RC=1
+  else
+    # shellcheck disable=SC1090
+    . "$V6_LIB"
+    # Only the profiles the install changed (the ones saved), each applied to
+    # its running link; profiles it never changed are left alone.
+    if v6_restore_saved; then
+      rm -f "$V6_SAVED"
+    else
+      echo "[!] IPv6 could not be restored on every profile (named above); kept $V6_SAVED."
+      RC=1
+    fi
+  fi
+  echo "IPv6 re-enabled."
 fi
+# Saved IPv6 settings not put back are the only copy of what the install
+# cleared (static addresses, gateway, routes): even --purge keeps them (with
+# ipv6-profiles.superseded, the entries later installs replaced).
+[[ -s "$V6_SAVED" ]] && V6_KEEP=1
 
-(( PURGE )) && rm -rf /etc/vpnkit
+if (( PURGE )); then
+  if (( V6_KEEP )); then
+    find /etc/vpnkit -mindepth 1 -maxdepth 1 ! -name 'ipv6-profiles.saved' ! -name 'ipv6-profiles.superseded' \
+      -exec rm -rf {} +
+    echo "[!] Kept /etc/vpnkit/ipv6-profiles.saved: your profiles' IPv6 settings from before the"
+    echo "    install, not put back (no --restore-ipv6). IPv6 stays off on those profiles. To put them"
+    echo "    back, run uninstall.sh --restore-ipv6 from the plugin folder BEFORE removing the plugin:"
+    echo "    after 'omarchy plugin remove' nothing on this machine can read that file."
+  else
+    rm -rf /etc/vpnkit
+  fi
+fi
 rm -f /etc/sudoers.d/99-vpnkit /etc/sudoers.d/10-vpnkit
 
 rm -rf /usr/local/lib/vpnkit

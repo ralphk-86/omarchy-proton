@@ -141,6 +141,13 @@ lo_dns_start() {
 lo_dns_start
 python3 /tmp/whoami.py 127.0.0.1 </dev/null >/dev/null 2>&1 &
 sleep 1
+# HTTPServer looks up its own name between bind() and listen(); in the
+# provider namespace that lookup can take seconds. Wait until both answer.
+for i in $(seq 1 60); do
+  ip netns exec provider curl -s --max-time 1 http://192.0.2.80:8080/ >/dev/null 2>&1 \
+    && curl -s --max-time 1 http://127.0.0.1:8080/ >/dev/null 2>&1 && break
+  sleep 0.5
+done
 
 conf() {  # conf <file> <key> <addr> <dns> <comment> <server-pub> <port>
   install -d -o $U -g $U -m 700 "$(dirname "$1")"
@@ -182,11 +189,52 @@ PPROF=$(nmcli -g GENERAL.CONNECTION device show "$PHYS" 2>/dev/null | head -1)
 nmcli connection modify "$PPROF" ipv6.method auto ipv6.dns "2606:4700:4700::1111" ipv6.ignore-auto-dns yes
 is "the physical profile carries an IPv6 DNS server, as Omarchy's DNS picker leaves it" \
   "$(nmcli -g ipv6.dns connection show "$PPROF" | sed 's/\\:/:/g')" "2606:4700:4700::1111"
+# A wired profile with static IPv6 (documentation addresses only): two
+# addresses, a gateway, two routes (one with a metric), DNS and search
+# domains. Not in use (no such interface): only its settings matter. The
+# install must save every field it clears, and the rollback and the uninstall
+# must put each one back exactly.
+SPROF="suite: static6"   # a colon: names are escaped by nmcli -g; profiles go by uuid
+nmcli connection add type ethernet con-name "$SPROF" ifname suitest0 autoconnect no ipv4.method disabled \
+  ipv6.method manual ipv6.addresses "2001:db8:1::10/64, 2001:db8:1::11/64" ipv6.gateway 2001:db8:1::1 \
+  ipv6.routes "2001:db8:2::/48 2001:db8:1::2, 2001:db8:3::/48 2001:db8:1::3 50" \
+  ipv6.dns "2001:db8::53,2001:db8::54" ipv6.dns-search "example.test,lab.example.test" >/dev/null
+SUUID=$(nmcli -g connection.uuid connection show "$SPROF")
+V6F=(method dns dns-search addresses gateway routes)
+declare -A SBEFORE
+for f in "${V6F[@]}"; do SBEFORE[$f]=$(nmcli -g "ipv6.$f" connection show uuid "$SUUID"); done
+SDUMP=$(nmcli -e no -f ipv6 connection show uuid "$SUUID")
+is "the static profile has two addresses" "${SBEFORE[addresses]}" '2001\:db8\:1\:\:10/64, 2001\:db8\:1\:\:11/64'
+is "and two routes, one with a metric" "${SBEFORE[routes]}" '2001\:db8\:2\:\:/48 2001\:db8\:1\:\:2, 2001\:db8\:3\:\:/48 2001\:db8\:1\:\:3 50'
+# same_static <description>: every IPv6 field of the static profile is as before.
+same_static() {
+  local f
+  for f in "${V6F[@]}"; do
+    is "$1: ipv6.$f" "$(nmcli -g "ipv6.$f" connection show uuid "$SUUID")" "${SBEFORE[$f]}"
+  done
+  is "$1: every other ipv6.* setting too" "$(nmcli -e no -f ipv6 connection show uuid "$SUUID")" "$SDUMP"
+}
+# A profile NetworkManager will not change (a stand-in nmcli in front of the
+# real one refuses to modify it, for the install only): the install must
+# warn, leave it exactly as it is and save nothing for it.
+LPROF="suite locked"
+nmcli connection add type ethernet con-name "$LPROF" ifname suitest1 autoconnect no ipv4.method disabled \
+  ipv6.method auto ipv6.dns 2001:db8::53 >/dev/null
+LUUID=$(nmcli -g connection.uuid connection show "$LPROF")
+LDUMP=$(nmcli -e no -f ipv6 connection show uuid "$LUUID")
+cat > /usr/local/sbin/nmcli <<EOF
+#!/usr/bin/env bash
+# suite.sh: NetworkManager refuses to change one profile.
+if [[ " \$* " == *" modify "* && " \$* " == *" $LUUID "* ]]; then echo "Error: profile is locked (suite)" >&2; exit 1; fi
+exec /usr/bin/nmcli "\$@"
+EOF
+chmod 755 /usr/local/sbin/nmcli
 # The real path: the user runs install.sh in a terminal and types the sudo
 # password once.
 in_terminal "$PLUGIN/install.sh" > /tmp/install.log 2>&1; rc=$?
 is "install.sh exits 0" "$rc" "0"
 (( rc == 0 )) || sed 's/^/      /' /tmp/install.log | tail -25
+rm -f /usr/local/sbin/nmcli
 yes "missing dependency was installed (wg)" command -v wg
 yes "missing dependency was installed (nft)" command -v nft
 yes "Chrome direct's dependency is installed (xdg-dbus-proxy${XDBUS_BEFORE:+, was there before})" command -v xdg-dbus-proxy
@@ -221,9 +269,22 @@ is "IPv6 is off on the physical link" "$(sysctl -n net.ipv6.conf.$PHYS.disable_i
 is "loopback keeps IPv6" "$(sysctl -n net.ipv6.conf.lo.disable_ipv6)" "0"
 is "the physical profile has ipv6.method=disabled despite its IPv6 DNS server" \
   "$(nmcli -g ipv6.method connection show "$PPROF")" "disabled"
-no "the installer printed no IPv6 warning" grep -q "Could not set ipv6.method=disabled" /tmp/install.log
-yes "the profile's IPv6 settings were saved for the uninstall" \
-  grep -qF "$(printf '%s\tauto\t2606:4700:4700::1111' "$PPROF")" /etc/vpnkit/ipv6-profiles.saved
+is "the only profile the installer could not change is the locked one" \
+  "$(tr -d '\r' < /tmp/install.log | sed -n 's/.*Could not set ipv6.method=disabled on: \(.*\) (left unchanged)$/\1/p')" "$LPROF"
+# saved <uuid> <field>: a field of the saved entry, through the kit's own reader.
+saved() { bash -c '. /usr/local/lib/vpnkit/ipv6.sh; v6_field "$(v6_entry "$1" "$(v6_get "$1" connection.id)")" "$2"' _ "$@"; }
+PUUID=$(nmcli -g connection.uuid connection show "$PPROF")
+is "the physical profile's IPv6 method was saved for the uninstall" "$(saved "$PUUID" method)" "auto"
+is "and its IPv6 DNS server" "$(saved "$PUUID" dns)" "2606:4700:4700::1111"
+is "the static profile has ipv6.method=disabled" "$(nmcli -g ipv6.method connection show uuid "$SUUID")" "disabled"
+is "and its addresses are cleared" "$(nmcli -g ipv6.addresses connection show uuid "$SUUID")" ""
+for f in "${V6F[@]}"; do
+  is "the static profile's ipv6.$f was saved exactly" "$(saved "$SUUID" "$f")" "$(sed 's/\\:/:/g' <<<"${SBEFORE[$f]}")"
+done
+yes "the installer says the static profile's settings are saved" grep -qF "\"$SPROF\" had static IPv6" /tmp/install.log
+is "that profile is left exactly as it was" "$(nmcli -e no -f ipv6 connection show uuid "$LUUID")" "$LDUMP"
+no "and nothing is saved for it" grep -qF -e "$LUUID" -e "$LPROF" /etc/vpnkit/ipv6-profiles.saved
+is "the saved IPv6 settings are readable by all, writable by root" "$(stat -c '%a %U' /etc/vpnkit/ipv6-profiles.saved)" "644 root"
 no "tester has no passwordless sudo in general" as_user sudo -n true
 yes "tester may run the status helper without a password" as_user sudo -n /usr/local/bin/qbt-netns-status
 no "tester may NOT run the leak check with arguments" as_user sudo -n /usr/local/bin/vpn-verify --fail-closed
@@ -1134,6 +1195,7 @@ sed -i 's/^DISABLE_IPV6=.*/DISABLE_IPV6=1/' /etc/vpnkit/vpnkit.conf
 REPORTS="$UHOME/Documents/VPN leak checks"
 OUT=$(as_user /usr/local/bin/vpn-check 2>&1); rc=$?
 is "vpn-check passes with a VPN up" "$rc" "0"
+(( rc == 0 )) || grep -E "FAIL|Result" <<<"$OUT" | sed 's/^/      /'
 NEWEST=$(ls -1 "$REPORTS"/leak-check-*.txt 2>/dev/null | sort | tail -1)
 yes "vpn-check saved a report" test -s "$NEWEST"
 is "the report belongs to the desktop user" "$(stat -c %U "$NEWEST")" "$U"
@@ -1190,6 +1252,21 @@ yes "with its rules" nft list table inet vpnkit_direct
 is "a reinstall writes the launcher override while it is on" "$(head -1 "$DESK" 2>/dev/null)" "$MARK"
 as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
 is "and a probe in the slice still exits from the home address" "$(slice_ip)" "$HOME_IP"
+# A line saved by a version before 0.4.1 (name, method, dns, dns-search) must
+# still be restored; and a profile switched off by a version before 0.3.6,
+# which saved nothing, gets ipv6.method=auto back as before.
+OPROF="suite legacy"
+nmcli connection add type ethernet con-name "$OPROF" ifname suitest2 autoconnect no ipv4.method disabled ipv6.method disabled >/dev/null
+printf '%s\tauto\t2001:db8::53\texample.test\n' "$OPROF" >> /etc/vpnkit/ipv6-profiles.saved
+# Profiles the install never changed must come out of the restore exactly as
+# they went in: one the user had switched off, and one joined after setup
+# with IPv6 DNS servers of its own.
+NPROF="suite user-disabled"
+nmcli connection add type ethernet con-name "$NPROF" ifname suitest3 autoconnect no ipv4.method disabled ipv6.method disabled >/dev/null
+JPROF="suite joined later"
+nmcli connection add type ethernet con-name "$JPROF" ifname suitest5 autoconnect no ipv4.method disabled \
+  ipv6.method auto ipv6.dns 2001:db8::99 ipv6.dns-search joined.example.test >/dev/null
+JDUMP=$(nmcli -e no -f ipv6 connection show "$JPROF")
 in_terminal "$PLUGIN/uninstall.sh" --restore-ipv6 > /tmp/uninstall.log 2>&1; rc=$?
 is "uninstall.sh exits 0" "$rc" "0"
 (( rc == 0 )) || sed 's/^/      /' /tmp/uninstall.log | tail -15
@@ -1212,10 +1289,78 @@ is "IPv6 back on" "$(sysctl -n net.ipv6.conf.all.disable_ipv6)" "0"
 is "the physical profile's IPv6 method is back" "$(nmcli -g ipv6.method connection show "$PPROF")" "auto"
 is "and its IPv6 DNS server is back" "$(nmcli -g ipv6.dns connection show "$PPROF" | sed 's/\\:/:/g')" "2606:4700:4700::1111"
 no "the saved IPv6 settings are cleared" test -e /etc/vpnkit/ipv6-profiles.saved
+same_static "uninstall --restore-ipv6 restores the static profile"
+is "a line saved before 0.4.1 is restored: method" "$(nmcli -g ipv6.method connection show "$OPROF")" "auto"
+is "a line saved before 0.4.1 is restored: dns" "$(nmcli -g ipv6.dns connection show "$OPROF" | sed 's/\\:/:/g')" "2001:db8::53"
+is "a line saved before 0.4.1 is restored: dns-search" "$(nmcli -g ipv6.dns-search connection show "$OPROF")" "example.test"
+is "a profile the user had switched off stays off (nothing saved for it)" "$(nmcli -g ipv6.method connection show "$NPROF")" "disabled"
+is "a profile joined after setup keeps its IPv6 DNS and everything else" "$(nmcli -e no -f ipv6 connection show "$JPROF")" "$JDUMP"
+is "a profile the install never changed is left alone by the restore" "$(nmcli -e no -f ipv6 connection show uuid "$LUUID")" "$LDUMP"
+no "the uninstall printed no IPv6 warning" grep -q "IPv6: could not" /tmp/uninstall.log
+nmcli connection delete "$OPROF" "$NPROF" "$JPROF" >/dev/null
+
+# The install's rollback: the internet answers before the install and not
+# after it (a lookup service that answers exactly once), so the installer
+# must undo its network changes, IPv6 settings included, exactly.
+cat > /tmp/oneshot.py <<'PY2'
+import http.server
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"192.0.2.1"
+        self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", 8081), H).handle_request()
+PY2
+# rollback_install <log>: run install.sh while the internet "goes away" during it.
+rollback_install() {
+  local pid i rc
+  python3 /tmp/oneshot.py </dev/null >/dev/null 2>&1 &
+  pid=$!
+  for i in $(seq 1 40); do ss -ltn | grep -q '127.0.0.1:8081 ' && break; sleep 0.25; done
+  sed -i 's|^IP_LOOKUP_URL=.*|IP_LOOKUP_URL="http://127.0.0.1:8081/"|' /etc/vpnkit/vpnkit.conf
+  in_terminal "$PLUGIN/install.sh" > "$1" 2>&1; rc=$?
+  sed -i "s|^IP_LOOKUP_URL=.*|IP_LOOKUP_URL=\"$LOOKUP\"|" /etc/vpnkit/vpnkit.conf
+  kill "$pid" 2>/dev/null
+  return "$rc"
+}
+# has_v6_ll: the physical link has an IPv6 link-local address (within 10 s).
+has_v6_ll() {
+  local i
+  for i in $(seq 1 20); do
+    ip -6 addr show dev "$PHYS" scope link | grep -q inet6 && return 0
+    sleep 0.5
+  done
+  return 1
+}
+no "an install that loses the internet fails" rollback_install /tmp/install-rollback.log
+yes "and undoes its network changes" grep -q "No internet after the install - undoing" /tmp/install-rollback.log
+yes "it had switched the static profile off first" grep -qF "\"$SPROF\" had static IPv6" /tmp/install-rollback.log
+same_static "the rollback restores the static profile"
+is "the rollback restores the physical profile's IPv6 method" "$(nmcli -g ipv6.method connection show "$PPROF")" "auto"
+is "and its IPv6 DNS server" "$(nmcli -g ipv6.dns connection show "$PPROF" | sed 's/\\:/:/g')" "2606:4700:4700::1111"
+yes "and applies it to the running link: IPv6 is back on $PHYS without a reconnect" has_v6_ll
+is "the rollback turns IPv6 back on" "$(sysctl -n net.ipv6.conf.all.disable_ipv6)" "0"
+no "the rollback removes the sysctl file" test -e /etc/sysctl.d/99-vpnkit-disable-ipv6.conf
+no "the rollback forgets the entries it restored" test -s /etc/vpnkit/ipv6-profiles.saved
+no "the rollback printed no IPv6 warning" grep -q "IPv6: could not" /tmp/install-rollback.log
 yes "servers are kept by a plain uninstall" nmcli connection show proton-ca-1
 yes "settings are kept by a plain uninstall" test -f /etc/vpnkit/vpnkit.conf
 yes "the leak-check reports are kept by a plain uninstall" test -s "$REPORTS/latest.txt"
 in_terminal "$PLUGIN/install.sh" > /tmp/install3.log 2>&1
+is "the static profile is switched off again" "$(nmcli -g ipv6.method connection show uuid "$SUUID")" "disabled"
+# A rollback during an update leaves IPv6 as the earlier install set it.
+no "an update that loses the internet fails" rollback_install /tmp/install-rollback2.log
+yes "and rolls back" grep -q "No internet after the install - undoing" /tmp/install-rollback2.log
+yes "but keeps the earlier install's sysctl file" test -e /etc/sysctl.d/99-vpnkit-disable-ipv6.conf
+is "and IPv6 stays off" "$(sysctl -n net.ipv6.conf.all.disable_ipv6)" "1"
+is "the static profile stays off" "$(nmcli -g ipv6.method connection show uuid "$SUUID")" "disabled"
+is "and its saved settings stay" "$(saved "$SUUID" addresses)" "2001:db8:1::10/64, 2001:db8:1::11/64"
+# A static profile switched off by a version before 0.4.1: its addresses were
+# not saved and are gone. Restoring it must fail loudly, name it, and keep it.
+MPROF="suite legacy manual"
+nmcli connection add type ethernet con-name "$MPROF" ifname suitest4 autoconnect no ipv4.method disabled ipv6.method disabled >/dev/null
+printf '%s\tmanual\t2001:db8::53\texample.test\n' "$MPROF" >> /etc/vpnkit/ipv6-profiles.saved
 # A step of the root half that fails (here: Chrome direct's unit refuses to
 # stop) is reported, and everything else is still removed, the user's part
 # included.
@@ -1233,7 +1378,28 @@ rm -rf /run/systemd/system/vpnkit-direct.service.d; systemctl daemon-reload
 systemctl stop vpnkit-direct.service vpnkitdirect.slice >/dev/null 2>&1
 no "--purge removes the servers" nmcli connection show proton-ca-1
 no "--purge removes the torrent config" test -e /etc/wireguard/vpnkit-torrent.conf
-no "--purge removes the settings" test -e /etc/vpnkit
+no "--purge removes the settings" test -e /etc/vpnkit/vpnkit.conf
+is "but keeps the saved IPv6 settings, the only copy of the static ones" "$(ls -A /etc/vpnkit)" "ipv6-profiles.saved"
+yes "and says how to put them back" grep -q "Kept /etc/vpnkit/ipv6-profiles" /tmp/uninstall2.log
+# With the system part gone, the plugin folder's uninstall.sh still restores
+# them (its own copy of the library), in the combined form the README gives.
+# The legacy static profile cannot be restored: reported, named, kept;
+# everything else is put back.
+in_terminal "$PLUGIN/uninstall.sh" --purge --restore-ipv6 > /tmp/uninstall3.log 2>&1; rc=$?
+is "uninstall.sh --purge --restore-ipv6 reports the profile it could not restore" "$rc" "1"
+yes "it names that profile" grep -qF "could not restore \"$MPROF\" (ipv6.method manual)" /tmp/uninstall3.log
+yes "and says its addresses were never saved" grep -q "cleared by a version before 0.4.1" /tmp/uninstall3.log
+is "that profile keeps IPv6 off, not a guessed auto" "$(nmcli -g ipv6.method connection show "$MPROF")" "disabled"
+is "only its entry is left, and --purge keeps it" "$(cut -f1 /etc/vpnkit/ipv6-profiles.saved)" "$MPROF"
+same_static "the plugin folder's uninstall restores the static profile"
+is "and the physical profile's IPv6 method" "$(nmcli -g ipv6.method connection show "$PPROF")" "auto"
+yes "and IPv6 is back on the running link" has_v6_ll
+# Once nothing is left to restore, --purge --restore-ipv6 removes it all.
+nmcli connection delete "$MPROF" >/dev/null
+in_terminal "$PLUGIN/uninstall.sh" --purge --restore-ipv6 > /tmp/uninstall4.log 2>&1; rc=$?
+is "uninstall.sh --purge --restore-ipv6 then exits 0" "$rc" "0"
+no "and /etc/vpnkit is gone" test -e /etc/vpnkit
+nmcli connection delete "$SPROF" "$LPROF" >/dev/null
 no "--purge removes the leak-check reports" test -e "$REPORTS"
 is "home address at the end" "$(myip)" "$HOME_IP"
 gateway off

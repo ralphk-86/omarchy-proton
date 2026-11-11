@@ -102,6 +102,7 @@ say "Installing helpers to /usr/local/bin"
 install -d -m 755 /usr/local/lib/vpnkit
 install -m 644 "$SYS/lib/common.sh" /usr/local/lib/vpnkit/common.sh
 install -m 644 "$SYS/lib/direct.sh" /usr/local/lib/vpnkit/direct.sh
+install -m 644 "$SYS/lib/ipv6.sh" /usr/local/lib/vpnkit/ipv6.sh
 # Chrome direct's xdg-open, first in Chrome's PATH only (see direct-launch).
 install -d -m 755 /usr/local/lib/vpnkit/direct-bin
 install -m 755 "$SYS/direct-bin/xdg-open" /usr/local/lib/vpnkit/direct-bin/xdg-open
@@ -118,6 +119,8 @@ done
 . /usr/local/lib/vpnkit/common.sh
 # shellcheck disable=SC1091
 . /usr/local/lib/vpnkit/direct.sh
+# shellcheck disable=SC1091
+. /usr/local/lib/vpnkit/ipv6.sh
 
 # --------------------------------------------------------------- sudoers ---
 say "Installing the sudoers rules (validated before install)"
@@ -133,37 +136,13 @@ rm -f /etc/sudoers.d/10-vpnkit   # the name used before 0.1.0
 rm -f "$tmp"
 
 # ----------------------------------------------------------------- ipv6 ----
-WIRED_V6=()   # profiles whose ipv6.method we changed, for rollback
-V6_SAVED=/etc/vpnkit/ipv6-profiles.saved
-# v6_save_profile <name>: remember a profile's IPv6 settings before we clear
-# them (name, method, dns, dns-search, tab separated). An entry already there
-# is kept: it holds the settings from before the first install.
-v6_save_profile() {
-  local name="$1"
-  [[ -f "$V6_SAVED" ]] && cut -f1 "$V6_SAVED" | grep -qxF -- "$name" && return 0
-  printf '%s\t%s\t%s\t%s\n' "$name" \
-    "$(nmcli -g ipv6.method connection show "$name" 2>/dev/null)" \
-    "$(nmcli -g ipv6.dns connection show "$name" 2>/dev/null | sed 's/\\:/:/g')" \
-    "$(nmcli -g ipv6.dns-search connection show "$name" 2>/dev/null)" >> "$V6_SAVED"
-  chmod 644 "$V6_SAVED"
-}
-# v6_restore_profile <name>: put back what v6_save_profile saved (method
-# "auto" when nothing was saved), then forget the entry.
-v6_restore_profile() {
-  local name="$1" saved="" method="auto" dns="" search=""
-  [[ -f "$V6_SAVED" ]] && saved=$(awk -F'\t' -v n="$name" '$1 == n { print; exit }' "$V6_SAVED")
-  if [[ -n "$saved" ]]; then
-    IFS=$'\t' read -r _ method dns search <<< "$saved"
-    [[ -n "$method" && "$method" != "disabled" ]] || method="auto"
-  fi
-  nmcli connection modify "$name" ipv6.method "$method" ipv6.dns "$dns" ipv6.dns-search "$search" \
-    || nmcli connection modify "$name" ipv6.method auto || true
-  if [[ -f "$V6_SAVED" ]]; then
-    awk -F'\t' -v n="$name" '$1 != n' "$V6_SAVED" > "$V6_SAVED.tmp" && mv "$V6_SAVED.tmp" "$V6_SAVED"
-  fi
-}
+# Saving, clearing and restoring a profile's IPv6 settings: lib/ipv6.sh, the
+# same code uninstall-root.sh --restore-ipv6 uses.
+WIRED_V6=()   # uuids of the profiles switched off here, for the rollback
+V6_SYSCTL_NEW=0   # this run switched IPv6 off (the rollback undoes only that)
 if [[ "${DISABLE_IPV6:-1}" == "1" ]]; then
   say "Disabling IPv6 (loopback keeps ::1)"
+  [[ -e /etc/sysctl.d/99-vpnkit-disable-ipv6.conf ]] || V6_SYSCTL_NEW=1
   install -m 644 "$SYS/sysctl.d/99-vpnkit-disable-ipv6.sysctl" /etc/sysctl.d/99-vpnkit-disable-ipv6.conf
   sysctl -q -p /etc/sysctl.d/99-vpnkit-disable-ipv6.conf
   # NetworkManager re-enables IPv6 on a link whenever it activates a profile
@@ -172,38 +151,34 @@ if [[ "${DISABLE_IPV6:-1}" == "1" ]]; then
   # link is already covered by the sysctl above.
   # NetworkManager refuses method=disabled while the profile still carries
   # static IPv6 settings (e.g. ipv6.dns, which Omarchy's DNS picker sets), so
-  # they are cleared in the same call. What was there is saved in V6_SAVED,
-  # one line per profile, so a rollback or uninstall can put it back.
-  V6_FAILED=()
-  while IFS=: read -r name type; do
+  # v6_disable_profile clears them in the same call, after saving all of them
+  # (method, dns, dns-search, addresses, gateway, routes) in V6_SAVED. A
+  # profile it cannot save or change is left exactly as it was.
+  V6_FAILED=(); V6_DONE=()
+  # By uuid: names may contain colons (escaped by -g) and need not be unique.
+  while IFS=: read -r uuid type; do
     case "$type" in
       802-3-ethernet|802-11-wireless)
-        method=$(nmcli -g ipv6.method connection show "$name" 2>/dev/null || true)
-        if [[ "$method" != "disabled" ]]; then
-          v6_save_profile "$name"
-          if nmcli connection modify "$name" ipv6.method disabled ipv6.dns "" ipv6.dns-search "" \
-               ipv6.addresses "" ipv6.gateway "" ipv6.routes ""; then
-            WIRED_V6+=("$name")
-          else
-            V6_FAILED+=("$name")
-          fi
+        [[ "$(v6_get "$uuid" ipv6.method)" != "disabled" ]] || continue
+        name=$(v6_get "$uuid" connection.id) || name="$uuid"
+        if v6_disable_profile "$uuid"; then
+          WIRED_V6+=("$uuid"); V6_DONE+=("$name")
+        else
+          V6_FAILED+=("$name")
         fi
         ;;
     esac
-  done < <(nmcli -t -f NAME,TYPE connection show)
+  done < <(nmcli -g UUID,TYPE connection show)
   if (( ${#V6_FAILED[@]} )); then
-    warn "Could not set ipv6.method=disabled on: ${V6_FAILED[*]}"
+    warn "Could not set ipv6.method=disabled on: ${V6_FAILED[*]} (left unchanged)"
     warn "IPv6 is off now (sysctl), but NetworkManager may turn it back on for that link"
     warn "when it reconnects. Fix: nmcli connection modify \"<name>\" ipv6.method disabled"
   fi
   if (( ${#WIRED_V6[@]} )); then
-    echo "    ipv6.method=disabled on: ${WIRED_V6[*]}"
+    echo "    ipv6.method=disabled on: ${V6_DONE[*]}"
     # Apply it to the running link too, without taking the link down; else
     # NetworkManager keeps trying to add IPv6 addresses and logs every try.
-    for name in "${WIRED_V6[@]}"; do
-      dev=$(nmcli -g GENERAL.DEVICES connection show "$name" 2>/dev/null | head -1)
-      [[ -n "$dev" ]] && nmcli device reapply "$dev" >/dev/null 2>&1 || true
-    done
+    for uuid in "${WIRED_V6[@]}"; do v6_reapply "$uuid"; done
   fi
 else
   echo "    IPv6 left on (DISABLE_IPV6=0)"
@@ -284,10 +259,16 @@ elif internet_ok; then
   echo "    internet OK, default route: $(ip -4 route show default | head -1)"
 else
   warn "No internet after the install - undoing the network-facing changes"
-  rm -f /etc/sysctl.d/99-vpnkit-disable-ipv6.conf
-  sysctl -qw net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0 || true
-  for name in "${WIRED_V6[@]}"; do
-    v6_restore_profile "$name"
+  # Only what this run changed: on an update, IPv6 was already off by an
+  # earlier install's choice, and stays off.
+  if (( V6_SYSCTL_NEW )); then
+    rm -f /etc/sysctl.d/99-vpnkit-disable-ipv6.conf
+    sysctl -qw net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0 || true
+  fi
+  # Each profile gets all its saved IPv6 settings back and its running link
+  # is reapplied, so a network that needs IPv6 works again at once.
+  for uuid in "${WIRED_V6[@]}"; do
+    v6_restore_profile "$uuid" || true   # it names a profile it could not restore
   done
   internet_ok && echo "    internet is back after the rollback" \
               || echo "    STILL no internet - run vpn-rescue, then check the router"

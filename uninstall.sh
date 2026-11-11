@@ -5,10 +5,11 @@
 #  USAGE
 #    uninstall.sh                  remove the kit; keep your servers, the
 #                                  torrent config, your settings and IPv6 off
-#    uninstall.sh --restore-ipv6   also turn IPv6 back on
+#    uninstall.sh --restore-ipv6   also turn IPv6 back on and put back each
+#                                  profile's saved IPv6 settings
 #    uninstall.sh --purge          also delete the servers, the WireGuard
-#                                  configs, /etc/vpnkit and your saved
-#                                  leak-check reports
+#                                  configs, /etc/vpnkit (except IPv6 settings
+#                                  not yet put back) and your leak-check reports
 #
 #  Afterwards qBittorrent is no longer confined: it runs on the normal
 #  connection again. Remove the widget itself with
@@ -21,7 +22,7 @@ set -euo pipefail
 for a in "$@"; do
   case "$a" in
     --restore-ipv6|--purge) ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "unknown option: $a"; exit 1 ;;
   esac
 done
