@@ -1881,20 +1881,24 @@ yes "and says the rules are not loaded" grep -q "FAIL.*SSH direct is on but its 
 yes "and that a marked connection would not leave outside the tunnel" grep -q "FAIL.*a connection SSH direct marks would leave through proton-ca-1" <<<"$OUT"
 /etc/NetworkManager/dispatcher.d/50-vpnkit "$PHYS" up
 is "a link coming up loads them again" "$(status .ssh_direct_rules)" "true"
-# An armed kill switch without its line blocks SSH: the status must not say
-# it works.
+# An armed kill switch without its line: the status must not say SSH direct
+# works. (While the server is up, the tunnel interface's own accept still lets
+# a rerouted connection out: the output hook keeps the device the first route
+# chose. Once the bar says blocked, the line is all there is.)
 h=$(nft -a list chain inet vpnkit_kill output 2>/dev/null | awk '/meta mark 0x0000ca6d accept/ {print $NF; exit}')
 nft delete rule inet vpnkit_kill output handle "${h:-0}"
 no "the kill switch is armed without its line" ks_line
-is "port 22 is then blocked" "$(portip 22)" "none"
 is "status: not working" "$(status .ssh_direct_rules)" "false"
 is "and the helper's own status agrees" "$(direct status | jq -c .ssh.rules)" "false"
 yes "vpn-status says so" grep -q "NOT WORKING: its rules, or the kill switch line for them, are missing" <<<"$(as_user /usr/local/bin/vpn-status)"
+OUT=$(vpn-verify 2>&1)
+yes "the leak check fails on it" grep -q "FAIL.*the kill switch has no line for SSH direct's mark" <<<"$OUT"
+nmcli connection down proton-ca-1 >/dev/null 2>&1; sleep 1
+is "blocked without the line, port 22 does not get out either" "$(portip 22)" "none"
 nft delete table inet vpnkit_kill
 is "with no kill switch at all, the rules alone count" "$(status .ssh_direct_rules)" "true"
-OUT=$(vpn-verify 2>&1)
-yes "a kill switch without its line is a failure" grep -q "FAIL.*the kill switch has no line for SSH direct's mark" <<<"$OUT"
 as_user /usr/local/bin/vpn-toggle proton-ca-1 >/dev/null 2>&1
+is "(server A again)" "$(myip)" "10.2.0.2"
 is "server A re-armed: working again" "$(status .ssh_direct_rules)" "true"
 
 # Other ports than the loaded ones: the rules no longer count as loaded until on again.
@@ -1987,7 +1991,9 @@ def tcp():
             finally: c.close()
         threading.Thread(target=serve, daemon=True).start()
 def udp():
-    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); u.bind(("0.0.0.0", port))
+    # Bound to the service's address: a reply from another source address
+    # would not match the client's connection, and its firewall drops it.
+    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); u.bind(("192.0.2.80", port))
     while True:
         d, a = u.recvfrom(64); u.sendto((a[0] + "\n").encode(), a)
 if mode in ("udp", "both"): threading.Thread(target=udp, daemon=True).start()
