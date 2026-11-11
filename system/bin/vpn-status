@@ -99,7 +99,9 @@ CHROME_THERE=false; [[ -x "$DIRECT_BIN" ]] && CHROME_THERE=true
 # How it is doing comes from the status helper (null there: unknown). Whether
 # it is on, and its server, can also be read here (the record is 644), so the
 # panel still knows which server it holds when the helper does not answer.
-FF_ON=false; vpnkit_ff_opted_in && FF_ON=true
+# One expression, not a conditional assignment (see CONTRIBUTING.md: the
+# marketplace scan gives up on many of those).
+FF_ON=$(if vpnkit_ff_opted_in; then echo true; else echo false; fi)
 FF_RECORD=$(head -1 "$FF_SERVER_FILE" 2>/dev/null | tr -cd 'A-Za-z0-9._-')
 
 # --- configs waiting in the drop folder -------------------------------------
