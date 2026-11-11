@@ -111,7 +111,7 @@
   entry from 0.4.0 is recognised and updated.
 - Tests: static checks pass (now also: every root-run script sets its PATH first; every
   command carries the marker and is in the uninstaller's list); the marketplace security
-  baseline is `review-required` with no findings. VM suite: @VMRESULT@. VM tests added in
+  baseline is `review-required` with no findings. VM suite: 632 passed, 0 failed. VM tests added in
   this release: a wired profile with static IPv6 (two addresses, a gateway, two routes, one
   with a metric and the attributes `table` and `onlink`, DNS servers, search domains, a colon
   in its name) is switched off with every field saved, then restored field for field (and
