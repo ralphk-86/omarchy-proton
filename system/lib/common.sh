@@ -203,7 +203,8 @@ vpnkit_app_pids() {  # vpnkit_app_pids <user> <exe ERE> <inside|outside> <netns:
         v=$(stat -Lc '%i' "/proc/$pid/ns/net" 2>/dev/null) || continue
         ins=0; [[ -n "${place#netns:}" && "$v" == "${place#netns:}" ]] && ins=1 ;;
       slice:*)
-        v=$(cat "/proc/$pid/cgroup" 2>/dev/null) || continue
+        # Its first line: with cgroup v2 the only one, "0::/<path>".
+        v=""; { IFS= read -r v < "/proc/$pid/cgroup"; } 2>/dev/null || true
         [[ -n "$v" ]] || continue
         ins=0; [[ "$v" == "0::/${place#slice:}/"* ]] && ins=1 ;;
       *) return 1 ;;
