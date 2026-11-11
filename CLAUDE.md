@@ -11,6 +11,8 @@ Plugin id `io.github.ralphk-86.omarchy-proton`. The engine underneath is called 
 stays.
 
 The repository is meant to be public. Treat every file and every commit as published.
+Design notes, plans and agent working files are kept outside it (`docs/superpowers/` and
+`.superpowers/` are gitignored).
 
 ## Read first
 

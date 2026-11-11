@@ -7,3 +7,7 @@
 .env.*
 .private-patterns
 __pycache__/
+
+# Internal design notes and agent working files stay out of the repository.
+docs/superpowers/
+.superpowers/

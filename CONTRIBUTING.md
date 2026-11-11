@@ -89,6 +89,9 @@ See `tests/vm/README.md`.
   `tests/check.sh` checks they agree.
 - Commit with a GitHub noreply address.
 
+Design notes, plans and agent working files are kept outside this repository
+(`docs/superpowers/` and `.superpowers/` are gitignored).
+
 ## Preview image
 
 `preview.png` must never show anyone's real servers or IP addresses. The widget has a
@@ -105,6 +108,9 @@ omarchy bar set $ID demoStatusFile ""    # back to real data
 `tests/preview/status-torrents.json` is the same state with the Torrents tab open
 (`demo_tab`), `status-normal.json` shows the normal connection, for the bar-states image, and
 `status-direct.json` is the first state with Chrome direct on (the "Chrome: direct" line).
+
+`screenshots/chrome-direct.png` shows the panel with Chrome direct on. It is drawn with the same
+helpers (made-up data from `status-direct.json`), not captured.
 
 The README shows both tabs in full (`screenshots/regular.png`, `screenshots/torrents.png`,
 cropped to 1144x1340 at the top right of a 2560x1440 screen) and the bar in four states

@@ -3,7 +3,11 @@
 Proton VPN kill switch, torrent tunnel & leak checks in the [Omarchy](https://omarchy.org/) bar.
 An unofficial bar widget for Proton VPN over WireGuard: pick your own IP or a Proton server, the
 kill switch is always on while a server is selected, qBittorrent has its own tunnel it cannot
-leave, and every leak check is saved as a report.
+leave, every leak check is saved as a report, and an optional switch keeps Google Chrome on your
+own connection while everything else follows the VPN.
+
+Listed in the [Omarchy plugin marketplace](https://plugins.omarchy.org/plugin.html?id=io.github.ralphk-86.omarchy-proton).
+Current version: 0.4.2, see the [changelog](CHANGELOG.md).
 
 <img src="preview.png" alt="The widget in the bar and its panel, next to the four features" width="100%">
 
@@ -429,6 +433,10 @@ vpn-direct off    # Chrome follows the bar again
 place. A Chrome that was already open when you turned it on keeps using the VPN (the panel says
 "restart Chrome"), and while it runs a new Chrome window is refused, because Chrome would hand
 it to the running one. Turning it off is refused while Chrome runs with your own IP.
+
+<img src="screenshots/chrome-direct.png" alt="The panel with Chrome direct on: the Chrome: direct line and the Chrome uses your own IP switch" width="520">
+
+<sub>Redrawn with made-up data, like the other images.</sub>
 
 While it is on, the panel shows a **Chrome: direct** line under the torrents line ("Your own IP
 · DNS 127.0.0.1", or the first problem in the urgent colour) and `vpn-status` a
