@@ -768,6 +768,10 @@ you, not as root), putting back any of yours.
   not against software running as you: such software can ask Chrome to start a program (an
   extension's helper, say), which then shares Chrome's exemption. The leak check names what it
   finds in Chrome's slice. Apps Chrome opens through `xdg-open` do not share it.
+- The Firefox tunnel starts only the packaged Firefox (`/usr/lib/firefox/firefox`) inside its
+  namespace. Any other Firefox build (Mozilla's tarball, a flatpak, a snap, Developer
+  Edition) runs outside it; while one runs, the packaged Firefox is refused and the status
+  and the leak check name it, because a new Firefox could hand its pages to it.
 - [SSH direct](#ssh-direct) is a deliberate hole for the SSH ports, only while you have it
   on: any program may connect to those ports, on any host, from your home address then.
 - Switching servers uses NetworkManager's normal permissions: fine from your desktop session;

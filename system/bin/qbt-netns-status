@@ -37,8 +37,11 @@ now=$(date +%s)
 # has a default route, the time of its last handshake (0: none), and its
 # peer's endpoint. Only for a namespace that exists.
 tunnel_probe() {  # tunnel_probe <ns> <wg_if>
-  local route=false hs ep
-  ip netns exec "$1" ip route show default 2>/dev/null | grep -q . && route=true
+  local route=false hs ep r
+  # Read first, then tested: `| grep -q` under pipefail can fail the pipeline
+  # when grep quits early (a false "no route").
+  r=$(ip netns exec "$1" ip route show default 2>/dev/null) || r=""
+  [[ -n "$r" ]] && route=true
   hs=$(ip netns exec "$1" wg show "$2" latest-handshakes 2>/dev/null | awk '{print $2}' | head -1)
   [[ "${hs:-}" =~ ^[0-9]+$ ]] || hs=0
   ep=$(ip netns exec "$1" wg show "$2" endpoints 2>/dev/null | awk '{print $2}' | head -1)
@@ -131,7 +134,7 @@ fi
 # --- the Firefox tunnel (opt-in) ----------------------------------------------
 # Computed like the torrent fields above. It is on once a Firefox server was
 # chosen (vpnkit_ff_opted_in, or its config is in place); only then are the
-# desktop user's Firefox processes looked at (by their program, FF_BIN, and
+# desktop user's Firefox processes looked at (by their program, any Firefox build, and
 # their namespace inode; only main processes, see vpnkit_ff_pids: Firefox's
 # sandboxed children have namespaces of their own). "pids" lists the ones
 # outside the namespace. The namespace is never the torrent

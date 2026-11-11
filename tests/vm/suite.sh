@@ -66,7 +66,8 @@ myip()    { local a; a=$(curl -4 -s --max-time 3 "$@" "$LOOKUP" 2>/dev/null) || 
 status()  { as_user /usr/local/bin/vpn-status --refresh --json | jq -r "$1"; }
 resolves() { timeout 5 getent hosts "$1" >/dev/null 2>&1; }
 # A stand-in notify-send (put first in PATH) that records who sent what, to
-# check the refusals that reach the desktop; notified reads the first record.
+# check the refusals that reach the desktop; notified prints the record when
+# there is exactly one, else how many there were (a duplicate is a failure).
 fake_notify() {
   rm -f /tmp/suite-notify.log
   if [[ "$1" == on ]]; then
@@ -76,7 +77,10 @@ fake_notify() {
     rm -f /usr/local/bin/notify-send
   fi
 }
-notified() { head -1 /tmp/suite-notify.log 2>/dev/null; }
+notified() {
+  local n; n=$(wc -l < /tmp/suite-notify.log 2>/dev/null) || n=0
+  if [[ "$n" == 1 ]]; then cat /tmp/suite-notify.log; else printf '%s records: %s' "$n" "$(paste -sd'#' /tmp/suite-notify.log 2>/dev/null)"; fi
+}
 # The Firefox part of a leak-check report (vpn-verify's section 10b).
 ffsect()  { sed -n '/^10b\. Firefox tunnel/,/^11\. /p' <<<"$1"; }
 PHYS=$(ip -4 route show default | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
@@ -801,6 +805,22 @@ OUT=$(vpn-verify 2>&1); rc=$?
 is "the leak check fails on a Firefox outside" "$rc" "1"
 yes "and names its pid" grep -q "FAIL.*Firefox is running OUTSIDE the Firefox tunnel (pid $P)" <<<"$OUT"
 ffkill
+# Any Firefox build counts, not only the packaged one: here a stand-in named
+# firefox in /opt/firefox (where Mozilla's tarball would be), outside.
+install -D -m 755 /usr/bin/bash /opt/firefox/firefox
+as_user /opt/firefox/firefox -c 'sleep 600; :' </dev/null >/dev/null 2>&1 &
+sleep 1
+OP=$(pgrep -u $U -f '^/opt/firefox/firefox -c' | head -1)
+OUT=$(as_user /usr/local/bin/firefox 5 2>&1); rc=$?
+is "another Firefox build outside: the wrapper refuses, naming it" "$rc:$(grep -c "pid ${OP:-none}" <<<"$OUT")" "1:1"
+OUT=$(as_user sudo -n /usr/local/bin/ff-launch 5 2>&1); rc=$?
+is "and ff-launch refuses" "$rc:$(grep -c "already running outside the namespace (pid ${OP:-none})" <<<"$OUT")" "1:1"
+is "status: it is unprotected, and named" "$(status '[.ff_unprotected, (.ff_pids | join(","))] | @json')" "[true,\"${OP:-none}\"]"
+OUT=$(vpn-verify 2>&1); rc=$?
+is "the leak check fails on it" "$rc" "1"
+yes "and names it" grep -q "FAIL.*Firefox is running OUTSIDE the Firefox tunnel (pid ${OP:-none})" <<<"$OUT"
+[[ -n "$OP" ]] && { pkill -P "$OP" 2>/dev/null; kill "$OP" 2>/dev/null; }
+sleep 1; rm -rf /opt/firefox
 # Fail closed: no route, no resolver files, no namespace: no Firefox.
 ip -n ffvpn link set pff0 down
 fake_notify on
@@ -813,6 +833,11 @@ fake_notify on
 no "tunnel down: ff-launch refuses" as_user sudo -n /usr/local/bin/ff-launch 5
 is "(ff-launch on its own too)" "$(notified)" \
   "$U|-a Firefox Firefox was not started the Firefox tunnel is DOWN - refusing to launch Firefox."
+# From a terminal the refusal is on the screen: no notification then.
+fake_notify on
+OUT=$(as_user script -qec "/usr/local/bin/firefox 5" /dev/null 2>&1)
+yes "(on a terminal, the wrapper refuses too)" grep -q "refusing to launch Firefox" <<<"$OUT"
+is "and sends no notification" "$(notified)" "0 records: "
 fake_notify off
 ip -n ffvpn link set pff0 up; ip -n ffvpn route replace default dev pff0
 is "(tunnel restored)" "$(ip netns exec ffvpn curl -4 -s --max-time 4 $LOOKUP)" "10.3.0.4"

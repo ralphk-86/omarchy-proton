@@ -268,11 +268,19 @@ vpnkit_qbt_outside_pids() {  # vpnkit_qbt_outside_pids <namespace inode or ""> <
   vpnkit_app_pids "$2" '^/usr/bin/qbittorrent(-nox)?( \(deleted\))?$' outside "netns:$1" 'qbittorrent|qbittorrent-nox'
 }
 
-# The real Firefox binary (FF_BIN), also after an update replaced it.
+# The real Firefox binary (FF_BIN), also after an update replaced it: the
+# only one ff-launch starts.
 VPNKIT_FF_EXE_RE="^${FF_BIN}( \\(deleted\\))?\$"
+# Any Firefox build: a program named firefox or firefox-bin, wherever it is
+# (Mozilla's tarball in ~/firefox or /opt, a flatpak's /app/lib/firefox, a
+# snap, Developer Edition). They share the profile or the session-bus name
+# with the packaged one, so a Firefox started inside the namespace could hand
+# its pages to any of them: all of them count when looking for a Firefox
+# outside. Only the packaged one is ever started inside.
+VPNKIT_FF_ANY_RE='/firefox(-bin)?( \(deleted\))?$'
 vpnkit_ff_pids() {  # vpnkit_ff_pids <namespace inode or ""> <user> <inside|outside|both>
-  # Like vpnkit_app_pids for Firefox, but only its main processes: those
-  # whose parent is not a Firefox process. Firefox starts its content, RDD,
+  # Like vpnkit_app_pids for Firefox (any build, VPNKIT_FF_ANY_RE), but only
+  # its main processes: those whose parent is not a Firefox process. Firefox starts its content, RDD,
   # utility and extension processes (same program) in a sandbox with a
   # network namespace of their own, and the fork server under the main one;
   # a child either shares its parent's namespace or has one without any
@@ -281,6 +289,7 @@ vpnkit_ff_pids() {  # vpnkit_ff_pids <namespace inode or ""> <user> <inside|outs
   # whose parent cannot be read (another user's, as root's runuser is for
   # ff-launch's Firefox) counts as a main process.
   local where pid k v ppid
+  case "$3" in inside|outside|both) ;; *) return 1 ;; esac
   while read -r where pid; do
     [[ -n "$pid" ]] || continue
     ppid=""
@@ -288,12 +297,12 @@ vpnkit_ff_pids() {  # vpnkit_ff_pids <namespace inode or ""> <user> <inside|outs
         [[ "$k" == PPid ]] && { ppid="$v"; break; }
       done < "/proc/$pid/status"; } 2>/dev/null
     [[ "$ppid" =~ ^[0-9]+$ ]] || continue          # it vanished
-    [[ "$(_vpnkit_exe "$ppid")" =~ $VPNKIT_FF_EXE_RE ]] && continue
+    [[ "$(_vpnkit_exe "$ppid")" =~ $VPNKIT_FF_ANY_RE ]] && continue
     case "$3" in
       both) printf '%s %s\n' "$where" "$pid" ;;
       "$where") printf '%s\n' "$pid" ;;
     esac
-  done < <(vpnkit_app_pids "$2" "$VPNKIT_FF_EXE_RE" both "netns:$1")
+  done < <(vpnkit_app_pids "$2" "$VPNKIT_FF_ANY_RE" both "netns:$1")
   return 0
 }
 vpnkit_ff_outside_pids() {  # vpnkit_ff_outside_pids <namespace inode or ""> <user>
@@ -315,8 +324,12 @@ vpnkit_ff_opted_in() {  # vpnkit_ff_opted_in: the Firefox tunnel is on (or half 
   # any one of them counts, so a tunnel that is half set up or half removed
   # is treated as on (Firefox refused, the status showing what is missing)
   # rather than as off. Readable by anyone; FF_CONF itself is root-only.
+  # The boot unit is enabled when `systemctl enable` left its link in a
+  # .wants folder: tested as files, not with systemctl, because the status
+  # asks this every few seconds, also for everyone who never opted in.
   [[ -s "$FF_SERVER_FILE" || -e "/run/netns/$FF_NS" ]] && return 0
-  systemctl is-enabled --quiet ff-netns.service 2>/dev/null
+  compgen -G '/etc/systemd/system/*.wants/ff-netns.service' >/dev/null \
+    || compgen -G '/run/systemd/system/*.wants/ff-netns.service' >/dev/null
 }
 
 vpnkit_refused_notice() {  # vpnkit_refused_notice <app> <why>: tell the desktop user an app was not started

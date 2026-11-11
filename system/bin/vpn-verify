@@ -184,7 +184,10 @@ fi   # NSOK
 echo
 echo "8. IPv6"
 if [[ "${DISABLE_IPV6:-1}" == "1" ]]; then
-  if ip -6 addr show scope global 2>/dev/null | grep -q inet6; then
+  # Read first, then tested: under pipefail, grep -q quitting at its first
+  # match can fail the pipeline, which would turn this FAIL into a PASS.
+  V6=$(ip -6 addr show scope global 2>/dev/null) || V6=""
+  if grep -q inet6 <<<"$V6"; then
     no "the host still has a global IPv6 address: $(ip -6 -br addr show scope global | awk '{print $1}' | tr '\n' ' ')"
   else
     ok "no global IPv6 address on the host"
@@ -195,7 +198,8 @@ if [[ "${DISABLE_IPV6:-1}" == "1" ]]; then
     ok "the host cannot reach the internet over IPv6"
   fi
   if (( NSOK )); then
-    if nsx ip -6 addr show scope global 2>/dev/null | grep -q inet6; then
+    V6=$(nsx ip -6 addr show scope global 2>/dev/null) || V6=""
+    if grep -q inet6 <<<"$V6"; then
       no "the namespace has a global IPv6 address despite DISABLE_IPV6=1"
     else
       ok "no global IPv6 address inside the namespace"
@@ -345,7 +349,8 @@ else
       else no "the Firefox tunnel's fwmark is '${FFMARK:-off}', expected $(printf '0x%x' "$VPN_FWMARK")"; fi
     fi
     if [[ "${DISABLE_IPV6:-1}" == "1" ]]; then
-      if ffx ip -6 addr show scope global 2>/dev/null | grep -q inet6; then
+      V6=$(ffx ip -6 addr show scope global 2>/dev/null) || V6=""
+      if grep -q inet6 <<<"$V6"; then
         no "the Firefox namespace has a global IPv6 address despite DISABLE_IPV6=1"
       else
         ok "no global IPv6 address inside the Firefox namespace"
@@ -367,6 +372,9 @@ else
     echo "     Firefox exit IP   : ${FFIP:-<none>}"
     if [[ -z "$FFIP" ]]; then
       no "the Firefox namespace could not reach the internet"
+    elif [[ -n "$FFREAL" && "$FFIP" == "$FFREAL" ]] && vpnkit_find_vpn_iface >/dev/null; then
+      # With a desktop server up, the host's address is that server's exit.
+      no "Firefox leaves from the same address as your regular traffic ($FFIP): websites could link the two - choose a Firefox server on another exit"
     elif [[ -n "$FFREAL" && "$FFIP" == "$FFREAL" ]]; then
       no "THE FIREFOX EXIT IP EQUALS THE HOST'S - Firefox is NOT going through its own tunnel"
     elif [[ -n "$QIP" && "$FFIP" == "$QIP" ]]; then
