@@ -123,9 +123,8 @@ Planned listing metadata: category `System`; tags `vpn`, `security`, `bar`.
 
 ## Public repository
 
-Public since 2026-09-30. The repository was recreated from a single clean commit (the earlier
-history carried personal data; a bundle of it is kept outside the repository on the owner's
-machine). Never force-push history that predates that commit. Examples in comments and docs use
+Public since 2026-09-30. The history starts from a single clean commit. Never rewrite or
+force-push published history. Examples in comments and docs use
 the made-up servers from `tests/preview/status.json` (Switzerland 7, Sweden 21, ...), never a
 real one. Marketplace: listing and version updates go through the issue forms described in
 RELEASING.md; each submission needs the owner's explicit go-ahead.

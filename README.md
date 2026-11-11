@@ -7,7 +7,7 @@ leave, every leak check is saved as a report, and an optional switch keeps Googl
 own connection while everything else follows the VPN.
 
 Listed in the [Omarchy plugin marketplace](https://plugins.omarchy.org/plugin.html?id=io.github.ralphk-86.omarchy-proton).
-Current version: 0.4.2, see the [changelog](CHANGELOG.md).
+What changed in each version: [changelog](CHANGELOG.md).
 
 <img src="preview.png" alt="The widget in the bar and its panel, next to the four features" width="100%">
 
