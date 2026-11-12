@@ -135,6 +135,10 @@ else
 fi
 
 echo "8. Omarchy plugin manifest"
+# The marketplace refuses a commit whose description is longer than 500 characters.
+dlen=$(jq -r '.description | length' manifest.json)
+(( dlen <= 500 )) && ok "manifest description is $dlen characters (marketplace limit 500)" \
+  || bad "manifest description is $dlen characters; the marketplace limit is 500"
 if command -v omarchy >/dev/null 2>&1; then
   omarchy plugin validate . >/dev/null 2>&1 && ok "omarchy plugin validate" || bad "omarchy plugin validate failed"
 else
