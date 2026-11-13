@@ -133,6 +133,13 @@ if [[ -n "$QMLLINT" ]]; then
 else
   echo "  [SKIP] qmllint not installed"
 fi
+# Every command the panel waits for has a deadline: each Process is started
+# through bounded() (timeout(1), process group) and has a Deadline backstop.
+procs=$(grep -oE '^  Process \{$' VpnWidget.qml | wc -l)
+unbounded=$(grep -nE '^[[:space:]]*[a-zA-Z]+Process\.command = ' VpnWidget.qml | grep -v 'bounded(' || true)
+[[ -z "$unbounded" ]] && ok "every Process command goes through bounded()" || bad "Process command without a deadline: $unbounded"
+deadlines=$(grep -cE '^  Deadline \{ process: [a-zA-Z]+Process;' VpnWidget.qml)
+[[ "$deadlines" -eq "$procs" ]] && ok "every Process ($procs) has a Deadline backstop" || bad "$procs Process blocks but $deadlines Deadline backstops"
 
 echo "8. Omarchy plugin manifest"
 # The marketplace refuses a commit whose description is longer than 500 characters.

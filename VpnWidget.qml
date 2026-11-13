@@ -18,11 +18,25 @@ Panel {
   moduleName: "io.github.ralphk-86.omarchy-proton"
 
   // Must match VERSION and manifest.json (tests/check.sh verifies it).
-  readonly property string kitVersion: "0.5.0"
+  readonly property string kitVersion: "0.5.1"
 
   readonly property string statusCmd: "/usr/local/bin/vpn-status"
   readonly property string toggleCmd: "/usr/local/bin/vpn-toggle"
   readonly property string syncCmd: "/usr/local/bin/vpnkit-sync"
+
+  // Every command the panel waits for has a hard deadline (seconds). The
+  // command runs under timeout(1), which puts it in a process group of its
+  // own and, when time is up, signals that whole group (TERM, then KILL two
+  // seconds later), so whatever it started ends with it; sudo hands the TERM
+  // on to the root helper it runs. A Deadline timer on each Process is the
+  // backstop: it stops the process a few seconds after its deadline.
+  readonly property int statusSecs: 60
+  readonly property int switchSecs: 120
+  readonly property int syncSecs: 120
+  readonly property int directSecs: 60
+  readonly property int pickSecs: 900
+  readonly property int verifySecs: 300
+  function bounded(seconds, argv) { return ["timeout", "--kill-after=2", String(seconds)].concat(argv) }
   readonly property string verifyCmd: "/usr/local/bin/vpn-verify"
   // Runs vpn-verify and saves the report in the user's reports folder.
   readonly property string checkCmd: "/usr/local/bin/vpn-check"
@@ -340,9 +354,9 @@ Panel {
   function refresh(force) {
     if (statusProcess.running) return
     var args = force ? "--refresh --json" : "--json"
-    statusProcess.command = demo
+    statusProcess.command = bounded(statusSecs, demo
       ? ["cat", demoFile]
-      : ["bash", "-c", "[ -x " + statusCmd + " ] || exit 127; exec " + statusCmd + " " + args]
+      : ["bash", "-c", "[ -x " + statusCmd + " ] || exit 127; exec " + statusCmd + " " + args])
     statusProcess.running = true
   }
 
@@ -455,7 +469,7 @@ Panel {
     pendingTarget = name
     lastError = ""
     message = ""
-    actionProcess.command = [toggleCmd, name]
+    actionProcess.command = bounded(switchSecs, [toggleCmd, name])
     actionProcess.running = true
   }
 
@@ -472,7 +486,7 @@ Panel {
     if (demo) return
     lastError = ""
     message = ""
-    syncProcess.command = ["sudo", "-n", syncCmd, "sync"]
+    syncProcess.command = bounded(syncSecs, ["sudo", "-n", syncCmd, "sync"])
     syncProcess.running = true
   }
 
@@ -523,7 +537,7 @@ Panel {
     lastError = ""
     message = ""
     pendingTorrent = name
-    torrentProcess.command = ["sudo", "-n", syncCmd, "torrent", name]
+    torrentProcess.command = bounded(switchSecs, ["sudo", "-n", syncCmd, "torrent", name])
     torrentProcess.running = true
   }
 
@@ -535,7 +549,7 @@ Panel {
     lastError = ""
     message = ""
     pendingDirect = on ? "on" : "off"
-    directProcess.command = [directCmd, pendingDirect]
+    directProcess.command = bounded(directSecs, [directCmd, pendingDirect])
     directProcess.running = true
   }
 
@@ -546,7 +560,7 @@ Panel {
     lastError = ""
     message = ""
     pendingSsh = on ? "on" : "off"
-    sshProcess.command = [directCmd, "ssh", pendingSsh]
+    sshProcess.command = bounded(directSecs, [directCmd, "ssh", pendingSsh])
     sshProcess.running = true
   }
 
@@ -562,7 +576,7 @@ Panel {
     armedRemove = ""
     lastError = ""
     message = ""
-    removeProcess.command = ["sudo", "-n", syncCmd, "remove", name]
+    removeProcess.command = bounded(syncSecs, ["sudo", "-n", syncCmd, "remove", name])
     removeProcess.running = true
   }
 
@@ -572,7 +586,7 @@ Panel {
     if (demo || syncing || !installed) return
     lastError = ""
     message = ""
-    pickProcess.command = ["bash", "-c", "files=$(" + pickCmd + ") || exit 3; mapfile -t f <<<\"$files\"; exec " + importCmd + " \"${f[@]}\""]
+    pickProcess.command = bounded(pickSecs, ["bash", "-c", "files=$(" + pickCmd + ") || exit 3; mapfile -t f <<<\"$files\"; exec " + importCmd + " \"${f[@]}\""])
     pickProcess.running = true
     close()
   }
@@ -639,9 +653,9 @@ Panel {
     // vpn-check saves the report as you in the reports folder; only
     // vpn-verify runs as root. A system part from before vpn-check existed
     // gets the old way: the report kept for this session only.
-    verifyProcess.command = ["bash", "-c",
+    verifyProcess.command = bounded(verifySecs, ["bash", "-c",
       "if [ -x \"$1\" ]; then exec \"$1\"; fi; sudo -n \"$2\" 2>&1 | tee \"$3\"",
-      "vpn-check", checkCmd, verifyCmd, reportFile]
+      "vpn-check", checkCmd, verifyCmd, reportFile])
     verifyProcess.running = true
   }
 
@@ -889,6 +903,16 @@ Panel {
     stdout: StdioCollector { id: verifyStdout; waitForEnd: true }
     onExited: function(exitCode) { vpn.applyVerify(verifyStdout.text) }
   }
+
+  Deadline { process: statusProcess; seconds: vpn.statusSecs }
+  Deadline { process: actionProcess; seconds: vpn.switchSecs }
+  Deadline { process: torrentProcess; seconds: vpn.switchSecs }
+  Deadline { process: directProcess; seconds: vpn.directSecs }
+  Deadline { process: sshProcess; seconds: vpn.directSecs }
+  Deadline { process: pickProcess; seconds: vpn.pickSecs }
+  Deadline { process: syncProcess; seconds: vpn.syncSecs }
+  Deadline { process: removeProcess; seconds: vpn.syncSecs }
+  Deadline { process: verifyProcess; seconds: vpn.verifySecs }
 
   Timer {
     id: setupTimeout
@@ -1510,6 +1534,17 @@ Panel {
         }
       }
     }
+  }
+
+  // The backstop for a command's deadline (see bounded()): stops the process
+  // five seconds after timeout(1) should have ended it. Stopping it sends
+  // TERM to timeout(1), which passes it on to the command's process group.
+  component Deadline: Timer {
+    property var process: null
+    property int seconds: 60
+    interval: (seconds + 5) * 1000
+    running: process !== null && process.running
+    onTriggered: if (process && process.running) process.running = false
   }
 
   component InterfaceLine: RowLayout {

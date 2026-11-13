@@ -419,6 +419,27 @@ no "imported torrent config is gone from the folder" test -e "$DROP/torrent/wg-N
 yes "the junk file is left alone" test -e "$DROP/notes.conf"
 yes "a symlink in the folder is ignored" test -L "$DROP/evil.conf"
 rm -f "$DROP/notes.conf" "$DROP/evil.conf"
+
+# The folder is the user's, so a file can change while it is imported: the copy
+# is capped (64 KiB) and time-limited, and its size is checked on root's copy.
+as_user mkfifo "$DROP/fifo.conf"
+head -c 70000 /dev/zero | tr '\0' 'a' > "$DROP/big.conf"; chown $U:$U "$DROP/big.conf"
+as_user bash -c 'while :; do head -c 4096 /dev/zero; sleep 0.01; done > "$1"' _ "$DROP/growing.conf" &
+GROWER=$!
+sleep 1
+t0=$SECONDS
+OUT=$(as_user timeout 60 sudo -n /usr/local/bin/vpnkit-sync sync); rc=$?
+t1=$SECONDS
+kill "$GROWER" 2>/dev/null; wait "$GROWER" 2>/dev/null
+is "a FIFO, an oversized and a growing file do not fail the import" "$rc" "0"
+yes "and do not stall it (under 20 s)" test $((t1 - t0)) -lt 20
+is "the oversized and growing files are reported, not imported" "$(jq -r '[.skipped[].file] | sort | join(",")' <<<"$OUT")" "big.conf,growing.conf"
+yes "the FIFO is ignored like a symlink (only regular files are listed)" test -p "$DROP/fifo.conf"
+is "nothing imported from them" "$(jq -r '.imported | length' <<<"$OUT")" "0"
+rm -f "$DROP/fifo.conf" "$DROP/big.conf" "$DROP/growing.conf"
+# A file that turns into a stalled reader after the type check (the race the
+# cap and the deadline exist for): the copy is cut off at FETCH_SECS.
+yes "the copy has a deadline" grep -q 'timeout -k 1 "$FETCH_SECS" head -c "$FETCH_MAX"' /usr/local/bin/vpnkit-sync
 for p in proton-ca-1 proton-se-2 proton-nl-3; do
   is "$p never connects on its own" "$(nmcli -g connection.autoconnect connection show $p)" "no"
   is "$p keyfile is root-only" "$(stat -c '%a %U' /etc/NetworkManager/system-connections/$p.nmconnection)" "600 root"

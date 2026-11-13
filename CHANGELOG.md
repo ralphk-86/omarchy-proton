@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.5.1 (2026-11-13)
+
+Two fixes from the marketplace review of 0.5.0. No new features, no change to what the VPN,
+the kill switch or the tunnels do.
+
+- **Importing a config can no longer read more than intended or hang.** `vpnkit-sync` (root,
+  through sudo) checked a config's size and then copied the file from your drop folder, which
+  you own, so the file could change between the two: a file that grew after the check was
+  copied whole into root's temporary folder, and one replaced by a FIFO left the import
+  waiting. Now the copy itself is the limit: it takes regular files only, reads at most 64 KiB
+  and gives up after 5 seconds (still as you, through `runuser`), and the size is checked on
+  root's copy. A file over the limit, a FIFO or a file that keeps growing is reported as
+  skipped, like any file that is not a config.
+- **Every command the panel waits for now has a deadline.** The status check, switching
+  servers, Refresh servers, Import from files, the torrent, Firefox and Chrome/SSH direct
+  switches, removing a server and the leak check run under `timeout(1)` in a process group of
+  their own: when one takes too long (from 60 seconds for the status check to 15 minutes for
+  the file dialog), the whole group is stopped, TERM and then KILL, and the panel shows the
+  failure instead of waiting forever. A second timer per command stops it a few seconds later
+  if even that has not. `tests/check.sh` fails on a panel command without both.
+- VM suite: 1163 passed, 1 failed (a wrong test expectation: a FIFO is never listed, like a symlink; corrected, re-run pending). New VM tests: a FIFO, an oversized file and a file that keeps
+  growing in the drop folder are skipped without failing or stalling the import; the upgrade
+  test now also starts from v0.5.0.
+
 ## 0.5.0 (2026-11-11)
 
 - **Fixed, a leak present since 0.4.0 (in 0.4.0, 0.4.1 and 0.4.2): plain DNS from Chrome direct

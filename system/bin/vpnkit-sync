@@ -58,11 +58,19 @@ summary() {
 
 # Copy a file out of the user's folder using the USER's permissions, so a
 # symlink planted there can never make root read something the user cannot.
+# The file can change while this runs (the folder is the user's), so nothing
+# is decided from a look at the source: the read itself is capped at
+# FETCH_MAX bytes and FETCH_SECS seconds (a FIFO or a file that keeps
+# growing cannot stall it or get past the cap), and the size is checked on
+# the copy, which only root can write.
+FETCH_MAX=65536
+FETCH_SECS=5
 fetch() {  # fetch <src> <dest>
   local size
-  size=$(as_user stat -c %s -- "$1" 2>/dev/null) || return 1
-  (( size > 0 && size < 65536 )) || return 1
-  as_user cat -- "$1" > "$2" 2>/dev/null
+  as_user test -f "$1" || return 1
+  as_user timeout -k 1 "$FETCH_SECS" head -c "$FETCH_MAX" -- "$1" > "$2" 2>/dev/null || { rm -f -- "$2"; return 1; }
+  size=$(stat -c %s -- "$2" 2>/dev/null) || { rm -f -- "$2"; return 1; }
+  (( size > 0 && size < FETCH_MAX )) || { rm -f -- "$2"; return 1; }
 }
 
 discard() {  # remove an imported file from the folder, as the user
